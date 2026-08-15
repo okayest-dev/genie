@@ -114,6 +114,49 @@ func assertCleanFailure(t *testing.T, stdout, stderr string, code int, wantStder
 	}
 }
 
+// assertRequestModel checks the one scripted chat request carried the given
+// model and Authorization header.
+func assertRequestModel(t *testing.T, p *fake.Provider, wantModel, wantAuth string) {
+	t.Helper()
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests received = %d, want 1", len(reqs))
+	}
+	req := reqs[0]
+	if req.Method != "POST" || req.Path != "/chat/completions" {
+		t.Errorf("request = %s %s, want POST /chat/completions", req.Method, req.Path)
+	}
+	if req.Auth != wantAuth {
+		t.Errorf("Authorization = %q, want %q", req.Auth, wantAuth)
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	if body.Model != wantModel {
+		t.Errorf("request model = %q, want %q", body.Model, wantModel)
+	}
+}
+
+// configDir creates a fresh XDG_CONFIG_HOME with og/config.toml holding the
+// given content; content "" leaves the config file absent.
+func configDir(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	ogDir := filepath.Join(dir, "og")
+	if err := os.MkdirAll(ogDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if content != "" {
+		if err := os.WriteFile(filepath.Join(ogDir, "config.toml"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
 func TestStreamsReply(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{
@@ -247,6 +290,93 @@ func TestNetworkDownReportsError(t *testing.T) {
 	srv.Close()
 	stdout, stderr, code := run(t, []string{"OG_BASE_URL=" + url}, "-p", "hi")
 	assertCleanFailure(t, stdout, stderr, code, "Error: ")
+}
+
+func TestConfigFileDrivesWireRequest(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	dir := configDir(t, fmt.Sprintf("base_url = %q\nmodel = \"cfg-model\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	assertRequestModel(t, p, "cfg-model", "Bearer test-key")
+}
+
+func TestEnvOverridesConfigFile(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	dir := configDir(t, fmt.Sprintf("base_url = %q\nmodel = \"file-model\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OG_MODEL=env-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	assertRequestModel(t, p, "env-model", "Bearer test-key")
+}
+
+func TestMissingConfigFileUsesDefaults(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	dir := configDir(t, "")
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OG_BASE_URL=" + p.URL,
+		"OPENCODE_API_KEY=",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	assertRequestModel(t, p, "big-pickle", "")
+}
+
+func TestMalformedConfigFailsFast(t *testing.T) {
+	dir := configDir(t, "model =")
+	stdout, stderr, code := run(t, []string{"XDG_CONFIG_HOME=" + dir}, "-p", "hi")
+	assertCleanFailure(t, stdout, stderr, code, "config")
+}
+
+func TestUnknownConfigKeyFailsFast(t *testing.T) {
+	dir := configDir(t, "bas_url = \"https://example.com\"")
+	stdout, stderr, code := run(t, []string{"XDG_CONFIG_HOME=" + dir}, "-p", "hi")
+	assertCleanFailure(t, stdout, stderr, code, "unknown key")
+}
+
+func TestAPIKeyReadsFromConfiguredEnvVar(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	dir := configDir(t, fmt.Sprintf("base_url = %q\napi_key_env = \"OG_MY_KEY\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OG_MY_KEY=test-key",
+		"OPENCODE_API_KEY=",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	assertRequestModel(t, p, "big-pickle", "Bearer test-key")
 }
 
 // TestTextStreamsLive asserts deltas arrive before the stream (and process)

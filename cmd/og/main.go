@@ -8,12 +8,8 @@ import (
 	"os"
 
 	"github.com/okayest-dev/og/internal/agent"
+	"github.com/okayest-dev/og/internal/config"
 	"github.com/okayest-dev/og/internal/llm/openai"
-)
-
-const (
-	defaultModel   = "big-pickle"
-	defaultBaseURL = "https://opencode.ai/zen/v1"
 )
 
 const usage = `usage: og [-p prompt]
@@ -41,17 +37,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 3
 	}
 
-	client := openai.NewClient(envOr("OG_BASE_URL", defaultBaseURL), os.Getenv("OPENCODE_API_KEY"))
-	if err := agent.RunTurn(context.Background(), client, envOr("OG_MODEL", defaultModel), *prompt, stdout); err != nil {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	client := openai.NewClient(cfg.BaseURL, cfg.APIKey)
+	if err := agent.RunTurn(context.Background(), client, cfg.Model, *prompt, stdout); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
 	return 0
-}
-
-func envOr(name, fallback string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return fallback
 }
