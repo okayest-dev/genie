@@ -255,6 +255,32 @@ func TestEditWhitespaceSensitive(t *testing.T) {
 	}
 }
 
+func TestEditMultiLineCRLF(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "file.txt")
+	os.WriteFile(path, []byte("line1\r\nline2\r\nline3\r\n"), 0o644)
+
+	tool := New(dir)
+	// Replace multi-line content; newText has \n which should become \r\n.
+	args, _ := json.Marshal(map[string]any{
+		"path":    "file.txt",
+		"oldText": "line1\nline2",
+		"newText": "LINE1\nLINE2",
+	})
+	_, err := tool.Execute(args)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	// All line endings should be CRLF.
+	if strings.Contains(string(data), "\n") && !strings.Contains(string(data), "\r\n") {
+		t.Errorf("CRLF line endings were not preserved: %q", string(data))
+	}
+	if !strings.Contains(string(data), "LINE1") {
+		t.Errorf("replacement not applied: %q", string(data))
+	}
+}
+
 func TestEditName(t *testing.T) {
 	tool := New(t.TempDir())
 	if tool.Name() != "edit" {
