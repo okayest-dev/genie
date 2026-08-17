@@ -12,14 +12,17 @@ import (
 
 // RunTurn runs one no-tool agent turn against c: build the canonical
 // conversation, stream the reply, and write text deltas to out as they
-// arrive. It returns nil on a completed turn and the provider failure
-// otherwise.
-func RunTurn(ctx context.Context, c llm.Client, model, prompt string, out io.Writer) error {
+// arrive. instruction is the assembled system prompt from the three
+// sources (default + config file + AGENTS.md). It returns nil on a
+// completed turn and the provider failure otherwise.
+func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out io.Writer) error {
+	messages := []llm.Message{
+		{Role: llm.RoleSystem, Content: instruction},
+		{Role: llm.RoleUser, Content: prompt},
+	}
 	stream, err := c.Stream(ctx, llm.Request{
-		Model: model,
-		Messages: []llm.Message{
-			{Role: llm.RoleUser, Content: prompt},
-		},
+		Model:    model,
+		Messages: messages,
 	})
 	if err != nil {
 		return err

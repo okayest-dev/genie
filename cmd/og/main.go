@@ -9,6 +9,7 @@ import (
 
 	"github.com/okayest-dev/og/internal/agent"
 	"github.com/okayest-dev/og/internal/config"
+	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/llm/openai"
 )
 
@@ -42,8 +43,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	instruction, err := instruct.Load(cfg, cwd)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
 	client := openai.NewClient(cfg.BaseURL, cfg.APIKey)
-	if err := agent.RunTurn(context.Background(), client, cfg.Model, *prompt, stdout); err != nil {
+	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}

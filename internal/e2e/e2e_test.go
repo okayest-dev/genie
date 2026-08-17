@@ -43,8 +43,17 @@ func TestMain(m *testing.M) {
 // run invokes the binary with the given extra env and args, stdin closed, and
 // returns stdout, stderr, and the exit code.
 func run(t *testing.T, env []string, args ...string) (string, string, int) {
+	return runInDir(t, "", env, args...)
+}
+
+// runInDir is like run but sets the working directory for the subprocess.
+// An empty dir means use the default (test's working directory).
+func runInDir(t *testing.T, dir string, env []string, args ...string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(binPath, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	cmd.Env = append(os.Environ(), env...)
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
@@ -140,6 +149,34 @@ func assertRequestModel(t *testing.T, p *fake.Provider, wantModel, wantAuth stri
 	}
 }
 
+// assertSystemMessage checks the first message in the request is a system
+// message with the given content prefix.
+func assertSystemMessage(t *testing.T, p *fake.Provider, wantContent string) {
+	t.Helper()
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests received = %d, want 1", len(reqs))
+	}
+	var body struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	if len(body.Messages) < 1 {
+		t.Fatalf("request has no messages")
+	}
+	if body.Messages[0].Role != "system" {
+		t.Errorf("first message role = %q, want %q", body.Messages[0].Role, "system")
+	}
+	if body.Messages[0].Content != wantContent {
+		t.Errorf("system message content = %q, want %q", body.Messages[0].Content, wantContent)
+	}
+}
+
 // configDir creates a fresh XDG_CONFIG_HOME with og/config.toml holding the
 // given content; content "" leaves the config file absent.
 func configDir(t *testing.T, content string) string {
@@ -203,8 +240,12 @@ func TestStreamsReply(t *testing.T) {
 	if body.Model != "test-model" {
 		t.Errorf("request model = %q, want %q", body.Model, "test-model")
 	}
-	if len(body.Messages) != 1 || body.Messages[0].Role != "user" || body.Messages[0].Content != "hi" {
-		t.Errorf("request messages = %+v, want single user message %q", body.Messages, "hi")
+	assertSystemMessage(t, p, "You are og, a helpful terminal agent.")
+	if len(body.Messages) != 2 {
+		t.Fatalf("request messages = %+v, want 2 messages (system + user)", body.Messages)
+	}
+	if body.Messages[1].Role != "user" || body.Messages[1].Content != "hi" {
+		t.Errorf("second message = %+v, want user message %q", body.Messages[1], "hi")
 	}
 	if !body.Stream {
 		t.Errorf("request stream = false, want true")
@@ -377,6 +418,118 @@ func TestAPIKeyReadsFromConfiguredEnvVar(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	assertRequestModel(t, p, "big-pickle", "Bearer test-key")
+}
+
+func TestDefaultPromptAlwaysInRequest(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	assertSystemMessage(t, p, "You are og, a helpful terminal agent.")
+}
+
+func TestInstructionFileInRequest(t *testing.T) {
+	dir := t.TempDir()
+	instFile := filepath.Join(dir, "instructions.md")
+	if err := os.WriteFile(instFile, []byte("custom agent rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = %q\n", p.URL, instFile))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+		// Work from an empty dir so no AGENTS.md interference
+		"HOME=" + dir,
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are og, a helpful terminal agent.\ncustom agent rules"
+	assertSystemMessage(t, p, want)
+}
+
+func TestAGENTSMDInRequest(t *testing.T) {
+	workDir := t.TempDir()
+	agentsMD := filepath.Join(workDir, "AGENTS.md")
+	if err := os.WriteFile(agentsMD, []byte("project rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\n", p.URL))
+	stdout, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are og, a helpful terminal agent.\nproject rules"
+	assertSystemMessage(t, p, want)
+}
+
+func TestMissingInstructionFileFailsAtStartup(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = \"/nonexistent/instructions.md\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	assertCleanFailure(t, stdout, stderr, code, "instruction file")
+}
+
+func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
+	dir := t.TempDir()
+	instFile := filepath.Join(dir, "instructions.md")
+	if err := os.WriteFile(instFile, []byte("---config---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(dir, "work")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentsMD := filepath.Join(workDir, "AGENTS.md")
+	if err := os.WriteFile(agentsMD, []byte("---agents---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = %q\n", p.URL, instFile))
+	stdout, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are og, a helpful terminal agent.\n---config---\n---agents---"
+	assertSystemMessage(t, p, want)
 }
 
 // TestTextStreamsLive asserts deltas arrive before the stream (and process)

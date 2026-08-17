@@ -4,10 +4,10 @@
 
 **Blocked by:** 01 — Wire tracer bullet; 02 — Config surface.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Every turn carries the built-in default prompt even with no config at all.
-- [ ] A config instruction file loads after the default; a missing file errors clearly at startup.
-- [ ] An `AGENTS.md` in the working directory loads automatically, after the config file.
-- [ ] `AGENTS.md` discovery is cwd-only — parent-directory walk is out.
-- [ ] When all three sources are present, every turn's instruction appends them in order; the fake provider test asserts the assembled message.
+- [x] Every turn carries the built-in default prompt even with no config at all.
+- [x] A config instruction file loads after the default; a missing file errors clearly at startup.
+- [x] An `AGENTS.md` in the working directory loads automatically, after the config file.
+- [x] `AGENTS.md` discovery is cwd-only — parent-directory walk is out.
+- [x] When all three sources are present, every turn's instruction appends them in order; the fake provider test asserts the assembled message.

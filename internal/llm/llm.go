@@ -38,6 +38,7 @@ type Message struct {
 
 // Roles in the canonical conversation.
 const (
+	RoleSystem    = "system"
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
 )
