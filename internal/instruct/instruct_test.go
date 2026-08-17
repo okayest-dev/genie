@@ -1,6 +1,8 @@
 package instruct
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,5 +130,72 @@ func TestAllThreeSourcesInOrder(t *testing.T) {
 	want := DefaultPrompt + "\n---config---\n---agents---"
 	if got != want {
 		t.Errorf("Load() = %q, want %q", got, want)
+	}
+}
+
+func captureInfo(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.NewTextHandler(nil, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	})
+	return &buf
+}
+
+func TestLoadLogsInstructionFile(t *testing.T) {
+	buf := captureInfo(t)
+	dir := t.TempDir()
+	instFile := filepath.Join(dir, "instructions.md")
+	if err := os.WriteFile(instFile, []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{InstructionFile: instFile}
+	if _, err := Load(cfg, dir); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "instruction file loaded") {
+		t.Errorf("log output missing 'instruction file loaded':\n%s", out)
+	}
+}
+
+func TestLoadLogsAGENTSMDFound(t *testing.T) {
+	buf := captureInfo(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	if _, err := Load(cfg, dir); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "AGENTS.md loaded") {
+		t.Errorf("log output missing 'AGENTS.md loaded':\n%s", out)
+	}
+}
+
+func TestLoadLogsAGENTSMDNotFound(t *testing.T) {
+	buf := captureInfo(t)
+	cfg := &config.Config{}
+	if _, err := Load(cfg, t.TempDir()); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "AGENTS.md not found") {
+		t.Errorf("log output missing 'AGENTS.md not found':\n%s", out)
+	}
+}
+
+func TestLoadLogsInstructionTotalLength(t *testing.T) {
+	buf := captureInfo(t)
+	cfg := &config.Config{}
+	if _, err := Load(cfg, t.TempDir()); err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "instruction assembled") {
+		t.Errorf("log output missing 'instruction assembled':\n%s", out)
 	}
 }

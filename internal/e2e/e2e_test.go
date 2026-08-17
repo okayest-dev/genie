@@ -579,3 +579,168 @@ func TestTextStreamsLive(t *testing.T) {
 		t.Fatalf("process exited non-zero: %v", err)
 	}
 }
+
+func TestVerboseFlagBanner(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, providerEnv(p), "-v", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if !strings.Contains(stderr, "verbose mode enabled") {
+		t.Errorf("stderr = %q, want it to contain the verbose banner", stderr)
+	}
+}
+
+func TestDebugFlagBanner(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, providerEnv(p), "-d", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if !strings.Contains(stderr, "debug mode enabled") {
+		t.Errorf("stderr = %q, want it to contain the debug banner", stderr)
+	}
+}
+
+func TestNoFlagsStderrEmpty(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty when no -v or -d flag", stderr)
+	}
+}
+
+func TestOGDebugEnvEnablesDebug(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_DEBUG=true"), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if !strings.Contains(stderr, "debug mode enabled") {
+		t.Errorf("stderr = %q, want it to contain the debug banner with OG_DEBUG=true", stderr)
+	}
+}
+
+func TestDebugOutputIncludesHTTPDetails(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_DEBUG=1"), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	for _, want := range []string{"/chat/completions", "Bearer <redacted>", "status="} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, stderr)
+		}
+	}
+}
+
+func TestAPIKeyNeverAppearsInDebugOutput(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	apiKey := "super-secret-api-key-abcdef"
+	stdout, stderr, code := run(t, append(providerEnv(p), "OPENCODE_API_KEY="+apiKey, "OG_DEBUG=1"), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if strings.Contains(stderr, apiKey) {
+		t.Errorf("stderr contains the API key — must be redacted:\n%s", stderr)
+	}
+}
+
+func TestDebugFlagOverridesFalseOGDebug(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_DEBUG=false"), "-d", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if !strings.Contains(stderr, "debug mode enabled") {
+		t.Errorf("stderr = %q, want debug banner even with OG_DEBUG=false when -d is set", stderr)
+	}
+}
+
+func TestStdoutUnaffectedByFlags(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("hello"), fake.Finish("stop"), fake.Done},
+	})
+	want := "hello\n"
+	for _, args := range [][]string{
+		{"-p", "hi"},
+		{"-v", "-p", "hi"},
+		{"-d", "-p", "hi"},
+	} {
+		stdout, _, code := run(t, providerEnv(p), args...)
+		if code != 0 {
+			t.Fatalf("args %v: exit code = %d", args, code)
+		}
+		if stdout != want {
+			t.Errorf("args %v: stdout = %q, want %q", args, stdout, want)
+		}
+	}
+}
+
+func TestVerboseShowsInfoMessages(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Usage(5, 3, 8), fake.Done},
+	})
+	_, stderr, code := run(t, providerEnv(p), "-v", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	for _, want := range []string{"config loaded", "turn started", "turn completed", "finish_reason=stop", "total_tokens=8"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q with -v:\n%s", want, stderr)
+		}
+	}
+}
+
+func TestDebugShowsDebugMessages(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	_, stderr, code := run(t, providerEnv(p), "-d", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	for _, want := range []string{"http request", "sse chunk", "sse stream complete"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q with -d:\n%s", want, stderr)
+		}
+	}
+}

@@ -5,6 +5,7 @@ package instruct
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -27,15 +28,23 @@ func Load(cfg *config.Config, cwd string) (string, error) {
 			return "", fmt.Errorf("instruction file %s: %w", cfg.InstructionFile, err)
 		}
 		instruction += "\n" + string(b)
+		slog.Info("instruction file loaded", "path", cfg.InstructionFile, "bytes", len(b))
+		slog.Debug("instruction source", "name", "instruction_file", "path", cfg.InstructionFile, "bytes", len(b))
 	}
 
 	agentsPath := filepath.Join(cwd, "AGENTS.md")
 	b, err := os.ReadFile(agentsPath)
 	if err == nil {
 		instruction += "\n" + string(b)
+		slog.Info("AGENTS.md loaded", "path", agentsPath, "bytes", len(b))
+		slog.Debug("instruction source", "name", "AGENTS.md", "path", agentsPath, "bytes", len(b))
 	} else if !os.IsNotExist(err) {
 		return "", fmt.Errorf("reading AGENTS.md: %w", err)
+	} else {
+		slog.Info("AGENTS.md not found", "path", agentsPath)
 	}
 
+	slog.Info("instruction assembled", "total_bytes", len(instruction))
+	slog.Debug("instruction assembled", "total_bytes", len(instruction), "content", instruction)
 	return instruction, nil
 }

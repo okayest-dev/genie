@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"io"
+	"log/slog"
 
 	"github.com/okayest-dev/og/internal/llm"
 )
@@ -20,6 +21,9 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		{Role: llm.RoleSystem, Content: instruction},
 		{Role: llm.RoleUser, Content: prompt},
 	}
+
+	slog.Info("turn started", "model", model, "prompt_length", len(prompt))
+
 	stream, err := c.Stream(ctx, llm.Request{
 		Model:    model,
 		Messages: messages,
@@ -28,12 +32,18 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		return err
 	}
 
+	var usage llm.Usage
+	var finishReason llm.FinishReason
 	for ev := range stream {
 		switch ev.Kind {
 		case llm.EventText:
 			if _, err := io.WriteString(out, ev.Text); err != nil {
 				return err
 			}
+		case llm.EventFinish:
+			finishReason = ev.End
+		case llm.EventUsage:
+			usage = ev.Usage
 		case llm.EventError:
 			return ev.Err
 		}
@@ -41,5 +51,12 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 	if _, err := io.WriteString(out, "\n"); err != nil {
 		return err
 	}
+
+	slog.Info("turn completed",
+		"finish_reason", string(finishReason),
+		"prompt_tokens", usage.PromptTokens,
+		"completion_tokens", usage.CompletionTokens,
+		"total_tokens", usage.TotalTokens,
+	)
 	return nil
 }

@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -118,10 +119,34 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		applyTools(&cfg.Tools, fc.Tools)
 	}
 
-	if err := applyEnv(&cfg, env); err != nil {
+	applied, err := applyEnv(&cfg, env)
+	if err != nil {
 		return nil, err
 	}
 	cfg.APIKey = env[cfg.APIKeyEnv]
+
+	slog.Info("config loaded",
+		"model", cfg.Model,
+		"base_url", cfg.BaseURL,
+		"instruction_file", cfg.InstructionFile,
+		"session_dir", cfg.SessionDir,
+	)
+	slog.Debug("config resolved",
+		"model", cfg.Model,
+		"base_url", cfg.BaseURL,
+		"api_key_env", cfg.APIKeyEnv,
+		"instruction_file", cfg.InstructionFile,
+		"session_dir", cfg.SessionDir,
+		"bash_timeout_s", int(cfg.BashTimeout.Seconds()),
+		"tools_read", cfg.Tools.Read,
+		"tools_write", cfg.Tools.Write,
+		"tools_edit", cfg.Tools.Edit,
+		"tools_bash", cfg.Tools.Bash,
+	)
+	if len(applied) > 0 {
+		slog.Info("env overrides applied", "vars", strings.Join(applied, ","))
+	}
+
 	return &cfg, nil
 }
 
@@ -137,10 +162,13 @@ func Load() (*Config, error) {
 	file, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			slog.Info("config file not found, using defaults", "path", path)
 			file = nil
 		} else {
 			return nil, fmt.Errorf("config: read %s: %w", path, err)
 		}
+	} else {
+		slog.Info("config file loaded", "path", path)
 	}
 	return Parse(file, dir, environMap())
 }
@@ -172,34 +200,42 @@ func applyTools(dst *Tools, src toolsFile) {
 }
 
 // applyEnv overlays the six env overrides on top of the config file. An env
-// var that is set but empty leaves the file value in place.
-func applyEnv(cfg *Config, env map[string]string) error {
+// var that is set but empty leaves the file value in place. Returns the names
+// of env vars that were applied.
+func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
+	var applied []string
 	if v := env["OG_MODEL"]; v != "" {
 		cfg.Model = v
+		applied = append(applied, "OG_MODEL")
 	}
 	if v := env["OG_BASE_URL"]; v != "" {
 		cfg.BaseURL = v
+		applied = append(applied, "OG_BASE_URL")
 	}
 	if v := env["OG_API_KEY_ENV"]; v != "" {
 		cfg.APIKeyEnv = v
+		applied = append(applied, "OG_API_KEY_ENV")
 	}
 	if v := env["OG_INSTRUCTION_FILE"]; v != "" {
 		cfg.InstructionFile = v
+		applied = append(applied, "OG_INSTRUCTION_FILE")
 	}
 	if v := env["OG_SESSION_DIR"]; v != "" {
 		cfg.SessionDir = v
+		applied = append(applied, "OG_SESSION_DIR")
 	}
 	if v := env["OG_BASH_TIMEOUT"]; v != "" {
 		secs, err := strconv.Atoi(v)
 		if err != nil {
-			return fmt.Errorf("config: OG_BASH_TIMEOUT: %q is not a number of seconds", v)
+			return nil, fmt.Errorf("config: OG_BASH_TIMEOUT: %q is not a number of seconds", v)
 		}
 		if secs <= 0 {
-			return fmt.Errorf("config: OG_BASH_TIMEOUT must be a positive number of seconds, got %d", secs)
+			return nil, fmt.Errorf("config: OG_BASH_TIMEOUT must be a positive number of seconds, got %d", secs)
 		}
 		cfg.BashTimeout = time.Duration(secs) * time.Second
+		applied = append(applied, "OG_BASH_TIMEOUT")
 	}
-	return nil
+	return applied, nil
 }
 
 func environMap() map[string]string {

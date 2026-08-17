@@ -1,6 +1,9 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -288,5 +291,62 @@ func TestEmptyEnvVarMeansUnset(t *testing.T) {
 	}
 	if cfg.Model != "file-model" {
 		t.Errorf("Model = %q, want %q (empty env var must not override)", cfg.Model, "file-model")
+	}
+}
+
+// captureInfo sets up slog at LevelInfo writing to a buffer and returns it.
+// Call restoreInfo afterwards to reset the default handler.
+func captureInfo(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() {
+		slog.SetDefault(slog.New(slog.NewTextHandler(nil, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	})
+	return &buf
+}
+
+func TestParseLogsResolvedConfig(t *testing.T) {
+	buf := captureInfo(t)
+	_, err := Parse([]byte("model = \"cfg-model\"\nbase_url = \"https://example.com\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"model=cfg-model", "base_url=https://example.com"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestParseLogsEnvVarsApplied(t *testing.T) {
+	buf := captureInfo(t)
+	_, err := Parse(nil, "/home/u", env("OG_MODEL", "env-model"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "OG_MODEL") {
+		t.Errorf("log output missing env var name OG_MODEL:\n%s", out)
+	}
+	// The env var name appears, but its value must not appear in the
+	// "env overrides applied" line.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "env overrides applied") && strings.Contains(line, "env-model") {
+			t.Errorf("env overrides line must not contain env var value:\n%s", line)
+		}
+	}
+}
+
+func TestParseDoesNotLogAPIKeyValue(t *testing.T) {
+	buf := captureInfo(t)
+	_, err := Parse(nil, "/home/u", env("OPENCODE_API_KEY", "secret-key"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "secret-key") {
+		t.Errorf("log output must not contain API key value:\n%s", out)
 	}
 }

@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/okayest-dev/og/internal/llm"
 )
@@ -68,10 +70,12 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 			}
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			if data == "[DONE]" {
+				slog.Debug("sse stream complete", "sentinel", "[DONE]")
 				return
 			}
 			var ch chunk
 			if err := json.Unmarshal([]byte(data), &ch); err != nil {
+				slog.Debug("sse chunk parse error", "error", err)
 				ev := llm.Event{Kind: llm.EventError, Err: fmt.Errorf("malformed SSE chunk: %w", err)}
 				if !yield(ev) {
 					return
@@ -79,12 +83,31 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 				return
 			}
 			for _, ev := range parseChunk(ch) {
+				switch ev.Kind {
+				case llm.EventText:
+					preview := ev.Text
+					if len(preview) > 80 {
+						preview = preview[:80] + "..."
+					}
+					slog.Debug("sse chunk", "kind", "text", "preview", preview)
+				case llm.EventFinish:
+					slog.Debug("sse chunk", "kind", "finish", "reason", string(ev.End))
+				case llm.EventUsage:
+					slog.Debug("sse usage",
+						"prompt_tokens", ev.Usage.PromptTokens,
+						"completion_tokens", ev.Usage.CompletionTokens,
+						"total_tokens", ev.Usage.TotalTokens,
+					)
+				case llm.EventError:
+					slog.Debug("sse chunk", "kind", "error", "error", ev.Err)
+				}
 				if !yield(ev) {
 					return
 				}
 			}
 		}
 		if err := scanner.Err(); err != nil && ctx.Err() == nil {
+			slog.Debug("sse stream read error", "error", err)
 			ev := llm.Event{Kind: llm.EventError, Err: fmt.Errorf("reading stream: %w", err)}
 			yield(ev)
 		}
@@ -128,13 +151,25 @@ func (c *Client) doRequest(ctx context.Context, method, path string, payload []b
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
+	slog.Debug("http request",
+		"method", method,
+		"url", c.baseURL+path,
+		"auth", "Bearer <redacted>",
+		"body_bytes", len(payload),
+	)
+
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	latency := time.Since(start)
 	if err != nil {
+		slog.Debug("http request failed", "error", err, "latency_ms", latency.Milliseconds())
 		return nil, &llm.ProviderError{Kind: llm.KindNetwork, Message: err.Error()}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		slog.Debug("http error response", "status", resp.StatusCode, "latency_ms", latency.Milliseconds())
 		return nil, errorFromStatus(resp)
 	}
+	slog.Debug("http response", "status", resp.StatusCode, "latency_ms", latency.Milliseconds())
 	return resp, nil
 }
 
@@ -154,6 +189,7 @@ func errorFromStatus(resp *http.Response) error {
 
 	message := fmt.Sprintf("provider returned %s", resp.Status)
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+	slog.Debug("http error body", "status", resp.StatusCode, "body", string(body))
 	var eb errBody
 	if json.Unmarshal(body, &eb) == nil && eb.Error != nil && eb.Error.Message != "" {
 		message = eb.Error.Message

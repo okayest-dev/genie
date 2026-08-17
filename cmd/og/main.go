@@ -5,7 +5,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/okayest-dev/og/internal/agent"
 	"github.com/okayest-dev/og/internal/config"
@@ -13,12 +15,17 @@ import (
 	"github.com/okayest-dev/og/internal/llm/openai"
 )
 
-const usage = `usage: og [-p prompt]
+const usage = `usage: og [-v] [-d] [-p prompt]
 
 og is a minimal terminal agent harness.
 
 Flags:
   -p prompt   run a single prompt, print the reply to stdout, and exit
+  -v          verbose output: high-level flow to stderr
+  -d          debug output: low-level detail to stderr (implies -v)
+
+Environment:
+  OG_DEBUG    enable debug mode (true/1/yes)
 `
 
 func main() {
@@ -30,6 +37,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	prompt := fs.String("p", "", "run a single prompt")
+	verbose := fs.Bool("v", false, "verbose output")
+	debug := fs.Bool("d", false, "debug output (implies -v)")
 	if err := fs.Parse(args); err != nil {
 		return 3
 	}
@@ -37,6 +46,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 3
 	}
+
+	debugEnv := isTruthy(os.Getenv("OG_DEBUG"))
+	debug = boolPtr(*debug || debugEnv)
+	verbose = boolPtr(*verbose || *debug)
+
+	configureSlog(stderr, *verbose, *debug)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -60,3 +75,44 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	return 0
 }
+
+// configureSlog sets up the global slog handler. LevelWarn means silent (no
+// info or debug messages appear); LevelInfo means verbose; LevelDebug means
+// debug (which implies verbose).
+func configureSlog(w io.Writer, verbose, debug bool) {
+	level := slog.LevelWarn
+	if verbose {
+		level = slog.LevelInfo
+	}
+	if debug {
+		level = slog.LevelDebug
+	}
+	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
+		Level: level,
+		ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == "time" {
+				return slog.Attr{}
+			}
+			return a
+		},
+	})
+	slog.SetDefault(slog.New(handler))
+
+	if debug {
+		slog.Debug("debug mode enabled")
+	} else if verbose {
+		slog.Info("verbose mode enabled")
+	}
+}
+
+// isTruthy returns true for "true", "1", "yes" (case-insensitive).
+func isTruthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "1", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
