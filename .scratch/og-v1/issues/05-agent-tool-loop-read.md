@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Wire tracer bullet; 02 — Config surface.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Serial execution: one tool call per cycle, results fed back, loop repeats until the model stops calling tools.
 - [ ] Malformed tool-call arguments are rejected before execution and fed back as an error — never a crash.

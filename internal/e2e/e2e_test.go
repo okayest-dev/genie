@@ -816,3 +816,196 @@ func TestSessionPersistence(t *testing.T) {
 		t.Errorf("messages out of order: system=%d, user=%d, assistant=%d", sysIdx, userIdx, assistantIdx)
 	}
 }
+
+func TestToolCallExecutedAndResultFedBack(t *testing.T) {
+	// Script: first response is a tool call for "read", second response is text.
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.ToolCallDelta(0, "call_1", "read", `{"path":"test.txt"}`),
+			fake.Finish("tool_calls"),
+			fake.Done,
+		},
+	})
+	// After the tool result, the provider should get a second request.
+	// We need to script the second response. Use a multi-behavior approach.
+	p.Close()
+
+	// Use a custom handler that serves two responses in sequence.
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reqCount++
+		if reqCount == 1 {
+			// First request: return tool call.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			for _, chunk := range []string{
+				fake.ToolCallDelta(0, "call_1", "read", `{"path":"test.txt"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		} else {
+			// Second request: return text.
+			var bodyMap struct {
+				Messages []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"messages"`
+			}
+			json.Unmarshal(body, &bodyMap)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, _ := w.(http.Flusher)
+			for _, chunk := range []string{
+				fake.TextDelta("file content here"),
+				fake.Finish("stop"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}))
+	defer srv.Close()
+
+	stdout, stderr, code := run(t, []string{
+		"OG_BASE_URL=" + srv.URL,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "read test.txt")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "file content here") {
+		t.Errorf("stdout = %q, want it to contain 'file content here'", stdout)
+	}
+	// Check tool framing on stderr.
+	if !strings.Contains(stderr, "── read ") {
+		t.Errorf("stderr missing tool framing: %q", stderr)
+	}
+	if reqCount != 2 {
+		t.Errorf("requests = %d, want 2 (tool call + final)", reqCount)
+	}
+}
+
+func TestToolCallRequestIncludesTools(t *testing.T) {
+	// Verify the first request includes a tools array.
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	var body struct {
+		Tools []any `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Tools) == 0 {
+		t.Error("request missing tools array")
+	}
+}
+
+func TestToolCallResultPersistsToTranscript(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.TextDelta("done"),
+			fake.Finish("stop"),
+			fake.Done,
+		},
+	})
+	sessionDir := t.TempDir()
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_SESSION_DIR="+sessionDir), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "done\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "done\n")
+	}
+
+	// Check session file exists.
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("session dir has %d entries, want 1", len(entries))
+	}
+}
+
+func TestToolCallDisabledToolError(t *testing.T) {
+	// Use config to disable the read tool.
+	dir := configDir(t, "[tools]\nread = false\n")
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.ToolCallDelta(0, "call_1", "read", `{"path":"x"}`),
+			fake.Finish("tool_calls"),
+			fake.Done,
+		},
+	})
+	// Need a second response for after the error.
+	p.Close()
+
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		if reqCount == 1 {
+			for _, chunk := range []string{
+				fake.ToolCallDelta(0, "call_1", "read", `{"path":"x"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		} else {
+			for _, chunk := range []string{
+				fake.TextDelta("tool is disabled"),
+				fake.Finish("stop"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}))
+	defer srv.Close()
+
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OG_BASE_URL=" + srv.URL,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "read x")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "tool is disabled") {
+		t.Errorf("stdout = %q, want it to contain 'tool is disabled'", stdout)
+	}
+}

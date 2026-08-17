@@ -27,13 +27,30 @@ type Client interface {
 type Request struct {
 	Model    string
 	Messages []Message
+	Tools    []ToolDef
 }
 
-// Message is one canonical conversation message. v1 Content is a plain
-// string; tool-call fields land in a later ticket.
+// ToolDef describes one tool the model may call. Parameters is the JSON
+// Schema for the tool's arguments.
+type ToolDef struct {
+	Name        string
+	Description string
+	Parameters  map[string]any // JSON Schema object
+}
+
+// Message is one canonical conversation message.
 type Message struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolCalls  []ToolCall // assistant message carrying tool calls
+	ToolCallID string     // tool result message linking back to the call
+}
+
+// ToolCall is one function call the model requests.
+type ToolCall struct {
+	ID       string
+	Name     string
+	Arguments string // raw JSON arguments
 }
 
 // Roles in the canonical conversation.
@@ -41,6 +58,7 @@ const (
 	RoleSystem    = "system"
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
+	RoleTool      = "tool"
 )
 
 // EventKind discriminates the payload of an Event.
@@ -56,15 +74,18 @@ const (
 	EventUsage
 	// EventError is a terminal mid-stream failure.
 	EventError
+	// EventToolCall carries a completed tool call from the model.
+	EventToolCall
 )
 
 // Event is one normalized step of a streamed response.
 type Event struct {
-	Kind  EventKind
-	Text  string       // EventText
-	Usage Usage        // EventUsage
-	End   FinishReason // EventFinish
-	Err   error        // EventError
+	Kind      EventKind
+	Text      string       // EventText
+	Usage     Usage        // EventUsage
+	End       FinishReason // EventFinish
+	Err       error        // EventError
+	ToolCalls []ToolCall   // EventToolCall
 }
 
 // FinishReason is the canonical end-of-response reason.

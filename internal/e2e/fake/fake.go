@@ -5,6 +5,7 @@
 package fake
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,6 +146,31 @@ func Usage(prompt, completion, total int) string {
 // content — the harness must drop these.
 func ReasoningDelta(text string) string {
 	return fmt.Sprintf(`{"id":"chatcmpl-1","object":"chat.completion.chunk","model":"m","choices":[{"index":0,"delta":{"reasoning_content":%q,"reasoning":%q,"content":null},"finish_reason":null}]}`, text, text)
+}
+
+// ToolCallDelta builds a chunk carrying a tool call delta. On the first chunk
+// for a tool call, include id and name; subsequent chunks can omit them and
+// just carry arguments.
+func ToolCallDelta(index int, id, name, arguments string) string {
+	tc := map[string]any{"index": index}
+	if id != "" {
+		tc["id"] = id
+	}
+	if name != "" {
+		tc["type"] = "function"
+		tc["function"] = map[string]any{"name": name, "arguments": arguments}
+	} else {
+		tc["function"] = map[string]any{"arguments": arguments}
+	}
+	delta := map[string]any{"tool_calls": []map[string]any{tc}}
+	choice := map[string]any{"index": 0, "delta": delta, "finish_reason": nil}
+	b, _ := json.Marshal(map[string]any{
+		"id":      "chatcmpl-1",
+		"object":  "chat.completion.chunk",
+		"model":   "m",
+		"choices": []map[string]any{choice},
+	})
+	return string(b)
 }
 
 // Done is the SSE terminator payload.

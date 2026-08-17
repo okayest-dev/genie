@@ -14,6 +14,8 @@ import (
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/llm/openai"
 	"github.com/okayest-dev/og/internal/session"
+	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/og/internal/tools/readtool"
 )
 
 const usage = `usage: og [-v] [-d] [-p prompt]
@@ -75,12 +77,31 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, sess); err != nil {
+
+	// Build the tool registry from config.
+	registry := buildRegistry(cwd, cfg.Tools)
+
+	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stderr, "session: %s\n", sess.ID)
 	return 0
+}
+
+// buildRegistry creates the tool registry, registering available tools and
+// disabling any that are turned off in config.
+func buildRegistry(cwd string, cfgTools config.Tools) *tools.Registry {
+	reg := tools.NewRegistry()
+
+	// Register the read tool.
+	reg.Register(readtool.New(cwd))
+
+	if !cfgTools.Read {
+		reg.Disable("read")
+	}
+
+	return reg
 }
 
 // configureSlog sets up the global slog handler. LevelWarn means silent (no

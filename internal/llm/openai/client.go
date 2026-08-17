@@ -41,12 +41,15 @@ func NewClient(baseURL, apiKey string) *Client {
 // error; mid-stream failures surface as a terminal error event.
 func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Event], error) {
 	payload, err := json.Marshal(map[string]any{
-		"model":    req.Model,
-		"messages": messagesToWire(req.Messages),
-		"stream":   true,
+		"model":              req.Model,
+		"messages":           messagesToWire(req.Messages),
+		"stream":             true,
+		"parallel_tool_calls": false,
 		"stream_options": map[string]any{
 			"include_usage": true,
 		},
+		"tools":        toolsToWire(req.Tools),
+		"tool_choice":  "auto",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -60,6 +63,8 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 	return func(yield func(llm.Event) bool) {
 		defer resp.Body.Close()
 		scanner := newSSEScanner(resp.Body)
+		toolCalls := make(map[int]*llm.ToolCall) // accumulated by index
+		var hasToolCalls bool
 		for scanner.Scan() {
 			if ctx.Err() != nil {
 				return
@@ -82,6 +87,26 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 				}
 				return
 			}
+			// Accumulate tool call deltas from this chunk.
+			for _, choice := range ch.Choices {
+				for _, tc := range choice.Delta.ToolCalls {
+					existing, ok := toolCalls[tc.Index]
+					if !ok {
+						existing = &llm.ToolCall{}
+						toolCalls[tc.Index] = existing
+					}
+					if tc.ID != "" {
+						existing.ID = tc.ID
+					}
+					if tc.Function.Name != "" {
+						existing.Name = tc.Function.Name
+					}
+					if tc.Function.Arguments != "" {
+						existing.Arguments += tc.Function.Arguments
+					}
+					hasToolCalls = true
+				}
+			}
 			for _, ev := range parseChunk(ch) {
 				switch ev.Kind {
 				case llm.EventText:
@@ -92,6 +117,19 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 					slog.Debug("sse chunk", "kind", "text", "preview", preview)
 				case llm.EventFinish:
 					slog.Debug("sse chunk", "kind", "finish", "reason", string(ev.End))
+					// When finish reason is tool_calls, emit the accumulated calls.
+					if ev.End == llm.FinishToolCalls && hasToolCalls {
+						calls := make([]llm.ToolCall, 0, len(toolCalls))
+						for i := 0; i < len(toolCalls); i++ {
+							if tc, ok := toolCalls[i]; ok {
+								calls = append(calls, *tc)
+							}
+						}
+						slog.Debug("sse tool calls accumulated", "count", len(calls))
+						if !yield(llm.Event{Kind: llm.EventToolCall, ToolCalls: calls}) {
+							return
+						}
+					}
 				case llm.EventUsage:
 					slog.Debug("sse usage",
 						"prompt_tokens", ev.Usage.PromptTokens,
@@ -198,20 +236,71 @@ func errorFromStatus(resp *http.Response) error {
 }
 
 // messagesToWire maps canonical messages to the wire's message objects.
-func messagesToWire(messages []llm.Message) []map[string]string {
-	out := make([]map[string]string, 0, len(messages))
+func messagesToWire(messages []llm.Message) []map[string]any {
+	out := make([]map[string]any, 0, len(messages))
 	for _, m := range messages {
-		out = append(out, map[string]string{"role": m.Role, "content": m.Content})
+		msg := map[string]any{"role": m.Role, "content": m.Content}
+		if m.Role == llm.RoleAssistant && len(m.ToolCalls) > 0 {
+			calls := make([]map[string]any, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				calls = append(calls, map[string]any{
+					"id":   tc.ID,
+					"type": "function",
+					"function": map[string]any{
+						"name":      tc.Name,
+						"arguments": tc.Arguments,
+					},
+				})
+			}
+			msg["tool_calls"] = calls
+		}
+		if m.Role == llm.RoleTool && m.ToolCallID != "" {
+			msg["tool_call_id"] = m.ToolCallID
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+// toolsToWire maps tool definitions to the wire's tools array. A nil or
+// empty slice produces nil, which omits the field from the JSON payload.
+func toolsToWire(tools []llm.ToolDef) any {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        t.Name,
+				"description": t.Description,
+				"parameters":  t.Parameters,
+			},
+		})
 	}
 	return out
 }
 
 // Wire types for chat.completion.chunk parsing.
 
+type toolCallDelta struct {
+	Index    int               `json:"index"`
+	ID       string            `json:"id"`
+	Type     string            `json:"type"`
+	Function functionDelta    `json:"function"`
+}
+
+type functionDelta struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
 type delta struct {
 	// Reasoning and refusal fields are deliberately not decoded: unknown
 	// fields are dropped at the seam.
-	Content *string `json:"content"`
+	Content   *string          `json:"content"`
+	ToolCalls []toolCallDelta  `json:"tool_calls"`
 }
 
 type choice struct {
