@@ -15,7 +15,9 @@ import (
 	"github.com/okayest-dev/og/internal/llm/openai"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/og/internal/tools/edittool"
 	"github.com/okayest-dev/og/internal/tools/readtool"
+	"github.com/okayest-dev/og/internal/tools/writetool"
 )
 
 const usage = `usage: og [-v] [-d] [-p prompt]
@@ -94,11 +96,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 func buildRegistry(cwd string, cfgTools config.Tools) *tools.Registry {
 	reg := tools.NewRegistry()
 
-	// Register the read tool.
+	// Register tools.
 	reg.Register(readtool.New(cwd))
+	reg.Register(writetool.New(cwd, tools.AutoDeny{}))
+	reg.Register(edittool.New(cwd))
 
+	// Disable tools turned off in config.
 	if !cfgTools.Read {
 		reg.Disable("read")
+	}
+	if !cfgTools.Write {
+		reg.Disable("write")
+	}
+	if !cfgTools.Edit {
+		reg.Disable("edit")
 	}
 
 	return reg

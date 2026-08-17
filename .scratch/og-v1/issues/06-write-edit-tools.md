@@ -4,10 +4,10 @@
 
 **Blocked by:** 05 — Agent tool loop + read.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] `write` to a new file proceeds without confirmation and auto-creates parent directories.
-- [ ] `write` over the 1MB cap is rejected with a clear error.
-- [ ] `write` to an existing file goes through the confirm gate; a denial feeds back and the loop continues.
-- [ ] `edit` applies exactly one `oldText`→`newText` replacement; not-found and ambiguous matches are rejected with clear errors; the file's line endings survive.
-- [ ] A single agent turn scaffolds a file and then fixes it via `edit`.
+- [x] `write` to a new file proceeds without confirmation and auto-creates parent directories.
+- [x] `write` over the 1MB cap is rejected with a clear error.
+- [x] `write` to an existing file goes through the confirm gate; a denial feeds back and the loop continues.
+- [x] `edit` applies exactly one `oldText`→`newText` replacement; not-found and ambiguous matches are rejected with clear errors; the file's line endings survive.
+- [x] A single agent turn scaffolds a file and then fixes it via `edit`.
