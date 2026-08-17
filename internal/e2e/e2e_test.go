@@ -208,8 +208,9 @@ func TestStreamsReply(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
-	if stderr != "" {
-		t.Errorf("stderr = %q, want empty", stderr)
+	// stderr may contain the session id line, but no other output
+	if strings.Contains(stderr, "Error:") || strings.Contains(stderr, "verbose") {
+		t.Errorf("stderr = %q, want no errors or verbose output", stderr)
 	}
 	if stdout != "Hello, world\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "Hello, world\n")
@@ -623,8 +624,9 @@ func TestNoFlagsStderrEmpty(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	if stderr != "" {
-		t.Errorf("stderr = %q, want empty when no -v or -d flag", stderr)
+	// stderr may contain the session id line, but no other output
+	if strings.Contains(stderr, "Error:") || strings.Contains(stderr, "verbose") {
+		t.Errorf("stderr = %q, want no errors or verbose output when no -v or -d flag", stderr)
 	}
 }
 
@@ -742,5 +744,75 @@ func TestDebugShowsDebugMessages(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr missing %q with -d:\n%s", want, stderr)
 		}
+	}
+}
+
+func TestSessionPersistence(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("hello"), fake.Finish("stop"), fake.Done},
+	})
+	sessionDir := t.TempDir()
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_SESSION_DIR="+sessionDir), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "hello\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "hello\n")
+	}
+
+	// Verify session id is printed to stderr
+	if !strings.Contains(stderr, "session:") {
+		t.Errorf("stderr missing session id: %q", stderr)
+	}
+
+	// Check that a session file was created
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("session dir has %d entries, want 1", len(entries))
+	}
+	if !strings.HasSuffix(entries[0].Name(), ".jsonl") {
+		t.Errorf("session file = %q, want .jsonl suffix", entries[0].Name())
+	}
+
+	// Read and verify the transcript content
+	data, err := os.ReadFile(filepath.Join(sessionDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	transcript := string(data)
+
+	// Verify system message
+	if !strings.Contains(transcript, `"role":"system"`) {
+		t.Errorf("transcript missing system message")
+	}
+	if !strings.Contains(transcript, `"content":"You are og, a helpful terminal agent."`) {
+		t.Errorf("transcript missing system prompt content")
+	}
+
+	// Verify user message
+	if !strings.Contains(transcript, `"role":"user"`) {
+		t.Errorf("transcript missing user message")
+	}
+	if !strings.Contains(transcript, `"content":"hi"`) {
+		t.Errorf("transcript missing user message content")
+	}
+
+	// Verify assistant message
+	if !strings.Contains(transcript, `"role":"assistant"`) {
+		t.Errorf("transcript missing assistant message")
+	}
+	if !strings.Contains(transcript, `"content":"hello"`) {
+		t.Errorf("transcript missing assistant message content")
+	}
+
+	// Verify message order (system before user, user before assistant)
+	sysIdx := strings.Index(transcript, `"role":"system"`)
+	userIdx := strings.Index(transcript, `"role":"user"`)
+	assistantIdx := strings.Index(transcript, `"role":"assistant"`)
+	if sysIdx >= userIdx || userIdx >= assistantIdx {
+		t.Errorf("messages out of order: system=%d, user=%d, assistant=%d", sysIdx, userIdx, assistantIdx)
 	}
 }

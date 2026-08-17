@@ -13,6 +13,7 @@ import (
 	"github.com/okayest-dev/og/internal/config"
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/llm/openai"
+	"github.com/okayest-dev/og/internal/session"
 )
 
 const usage = `usage: og [-v] [-d] [-p prompt]
@@ -69,10 +70,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	client := openai.NewClient(cfg.BaseURL, cfg.APIKey)
-	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout); err != nil {
+	sess, err := session.New(cfg.SessionDir)
+	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, sess); err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "session: %s\n", sess.ID)
 	return 0
 }
 

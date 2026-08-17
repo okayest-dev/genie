@@ -46,7 +46,7 @@ func TestRunTurnLogsTurnStarted(t *testing.T) {
 		{Kind: llm.EventFinish, End: llm.FinishStop},
 	}}
 	var out bytes.Buffer
-	if err := RunTurn(context.Background(), c, "test-model", "sys", "hi", &out); err != nil {
+	if err := RunTurn(context.Background(), c, "test-model", "sys", "hi", &out, nil); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	if !strings.Contains(buf.String(), "turn started") {
@@ -65,7 +65,7 @@ func TestRunTurnLogsTurnCompleted(t *testing.T) {
 		{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8}},
 	}}
 	var out bytes.Buffer
-	if err := RunTurn(context.Background(), c, "m", "sys", "prompt", &out); err != nil {
+	if err := RunTurn(context.Background(), c, "m", "sys", "prompt", &out, nil); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	logged := buf.String()
