@@ -14,6 +14,7 @@ import (
 	"github.com/okayest-dev/og/internal/config"
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/llm/openai"
+	"github.com/okayest-dev/og/internal/repl"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
 	"github.com/okayest-dev/og/internal/tools/bashtool"
@@ -33,6 +34,8 @@ Flags:
 
 Environment:
   OG_DEBUG    enable debug mode (true/1/yes)
+
+Without -p, og starts an interactive REPL.
 `
 
 func main() {
@@ -47,10 +50,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	verbose := fs.Bool("v", false, "verbose output")
 	debug := fs.Bool("d", false, "debug output (implies -v)")
 	if err := fs.Parse(args); err != nil {
-		return 3
-	}
-	if *prompt == "" {
-		fs.Usage()
 		return 3
 	}
 
@@ -76,14 +75,35 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	client := openai.NewClient(cfg.BaseURL, cfg.APIKey)
+
+	// Build the tool registry from config.
+	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
+
+	// No -p flag: start the interactive REPL.
+	if *prompt == "" {
+		err := repl.Run(context.Background(), repl.Config{
+			Client:      client,
+			Model:       cfg.Model,
+			Instruction: instruction,
+			SessionDir:  cfg.SessionDir,
+			Registry:    registry,
+			Stdin:       os.Stdin,
+			Stdout:      stdout,
+			Stderr:      stderr,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	// -p flag: run a single prompt and exit.
 	sess, err := session.New(cfg.SessionDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	// Build the tool registry from config.
-	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
 
 	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
