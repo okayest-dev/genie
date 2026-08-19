@@ -248,6 +248,20 @@ func TestComputeDelta(t *testing.T) {
 	}
 }
 
+func TestComputeDiffReorderedLines(t *testing.T) {
+	old := "a\nb\nc"
+	new := "c\nb\na"
+	diff := computeDiff("test.txt", old, new)
+	if diff == "" {
+		t.Fatal("diff should not be empty for reordered lines")
+	}
+	removed := strings.Count(diff, "\n-")
+	added := strings.Count(diff, "\n+")
+	if removed == 0 || added == 0 {
+		t.Errorf("diff should show both removals and additions for reorder: %q", diff)
+	}
+}
+
 func TestSpillDiff(t *testing.T) {
 	dir := t.TempDir()
 	l := New(dir, "test-session")

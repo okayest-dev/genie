@@ -231,42 +231,90 @@ func computeDiff(path, old, new string) string {
 		}
 		return diff.String()
 	}
-	// Simple line-based diff.
+
 	oldLines := strings.Split(old, "\n")
 	newLines := strings.Split(new, "\n")
 
+	// Compute LCS to find longest common subsequence.
+	lcs := computeLCS(oldLines, newLines)
+
+	// Build diff from LCS.
 	var diff strings.Builder
 	fmt.Fprintf(&diff, "--- a/%s\n+++ b/%s\n", path, path)
 
-	// Simple approach: show removed and added lines.
-	removed := 0
-	added := 0
-	for _, line := range oldLines {
-		if !contains(newLines, line) {
-			removed++
+	i, j, k := 0, 0, 0
+	for k < len(lcs) {
+		// Output removed lines (old lines not in LCS).
+		for i < len(oldLines) && oldLines[i] != lcs[k] {
+			fmt.Fprintf(&diff, "-%s\n", oldLines[i])
+			i++
 		}
-	}
-	for _, line := range newLines {
-		if !contains(oldLines, line) {
-			added++
+		// Output added lines (new lines not in LCS).
+		for j < len(newLines) && newLines[j] != lcs[k] {
+			fmt.Fprintf(&diff, "+%s\n", newLines[j])
+			j++
 		}
+		// Output kept line.
+		fmt.Fprintf(&diff, " %s\n", oldLines[i])
+		i++
+		j++
+		k++
 	}
 
-	fmt.Fprintf(&diff, "@@ -1,%d +1,%d @@\n", len(oldLines), len(newLines))
-	for _, line := range oldLines {
-		if contains(newLines, line) {
-			fmt.Fprintf(&diff, " %s\n", line)
-		} else {
-			fmt.Fprintf(&diff, "-%s\n", line)
-		}
+	// Output remaining removed lines.
+	for i < len(oldLines) {
+		fmt.Fprintf(&diff, "-%s\n", oldLines[i])
+		i++
 	}
-	for _, line := range newLines {
-		if !contains(oldLines, line) {
-			fmt.Fprintf(&diff, "+%s\n", line)
-		}
+	// Output remaining added lines.
+	for j < len(newLines) {
+		fmt.Fprintf(&diff, "+%s\n", newLines[j])
+		j++
 	}
 
 	return diff.String()
+}
+
+// computeLCS computes the longest common subsequence of two string slices.
+func computeLCS(a, b []string) []string {
+	m, n := len(a), len(b)
+	// Build DP table.
+	dp := make([][]int, m+1)
+	for i := range dp {
+		dp[i] = make([]int, n+1)
+	}
+	for i := 1; i <= m; i++ {
+		for j := 1; j <= n; j++ {
+			if a[i-1] == b[j-1] {
+				dp[i][j] = dp[i-1][j-1] + 1
+			} else if dp[i-1][j] > dp[i][j-1] {
+				dp[i][j] = dp[i-1][j]
+			} else {
+				dp[i][j] = dp[i][j-1]
+			}
+		}
+	}
+
+	// Backtrack to find LCS.
+	lcs := make([]string, 0, dp[m][n])
+	i, j := m, n
+	for i > 0 && j > 0 {
+		if a[i-1] == b[j-1] {
+			lcs = append(lcs, a[i-1])
+			i--
+			j--
+		} else if dp[i-1][j] > dp[i][j-1] {
+			i--
+		} else {
+			j--
+		}
+	}
+
+	// Reverse LCS (we built it backwards).
+	for i, j := 0, len(lcs)-1; i < j; i, j = i+1, j-1 {
+		lcs[i], lcs[j] = lcs[j], lcs[i]
+	}
+	return lcs
 }
 
 // computeDelta extracts added/removed line counts from a diff.
@@ -280,14 +328,4 @@ func computeDelta(diff string) Delta {
 		}
 	}
 	return d
-}
-
-// contains checks if a string slice contains a value.
-func contains(slice []string, s string) bool {
-	for _, v := range slice {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
