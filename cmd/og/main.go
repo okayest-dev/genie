@@ -14,6 +14,7 @@ import (
 	"github.com/okayest-dev/og/internal/config"
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/llm"
+	_ "github.com/okayest-dev/og/internal/llm/google"
 	_ "github.com/okayest-dev/og/internal/llm/openai"
 	"github.com/okayest-dev/og/internal/repl"
 	"github.com/okayest-dev/og/internal/session"

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/okayest-dev/og/internal/llm"
+	_ "github.com/okayest-dev/og/internal/llm/google"
 	_ "github.com/okayest-dev/og/internal/llm/openai"
 )
 
@@ -31,5 +32,15 @@ func TestNewClientUnknownWireReturnsError(t *testing.T) {
 	_, err := llm.NewClient("anthropic", "https://example.com/v1", "key")
 	if err == nil {
 		t.Fatal("NewClient with unknown wire should return error")
+	}
+}
+
+func TestNewClientGoogle(t *testing.T) {
+	c, err := llm.NewClient(llm.WireGoogle, "https://example.com/v1", "key")
+	if err != nil {
+		t.Fatalf("NewClient(%q): %v", llm.WireGoogle, err)
+	}
+	if c == nil {
+		t.Fatal("NewClient returned nil client")
 	}
 }
