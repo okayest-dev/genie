@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/okayest-dev/og/internal/agent"
 	"github.com/okayest-dev/og/internal/config"
@@ -15,6 +16,7 @@ import (
 	"github.com/okayest-dev/og/internal/llm/openai"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/og/internal/tools/bashtool"
 	"github.com/okayest-dev/og/internal/tools/edittool"
 	"github.com/okayest-dev/og/internal/tools/readtool"
 	"github.com/okayest-dev/og/internal/tools/writetool"
@@ -81,7 +83,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Build the tool registry from config.
-	registry := buildRegistry(cwd, cfg.Tools)
+	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
 
 	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -93,13 +95,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 // buildRegistry creates the tool registry, registering available tools and
 // disabling any that are turned off in config.
-func buildRegistry(cwd string, cfgTools config.Tools) *tools.Registry {
+func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration) *tools.Registry {
 	reg := tools.NewRegistry()
 
 	// Register tools.
 	reg.Register(readtool.New(cwd))
 	reg.Register(writetool.New(cwd, tools.AutoDeny{}))
 	reg.Register(edittool.New(cwd))
+	reg.Register(bashtool.New(cwd, tools.AutoDeny{}, bashTimeout))
 
 	// Disable tools turned off in config.
 	if !cfgTools.Read {
@@ -110,6 +113,9 @@ func buildRegistry(cwd string, cfgTools config.Tools) *tools.Registry {
 	}
 	if !cfgTools.Edit {
 		reg.Disable("edit")
+	}
+	if !cfgTools.Bash {
+		reg.Disable("bash")
 	}
 
 	return reg
