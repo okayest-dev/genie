@@ -53,6 +53,12 @@ func TestPureDefaults(t *testing.T) {
 			t.Errorf("Tools.%s = false, want true by default", name)
 		}
 	}
+	if cfg.Wire != "" {
+		t.Errorf("Wire = %q, want empty (auto-detect by default)", cfg.Wire)
+	}
+	if cfg.Gateway != "" {
+		t.Errorf("Gateway = %q, want empty by default", cfg.Gateway)
+	}
 }
 
 // fullConfig is a config file that sets every v1 key.
@@ -348,5 +354,79 @@ func TestParseDoesNotLogAPIKeyValue(t *testing.T) {
 	out := buf.String()
 	if strings.Contains(out, "secret-key") {
 		t.Errorf("log output must not contain API key value:\n%s", out)
+	}
+}
+
+func TestWireAndGatewayFromFile(t *testing.T) {
+	cfg, err := Parse([]byte(`wire = "anthropic"
+gateway = "https://gateway.example.com"
+`), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Wire != "anthropic" {
+		t.Errorf("Wire = %q, want %q", cfg.Wire, "anthropic")
+	}
+	if cfg.Gateway != "https://gateway.example.com" {
+		t.Errorf("Gateway = %q, want %q", cfg.Gateway, "https://gateway.example.com")
+	}
+}
+
+func TestOGWireEnvBeatsFile(t *testing.T) {
+	cfg, err := Parse([]byte(`wire = "openai"
+`), "/home/u", env("OG_WIRE", "google"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Wire != "google" {
+		t.Errorf("Wire = %q, want %q (OG_WIRE env should override file)", cfg.Wire, "google")
+	}
+}
+
+func TestOGGatewayEnvBeatsFile(t *testing.T) {
+	cfg, err := Parse([]byte(`gateway = "https://file-gateway.example.com"
+`), "/home/u", env("OG_GATEWAY", "https://env-gateway.example.com"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Gateway != "https://env-gateway.example.com" {
+		t.Errorf("Gateway = %q, want %q (OG_GATEWAY env should override file)", cfg.Gateway, "https://env-gateway.example.com")
+	}
+}
+
+func TestEmptyOGWireEnvDoesNotOverrideFile(t *testing.T) {
+	cfg, err := Parse([]byte(`wire = "anthropic"
+`), "/home/u", env("OG_WIRE", ""))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Wire != "anthropic" {
+		t.Errorf("Wire = %q, want %q (empty env must not override)", cfg.Wire, "anthropic")
+	}
+}
+
+func TestEmptyOGGatewayEnvDoesNotOverrideFile(t *testing.T) {
+	cfg, err := Parse([]byte(`gateway = "https://file-gw.example.com"
+`), "/home/u", env("OG_GATEWAY", ""))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Gateway != "https://file-gw.example.com" {
+		t.Errorf("Gateway = %q, want %q (empty env must not override)", cfg.Gateway, "https://file-gw.example.com")
+	}
+}
+
+func TestInvalidWireNameFailsFast(t *testing.T) {
+	_, err := Parse([]byte(`wire = "typo"
+`), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted unknown wire name; want an error")
+	}
+}
+
+func TestInvalidWireNameFromEnvFailsFast(t *testing.T) {
+	_, err := Parse(nil, "/home/u", env("OG_WIRE", "bogus"))
+	if err == nil {
+		t.Fatal("Parse accepted unknown wire name from env; want an error")
 	}
 }

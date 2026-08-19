@@ -17,6 +17,15 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// validWire is the set of wire names accepted by the config. Must stay in
+// sync with the llm.Wire* constants.
+var validWire = map[string]bool{
+	"openai":    true,
+	"anthropic": true,
+	"responses": true,
+	"google":    true,
+}
+
 // Defaults for every configurable scalar.
 const (
 	defaultModel       = "big-pickle"
@@ -47,6 +56,11 @@ type Config struct {
 	APIKeyEnv string
 	// APIKey is the resolved key read from the env var named by APIKeyEnv.
 	APIKey string
+	// Wire selects the wire implementation. Empty means auto-detect from
+	// the model ID prefix.
+	Wire string
+	// Gateway is an optional URL override for the provider gateway.
+	Gateway string
 	// InstructionFile is an optional agent-instruction source loaded after
 	// the built-in default. Unset means none.
 	InstructionFile string
@@ -65,6 +79,8 @@ type fileConfig struct {
 	Model           string    `toml:"model"`
 	BaseURL         string    `toml:"base_url"`
 	APIKeyEnv       string    `toml:"api_key_env"`
+	Wire            string    `toml:"wire"`
+	Gateway         string    `toml:"gateway"`
 	InstructionFile string    `toml:"instruction_file"`
 	SessionDir      string    `toml:"session_dir"`
 	BashTimeout     *int      `toml:"bash_timeout"` // seconds
@@ -106,6 +122,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		if fc.APIKeyEnv != "" {
 			cfg.APIKeyEnv = fc.APIKeyEnv
 		}
+		if fc.Wire != "" {
+			cfg.Wire = fc.Wire
+		}
+		if fc.Gateway != "" {
+			cfg.Gateway = fc.Gateway
+		}
 		cfg.InstructionFile = fc.InstructionFile
 		if fc.SessionDir != "" {
 			cfg.SessionDir = fc.SessionDir
@@ -124,6 +146,10 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		return nil, err
 	}
 	cfg.APIKey = env[cfg.APIKeyEnv]
+
+	if cfg.Wire != "" && !validWire[cfg.Wire] {
+		return nil, fmt.Errorf("config: unknown wire %q", cfg.Wire)
+	}
 
 	slog.Info("config loaded",
 		"model", cfg.Model,
@@ -215,6 +241,14 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	if v := env["OG_API_KEY_ENV"]; v != "" {
 		cfg.APIKeyEnv = v
 		applied = append(applied, "OG_API_KEY_ENV")
+	}
+	if v := env["OG_WIRE"]; v != "" {
+		cfg.Wire = v
+		applied = append(applied, "OG_WIRE")
+	}
+	if v := env["OG_GATEWAY"]; v != "" {
+		cfg.Gateway = v
+		applied = append(applied, "OG_GATEWAY")
 	}
 	if v := env["OG_INSTRUCTION_FILE"]; v != "" {
 		cfg.InstructionFile = v

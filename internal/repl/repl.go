@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/okayest-dev/og/internal/agent"
-	"github.com/okayest-dev/og/internal/llm/openai"
+	"github.com/okayest-dev/og/internal/llm"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
 )
@@ -22,7 +22,7 @@ const prompt = "og> "
 
 // Config holds the dependencies for running the REPL.
 type Config struct {
-	Client      *openai.Client
+	Client      llm.Client
 	Model       string
 	Instruction string
 	SessionDir  string

@@ -18,6 +18,12 @@ import (
 	"github.com/okayest-dev/og/internal/llm"
 )
 
+func init() {
+	llm.RegisterWire(llm.WireOpenAI, func(baseURL, apiKey string) llm.Client {
+		return NewClient(baseURL, apiKey)
+	})
+}
+
 // Client is an OpenAI-compatible chat/completions client.
 type Client struct {
 	baseURL    string

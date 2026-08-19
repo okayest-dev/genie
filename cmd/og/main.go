@@ -13,7 +13,8 @@ import (
 	"github.com/okayest-dev/og/internal/agent"
 	"github.com/okayest-dev/og/internal/config"
 	"github.com/okayest-dev/og/internal/instruct"
-	"github.com/okayest-dev/og/internal/llm/openai"
+	"github.com/okayest-dev/og/internal/llm"
+	_ "github.com/okayest-dev/og/internal/llm/openai"
 	"github.com/okayest-dev/og/internal/repl"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
@@ -74,7 +75,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-	client := openai.NewClient(cfg.BaseURL, cfg.APIKey)
+	wire := cfg.Wire
+	if wire == "" {
+		wire = llm.DetectWire(cfg.Model)
+	}
+	baseURL := cfg.BaseURL
+	if cfg.Gateway != "" {
+		baseURL = cfg.Gateway
+	}
+	client, err := llm.NewClient(wire, baseURL, cfg.APIKey)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
 
 	// Build the tool registry from config.
 	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
