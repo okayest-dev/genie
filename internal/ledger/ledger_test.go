@@ -300,3 +300,114 @@ func TestSpillDiffUniquePaths(t *testing.T) {
 		t.Errorf("spill paths collide: %s == %s", path1, path2)
 	}
 }
+
+func TestNoEntryForSnapshotWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	// Snapshot without RecordMutation should produce no entry.
+	l.RecordToolCall("call_1")
+	l.Snapshot("test.txt", "old content")
+	// No RecordMutation call.
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	path := filepath.Join(dir, "test-session.changes.jsonl")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("ledger file should not exist when no mutations recorded")
+	}
+}
+
+func TestNoEntryForToolCallWithoutSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	// RecordToolCall without Snapshot/RecordMutation should produce no entry.
+	l.RecordToolCall("call_1")
+	// No Snapshot or RecordMutation calls.
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	path := filepath.Join(dir, "test-session.changes.jsonl")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("ledger file should not exist when no mutations recorded")
+	}
+}
+
+func TestSpillTruncationMessageRecorded(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	// Create a huge diff that will be truncated.
+	var diff strings.Builder
+	for i := 0; i < maxDiffLines+100; i++ {
+		diff.WriteString("+added line\n")
+	}
+
+	l.RecordToolCall("call_1")
+	l.Snapshot("test.txt", "old")
+	l.RecordMutation("test.txt", "old", diff.String(), OpOverwrite)
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	path := filepath.Join(dir, "test-session.changes.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+
+	var batch Batch
+	if err := json.Unmarshal(data, &batch); err != nil {
+		t.Fatalf("unmarshal batch: %v", err)
+	}
+
+	if len(batch.Files) != 1 {
+		t.Fatalf("files = %d, want 1", len(batch.Files))
+	}
+	if !strings.Contains(batch.Files[0].Diff, "[truncated") {
+		t.Errorf("diff should contain truncation message: %q", batch.Files[0].Diff)
+	}
+}
+
+func TestMultipleEditsCollapseDiffContent(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	l.RecordToolCall("call_1")
+	l.RecordToolCall("call_2")
+	l.Snapshot("test.txt", "original")
+	l.RecordMutation("test.txt", "original", "modified once", OpEdit)
+	l.RecordMutation("test.txt", "modified once", "modified twice", OpEdit)
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	path := filepath.Join(dir, "test-session.changes.jsonl")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read ledger: %v", err)
+	}
+
+	var batch Batch
+	if err := json.Unmarshal(data, &batch); err != nil {
+		t.Fatalf("unmarshal batch: %v", err)
+	}
+
+	if len(batch.Files) != 1 {
+		t.Fatalf("files = %d, want 1 (collapsed)", len(batch.Files))
+	}
+	// The diff should show original -> modified twice (collapsed).
+	if !strings.Contains(batch.Files[0].Diff, "-original") {
+		t.Errorf("diff should show original content removed: %q", batch.Files[0].Diff)
+	}
+	if !strings.Contains(batch.Files[0].Diff, "+modified twice") {
+		t.Errorf("diff should show final content added: %q", batch.Files[0].Diff)
+	}
+}

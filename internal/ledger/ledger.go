@@ -134,6 +134,10 @@ func (l *Ledger) Close() error {
 
 	// Compute diffs for each mutated file.
 	for _, m := range l.mutations {
+		// Skip mutations that were never completed (Snapshot without RecordMutation).
+		if m.Op == "" {
+			continue
+		}
 		diff := computeDiff(m.Path, m.OldContent, m.NewContent)
 		delta := computeDelta(diff)
 
