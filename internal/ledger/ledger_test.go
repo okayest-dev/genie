@@ -254,7 +254,7 @@ func TestSpillDiff(t *testing.T) {
 
 	// Create a large diff.
 	var diff strings.Builder
-	for i := 0; i < maxDiffLines + 100; i++ {
+	for i := 0; i < maxDiffLines+100; i++ {
 		diff.WriteString("+added line\n")
 	}
 
@@ -265,5 +265,24 @@ func TestSpillDiff(t *testing.T) {
 
 	if _, err := os.Stat(spillPath); os.IsNotExist(err) {
 		t.Errorf("spill file not created: %s", spillPath)
+	}
+}
+
+func TestSpillDiffUniquePaths(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	diff := "+line\n"
+	path1, err := l.spillDiff("a/foo.txt", diff)
+	if err != nil {
+		t.Fatalf("spillDiff 1: %v", err)
+	}
+	path2, err := l.spillDiff("b/foo.txt", diff)
+	if err != nil {
+		t.Fatalf("spillDiff 2: %v", err)
+	}
+
+	if path1 == path2 {
+		t.Errorf("spill paths collide: %s == %s", path1, path2)
 	}
 }

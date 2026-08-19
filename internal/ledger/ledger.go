@@ -4,6 +4,7 @@
 package ledger
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -195,9 +196,9 @@ func (l *Ledger) spillDiff(filePath, diff string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	// Use seq and basename for the spill file name.
-	base := filepath.Base(filePath)
-	name := fmt.Sprintf("%d-%s.diff", l.seq, base)
+	// Use seq and hash of full path for unique spill file name.
+	hash := sha256.Sum256([]byte(filePath))
+	name := fmt.Sprintf("%d-%x.diff", l.seq, hash[:8])
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(diff), 0o644); err != nil {
 		return "", err
