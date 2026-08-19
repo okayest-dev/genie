@@ -176,10 +176,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 								Path string `json:"path"`
 							}
 							if json.Unmarshal([]byte(tc.Arguments), &args) == nil && args.Path != "" {
-								absPath := args.Path
-								if !strings.HasPrefix(absPath, "/") {
-									absPath = cwd + "/" + absPath
-								}
+								absPath := resolvePath(args.Path, cwd)
 								if data, err := os.ReadFile(absPath); err == nil {
 									ldg.Snapshot(absPath, string(data))
 								} else {
@@ -196,10 +193,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 								Content string `json:"content"`
 							}
 							if json.Unmarshal([]byte(tc.Arguments), &args) == nil && args.Path != "" {
-								absPath := args.Path
-								if !strings.HasPrefix(absPath, "/") {
-									absPath = cwd + "/" + absPath
-								}
+								absPath := resolvePath(args.Path, cwd)
 								oldContent := ldg.GetSnapshot(absPath)
 								newContent := args.Content
 								if tc.Name == "edit" {
@@ -208,15 +202,15 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 										newContent = string(data)
 									}
 								}
-								ops := "overwrite"
+								op := ledger.OpOverwrite
 								if oldContent == "" {
-									ops = "create"
+									op = ledger.OpCreate
 								} else if newContent == "" {
-									ops = "delete"
+									op = ledger.OpDelete
 								} else {
-									ops = "edit"
+									op = ledger.OpEdit
 								}
-								ldg.RecordMutation(absPath, oldContent, newContent, ops)
+								ldg.RecordMutation(absPath, oldContent, newContent, op)
 							}
 						}
 					}
@@ -259,4 +253,12 @@ func truncateArgs(args string, max int) string {
 		return args
 	}
 	return args[:max] + "..."
+}
+
+// resolvePath resolves a file path relative to cwd if it's not already absolute.
+func resolvePath(path, cwd string) string {
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
+	return cwd + "/" + path
 }

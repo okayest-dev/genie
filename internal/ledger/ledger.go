@@ -13,9 +13,19 @@ import (
 )
 
 const (
-	maxDiffLines  = 2000
-	maxDiffBytes  = 50 << 10 // 50 KB
-	spillDirName  = ".og-changes"
+	maxDiffLines = 2000
+	maxDiffBytes = 50 << 10 // 50 KB
+	spillDirName = ".og-changes"
+)
+
+// Op represents the type of file operation.
+type Op string
+
+const (
+	OpCreate    Op = "create"
+	OpOverwrite Op = "overwrite"
+	OpEdit      Op = "edit"
+	OpDelete    Op = "delete"
 )
 
 // Batch is one ledger entry — all file changes from a single agent-loop cycle.
@@ -30,7 +40,7 @@ type Batch struct {
 // File represents one file's changes within a batch.
 type File struct {
 	Path  string `json:"path"`
-	Ops   string `json:"ops"`   // "create", "overwrite", "edit"
+	Ops   Op     `json:"ops"`
 	Diff  string `json:"diff"`  // unified diff text, or "[binary]"
 	Delta Delta  `json:"delta"` // line counts
 }
@@ -41,14 +51,22 @@ type Delta struct {
 	Removed int `json:"removed"`
 }
 
+// Mutation holds pre- and post-mutation state for a file within a cycle.
+type Mutation struct {
+	Path       string
+	OldContent string
+	NewContent string
+	Op         Op
+}
+
 // Ledger captures file mutations and writes batches to JSONL.
 type Ledger struct {
 	sessionDir string
 	sessionID  string
 	seq        int
-	// Per-cycle state: snapshots taken before mutations.
-	snapshots map[string]string // path -> pre-mutation content
-	toolIDs   []string          // tool call IDs in current cycle
+	// Per-cycle state: mutations tracked during the cycle.
+	mutations map[string]*Mutation // path -> mutation state
+	toolIDs   []string             // tool call IDs in current cycle
 }
 
 // New creates a ledger for the given session.
@@ -56,7 +74,7 @@ func New(sessionDir, sessionID string) *Ledger {
 	return &Ledger{
 		sessionDir: sessionDir,
 		sessionID:  sessionID,
-		snapshots:  make(map[string]string),
+		mutations:  make(map[string]*Mutation),
 	}
 }
 
@@ -64,12 +82,20 @@ func New(sessionDir, sessionID string) *Ledger {
 // tool execution for write/edit tools. If the file doesn't exist, snapshot
 // records an empty string (new file creation).
 func (l *Ledger) Snapshot(path, content string) {
-	l.snapshots[path] = content
+	m, ok := l.mutations[path]
+	if !ok {
+		m = &Mutation{Path: path}
+		l.mutations[path] = m
+	}
+	m.OldContent = content
 }
 
 // GetSnapshot retrieves the pre-mutation content recorded by Snapshot.
 func (l *Ledger) GetSnapshot(path string) string {
-	return l.snapshots[path]
+	if m, ok := l.mutations[path]; ok {
+		return m.OldContent
+	}
+	return ""
 }
 
 // RecordToolCall adds a tool call ID to the current cycle.
@@ -79,12 +105,16 @@ func (l *Ledger) RecordToolCall(id string) {
 
 // RecordMutation records that a file was successfully mutated. The oldContent
 // parameter is the pre-mutation content (from Snapshot). The newContent is
-// the post-mutation content.
-func (l *Ledger) RecordMutation(path, oldContent, newContent, ops string) {
-	// This is a placeholder — the actual diff computation happens at Close.
-	// For now, store the mutation info.
-	l.snapshots[path+"_new"] = newContent
-	l.snapshots[path+"_ops"] = ops
+// the post-mutation content. The op parameter specifies the operation type.
+// Actual diff computation happens at Close.
+func (l *Ledger) RecordMutation(path, oldContent, newContent string, op Op) {
+	m, ok := l.mutations[path]
+	if !ok {
+		m = &Mutation{Path: path}
+		l.mutations[path] = m
+	}
+	m.NewContent = newContent
+	m.Op = op
 }
 
 // Close computes diffs and writes the batch to the JSONL ledger file.
@@ -102,20 +132,13 @@ func (l *Ledger) Close() error {
 	}
 
 	// Compute diffs for each mutated file.
-	for path := range l.snapshots {
-		if strings.HasSuffix(path, "_new") || strings.HasSuffix(path, "_ops") {
-			continue
-		}
-		oldContent := l.snapshots[path]
-		newContent := l.snapshots[path+"_new"]
-		ops := l.snapshots[path+"_ops"]
-
-		diff := computeDiff(path, oldContent, newContent)
+	for _, m := range l.mutations {
+		diff := computeDiff(m.Path, m.OldContent, m.NewContent)
 		delta := computeDelta(diff)
 
 		// Truncate huge diffs with spill.
 		if len(diff) > maxDiffBytes || strings.Count(diff, "\n") > maxDiffLines {
-			spillPath, err := l.spillDiff(path, diff)
+			spillPath, err := l.spillDiff(m.Path, diff)
 			if err != nil {
 				return fmt.Errorf("spill diff: %w", err)
 			}
@@ -123,8 +146,8 @@ func (l *Ledger) Close() error {
 		}
 
 		batch.Files = append(batch.Files, File{
-			Path:  path,
-			Ops:   ops,
+			Path:  m.Path,
+			Ops:   m.Op,
 			Diff:  diff,
 			Delta: delta,
 		})
@@ -140,7 +163,7 @@ func (l *Ledger) Close() error {
 	}
 
 	l.seq++
-	l.snapshots = make(map[string]string)
+	l.mutations = make(map[string]*Mutation)
 	l.toolIDs = nil
 	return nil
 }

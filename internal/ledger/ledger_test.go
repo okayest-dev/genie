@@ -36,7 +36,7 @@ func TestSingleFileMutation(t *testing.T) {
 
 	l.RecordToolCall("call_1")
 	l.Snapshot("test.txt", "old content")
-	l.RecordMutation("test.txt", "old content", "new content", "overwrite")
+	l.RecordMutation("test.txt", "old content", "new content", OpOverwrite)
 
 	if err := l.Close(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -69,8 +69,8 @@ func TestSingleFileMutation(t *testing.T) {
 	if batch.Files[0].Path != "test.txt" {
 		t.Errorf("file path = %q, want %q", batch.Files[0].Path, "test.txt")
 	}
-	if batch.Files[0].Ops != "overwrite" {
-		t.Errorf("file ops = %q, want %q", batch.Files[0].Ops, "overwrite")
+	if batch.Files[0].Ops != OpOverwrite {
+		t.Errorf("file ops = %q, want %q", batch.Files[0].Ops, OpOverwrite)
 	}
 	if !strings.Contains(batch.Files[0].Diff, "-old content") {
 		t.Errorf("diff missing removed line: %q", batch.Files[0].Diff)
@@ -87,8 +87,8 @@ func TestMultipleEditsToOneFileCollapse(t *testing.T) {
 	l.RecordToolCall("call_1")
 	l.RecordToolCall("call_2")
 	l.Snapshot("test.txt", "original")
-	l.RecordMutation("test.txt", "original", "modified once", "edit")
-	l.RecordMutation("test.txt", "modified once", "modified twice", "edit")
+	l.RecordMutation("test.txt", "original", "modified once", OpEdit)
+	l.RecordMutation("test.txt", "modified once", "modified twice", OpEdit)
 
 	if err := l.Close(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -119,7 +119,7 @@ func TestNewFileCreate(t *testing.T) {
 
 	l.RecordToolCall("call_1")
 	l.Snapshot("new.txt", "") // Empty = new file
-	l.RecordMutation("new.txt", "", "file content", "create")
+	l.RecordMutation("new.txt", "", "file content", OpCreate)
 
 	if err := l.Close(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -136,8 +136,8 @@ func TestNewFileCreate(t *testing.T) {
 		t.Fatalf("unmarshal batch: %v", err)
 	}
 
-	if batch.Files[0].Ops != "create" {
-		t.Errorf("ops = %q, want %q", batch.Files[0].Ops, "create")
+	if batch.Files[0].Ops != OpCreate {
+		t.Errorf("ops = %q, want %q", batch.Files[0].Ops, OpCreate)
 	}
 	if !strings.Contains(batch.Files[0].Diff, "+++ b/new.txt") {
 		t.Errorf("diff missing new file header: %q", batch.Files[0].Diff)
@@ -150,7 +150,7 @@ func TestFileDelete(t *testing.T) {
 
 	l.RecordToolCall("call_1")
 	l.Snapshot("deleted.txt", "content to delete")
-	l.RecordMutation("deleted.txt", "content to delete", "", "delete")
+	l.RecordMutation("deleted.txt", "content to delete", "", OpDelete)
 
 	if err := l.Close(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -179,7 +179,7 @@ func TestMultipleBatchesIncrementSeq(t *testing.T) {
 	// First batch.
 	l.RecordToolCall("call_1")
 	l.Snapshot("a.txt", "old")
-	l.RecordMutation("a.txt", "old", "new", "edit")
+	l.RecordMutation("a.txt", "old", "new", OpEdit)
 	if err := l.Close(); err != nil {
 		t.Fatalf("close 1: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestMultipleBatchesIncrementSeq(t *testing.T) {
 	// Second batch.
 	l.RecordToolCall("call_2")
 	l.Snapshot("b.txt", "old")
-	l.RecordMutation("b.txt", "old", "new", "edit")
+	l.RecordMutation("b.txt", "old", "new", OpEdit)
 	if err := l.Close(); err != nil {
 		t.Fatalf("close 2: %v", err)
 	}
