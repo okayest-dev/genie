@@ -16,6 +16,7 @@ import (
 	"github.com/okayest-dev/og/internal/llm"
 	_ "github.com/okayest-dev/og/internal/llm/google"
 	_ "github.com/okayest-dev/og/internal/llm/openai"
+	_ "github.com/okayest-dev/og/internal/llm/responses"
 	"github.com/okayest-dev/og/internal/repl"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
