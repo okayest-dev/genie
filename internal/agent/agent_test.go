@@ -48,7 +48,7 @@ func TestRunTurnLogsTurnStarted(t *testing.T) {
 		{Kind: llm.EventFinish, End: llm.FinishStop},
 	}}
 	var out bytes.Buffer
-	if err := RunTurn(context.Background(), c, "test-model", "sys", "hi", &out, nil, nil, nil); err != nil {
+	if err := RunTurn(context.Background(), c, "test-model", "sys", "hi", &out, nil, nil, nil, nil, ""); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	if !strings.Contains(buf.String(), "turn started") {
@@ -67,7 +67,7 @@ func TestRunTurnLogsTurnCompleted(t *testing.T) {
 		{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8}},
 	}}
 	var out bytes.Buffer
-	if err := RunTurn(context.Background(), c, "m", "sys", "prompt", &out, nil, nil, nil); err != nil {
+	if err := RunTurn(context.Background(), c, "m", "sys", "prompt", &out, nil, nil, nil, nil, ""); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	logged := buf.String()
@@ -107,7 +107,7 @@ func TestRunTurnToolCallsExecutedSerially(t *testing.T) {
 	reg := newTestRegistry(t)
 
 	var out, errOut bytes.Buffer
-	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, reg); err != nil {
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, reg, nil, ""); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	if out.String() != "result\n" {
@@ -142,7 +142,7 @@ func TestRunTurnDisabledToolReturnsError(t *testing.T) {
 	reg := newTestRegistry(t)
 
 	var out bytes.Buffer
-	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, nil, nil, reg); err != nil {
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, nil, nil, reg, nil, ""); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	// The disabled tool error should flow back to the model, which then replies.
@@ -174,7 +174,7 @@ func TestRunTurnMalformedArgsRejected(t *testing.T) {
 	reg := newTestRegistry(t)
 
 	var out bytes.Buffer
-	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, nil, nil, reg); err != nil {
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, nil, nil, reg, nil, ""); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	if out.String() != "handled\n" {

@@ -106,7 +106,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry); err != nil {
+	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry, nil, cwd); err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}

@@ -83,7 +83,7 @@ func Run(ctx context.Context, cfg *Config) error {
 		// Run the turn in a goroutine so we can listen for Ctrl+C.
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- agent.RunTurn(turnCtx, cfg.Client, cfg.Model, cfg.Instruction, line, cfg.Stdout, cfg.Stderr, sess, cfg.Registry)
+			errCh <- agent.RunTurn(turnCtx, cfg.Client, cfg.Model, cfg.Instruction, line, cfg.Stdout, cfg.Stderr, sess, cfg.Registry, nil, "")
 		}()
 
 		// Wait for turn to complete or Ctrl+C.

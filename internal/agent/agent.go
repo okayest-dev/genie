@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 
+	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
@@ -22,8 +24,10 @@ import (
 // serially and feed results back. instruction is the assembled system
 // prompt. out receives text deltas; errOut receives tool framing headers.
 // If sess is non-nil, the conversation is persisted. If registry is nil,
-// no tools are sent and tool calls are not processed.
-func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry) error {
+// no tools are sent and tool calls are not processed. If ldg is non-nil,
+// file mutations are captured in the change ledger. cwd is the working
+// directory for resolving relative file paths.
+func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string) error {
 	messages := []llm.Message{
 		{Role: llm.RoleSystem, Content: instruction},
 		{Role: llm.RoleUser, Content: prompt},
@@ -166,7 +170,55 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 					if err := tools.ValidateArgs(json.RawMessage(tc.Arguments), tool.Parameters()); err != nil {
 						execErr = fmt.Errorf("invalid arguments for %s: %v", tc.Name, err)
 					} else {
+						// Snapshot pre-mutation content for write/edit tools.
+						if ldg != nil && (tc.Name == "write" || tc.Name == "edit") {
+							var args struct {
+								Path string `json:"path"`
+							}
+							if json.Unmarshal([]byte(tc.Arguments), &args) == nil && args.Path != "" {
+								absPath := args.Path
+								if !strings.HasPrefix(absPath, "/") {
+									absPath = cwd + "/" + absPath
+								}
+								if data, err := os.ReadFile(absPath); err == nil {
+									ldg.Snapshot(absPath, string(data))
+								} else {
+									ldg.Snapshot(absPath, "") // New file
+								}
+								ldg.RecordToolCall(tc.ID)
+							}
+						}
 						result, execErr = tool.Execute(json.RawMessage(tc.Arguments))
+						// Record successful mutations in ledger.
+						if ldg != nil && execErr == nil && (tc.Name == "write" || tc.Name == "edit") {
+							var args struct {
+								Path    string `json:"path"`
+								Content string `json:"content"`
+							}
+							if json.Unmarshal([]byte(tc.Arguments), &args) == nil && args.Path != "" {
+								absPath := args.Path
+								if !strings.HasPrefix(absPath, "/") {
+									absPath = cwd + "/" + absPath
+								}
+								oldContent := ldg.GetSnapshot(absPath)
+								newContent := args.Content
+								if tc.Name == "edit" {
+									// For edits, read the new content from the file.
+									if data, err := os.ReadFile(absPath); err == nil {
+										newContent = string(data)
+									}
+								}
+								ops := "overwrite"
+								if oldContent == "" {
+									ops = "create"
+								} else if newContent == "" {
+									ops = "delete"
+								} else {
+									ops = "edit"
+								}
+								ldg.RecordMutation(absPath, oldContent, newContent, ops)
+							}
+						}
 					}
 				}
 			}
