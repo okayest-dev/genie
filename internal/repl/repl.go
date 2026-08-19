@@ -34,7 +34,7 @@ type Config struct {
 
 // Run starts the interactive REPL loop. It reads user input, runs agent
 // turns, and handles slash commands. The REPL exits on /quit or EOF.
-func Run(ctx context.Context, cfg Config) error {
+func Run(ctx context.Context, cfg *Config) error {
 	sess, err := session.New(cfg.SessionDir)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -71,7 +71,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 		// Handle slash commands.
 		if strings.HasPrefix(line, "/") {
-			if handleSlashCommand(line, cfg, &sess) {
+			if handleSlashCommand(ctx, line, cfg, &sess) {
 				return nil
 			}
 			continue
@@ -103,7 +103,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 // handleSlashCommand processes a slash command and returns true if the REPL
 // should exit.
-func handleSlashCommand(line string, cfg Config, sess **session.Session) bool {
+func handleSlashCommand(ctx context.Context, line string, cfg *Config, sess **session.Session) bool {
 	parts := strings.SplitN(line, " ", 2)
 	cmd := strings.ToLower(parts[0])
 
@@ -113,9 +113,11 @@ func handleSlashCommand(line string, cfg Config, sess **session.Session) bool {
 
 	case "/help":
 		fmt.Fprintln(cfg.Stdout, "Commands:")
-		fmt.Fprintln(cfg.Stdout, "  /help    show this help")
-		fmt.Fprintln(cfg.Stdout, "  /quit    exit the REPL")
-		fmt.Fprintln(cfg.Stdout, "  /new     start a new session")
+		fmt.Fprintln(cfg.Stdout, "  /help         show this help")
+		fmt.Fprintln(cfg.Stdout, "  /quit         exit the REPL")
+		fmt.Fprintln(cfg.Stdout, "  /new          start a new session")
+		fmt.Fprintln(cfg.Stdout, "  /model        list available models")
+		fmt.Fprintln(cfg.Stdout, "  /model <id>   switch to a different model")
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
 
@@ -126,6 +128,46 @@ func handleSlashCommand(line string, cfg Config, sess **session.Session) bool {
 			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
 		} else {
 			fmt.Fprintf(cfg.Stderr, "session: %s\n", (*sess).ID)
+		}
+
+	case "/model":
+		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+			// List models.
+			models, err := cfg.Client.ListModels(ctx)
+			if err != nil {
+				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
+				return false
+			}
+			fmt.Fprintln(cfg.Stdout, "Available models:")
+			for _, m := range models {
+			_marker := "  "
+				if m.ID == cfg.Model {
+					_marker = "* "
+				}
+				fmt.Fprintf(cfg.Stdout, "%s%s\n", _marker, m.ID)
+			}
+			fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Model)
+		} else {
+			// Switch model.
+			target := strings.TrimSpace(parts[1])
+			models, err := cfg.Client.ListModels(ctx)
+			if err != nil {
+				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
+				return false
+			}
+			found := false
+			for _, m := range models {
+				if m.ID == target {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.Fprintf(cfg.Stdout, "og: no such model: %s\n", target)
+				return false
+			}
+			cfg.Model = target
+			fmt.Fprintf(cfg.Stdout, "model: %s\n", cfg.Model)
 		}
 
 	default:

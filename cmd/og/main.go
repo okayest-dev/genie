@@ -81,7 +81,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// No -p flag: start the interactive REPL.
 	if *prompt == "" {
-		err := repl.Run(context.Background(), repl.Config{
+		replCfg := &repl.Config{
 			Client:      client,
 			Model:       cfg.Model,
 			Instruction: instruction,
@@ -90,7 +90,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			Stdin:       os.Stdin,
 			Stdout:      stdout,
 			Stderr:      stderr,
-		})
+		}
+		err := repl.Run(context.Background(), replCfg)
 		if err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1

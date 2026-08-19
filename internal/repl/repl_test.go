@@ -9,7 +9,7 @@ import (
 
 func TestSlashHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	cfg := Config{
+	cfg := &Config{
 		Stdin:      strings.NewReader("/help\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -26,7 +26,7 @@ func TestSlashHelp(t *testing.T) {
 
 func TestSlashQuit(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	cfg := Config{
+	cfg := &Config{
 		Stdin:      strings.NewReader("/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -40,7 +40,7 @@ func TestSlashQuit(t *testing.T) {
 
 func TestSlashUnknown(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	cfg := Config{
+	cfg := &Config{
 		Stdin:      strings.NewReader("/foo\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -57,7 +57,7 @@ func TestSlashUnknown(t *testing.T) {
 
 func TestEmptyInputSkipped(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	cfg := Config{
+	cfg := &Config{
 		Stdin:      strings.NewReader("\n\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
@@ -75,7 +75,7 @@ func TestEmptyInputSkipped(t *testing.T) {
 
 func TestEOFExitsCleanly(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	cfg := Config{
+	cfg := &Config{
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
