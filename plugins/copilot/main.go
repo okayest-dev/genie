@@ -15,11 +15,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/okayest-dev/og/plugins/shared"
 )
 
-type HostsFile struct {
-	GitHubCom *Account `json:"github.com"`
+type copilotConfig struct {
+	Domain string `toml:"domain"`
 }
 
 type Account struct {
@@ -45,7 +46,10 @@ type CopilotClient struct {
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	token, err := readCopilotToken()
+	cfg := loadConfig()
+	domain := cfg.Domain
+
+	token, err := readCopilotToken(domain)
 	if err != nil {
 		slog.Error("failed to read Copilot token", "error", err)
 		os.Exit(1)
@@ -56,7 +60,7 @@ func main() {
 		httpClient:  &http.Client{Timeout: 30 * time.Second},
 	}
 
-	if err := client.refreshToken(); err != nil {
+	if err := client.refreshToken(domain); err != nil {
 		slog.Error("failed to exchange Copilot token", "error", err)
 		os.Exit(1)
 	}
@@ -78,13 +82,13 @@ func main() {
 	})
 
 	h.OnInit(func() error {
-		slog.Info("copilot wire plugin initialized")
+		slog.Info("copilot wire plugin initialized", "domain", domain)
 		return nil
 	})
 
 	h.OnStream(func(request json.RawMessage) (json.RawMessage, error) {
 		if time.Now().After(client.expiresAt.Add(-5 * time.Minute)) {
-			if err := client.refreshToken(); err != nil {
+			if err := client.refreshToken(domain); err != nil {
 				return nil, fmt.Errorf("token refresh: %w", err)
 			}
 		}
@@ -97,7 +101,28 @@ func main() {
 	}
 }
 
-func readCopilotToken() (string, error) {
+func loadConfig() copilotConfig {
+	exe, err := os.Executable()
+	if err != nil {
+		return copilotConfig{}
+	}
+	dir := filepath.Dir(exe)
+	data, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		return copilotConfig{}
+	}
+	var cfg copilotConfig
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		slog.Warn("failed to parse copilot config, using defaults", "error", err)
+		return copilotConfig{}
+	}
+	if cfg.Domain != "" {
+		slog.Info("copilot config loaded", "domain", cfg.Domain)
+	}
+	return cfg
+}
+
+func readCopilotToken(domain string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
@@ -109,21 +134,32 @@ func readCopilotToken() (string, error) {
 		return "", fmt.Errorf("read hosts.json: %w", err)
 	}
 
-	var hosts HostsFile
+	var hosts map[string]*Account
 	if err := json.Unmarshal(data, &hosts); err != nil {
 		return "", fmt.Errorf("parse hosts.json: %w", err)
 	}
 
-	if hosts.GitHubCom == nil || hosts.GitHubCom.OAuthToken == "" {
-		return "", fmt.Errorf("no github.com account in hosts.json")
+	host := "github.com"
+	if domain != "" {
+		host = domain
 	}
 
-	slog.Info("read Copilot token", "user", hosts.GitHubCom.User)
-	return hosts.GitHubCom.OAuthToken, nil
+	account, ok := hosts[host]
+	if !ok || account.OAuthToken == "" {
+		return "", fmt.Errorf("no %s account in hosts.json", host)
+	}
+
+	slog.Info("read Copilot token", "user", account.User, "host", host)
+	return account.OAuthToken, nil
 }
 
-func (c *CopilotClient) refreshToken() error {
-	req, err := http.NewRequest("GET", "https://api.github.com/copilot_internal/v2/token", nil)
+func (c *CopilotClient) refreshToken(domain string) error {
+	tokenURL := "https://api.github.com/copilot_internal/v2/token"
+	if domain != "" {
+		tokenURL = fmt.Sprintf("https://api.%s/copilot_internal/v2/token", domain)
+	}
+
+	req, err := http.NewRequest("GET", tokenURL, nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

@@ -154,9 +154,29 @@ Og supports plugins via NDJSON-RPC 2.0 over stdio. Drop an executable into `~/.c
 - **Tool plugins** — add new tools to the harness
 - **Wire plugins** — add new provider backends (e.g. AWS Bedrock, GitHub Copilot)
 
+### Plugin layout
+
+Plugins can be laid out in two ways:
+
+**Directory layout (recommended):**
+```
+~/.config/og/plugins/
+  copilot/
+    manifest.toml
+    config.toml     # optional, plugin-specific
+    copilot         # binary
+```
+
+**Flat layout (backward compatible):**
+```
+~/.config/og/plugins/
+  copilot           # binary
+  copilot.toml      # manifest
+```
+
 ### Plugin manifest (optional)
 
-A TOML file next to the executable:
+A TOML file describing the plugin. In directory layout, place it inside the plugin directory as `manifest.toml`. In flat layout, place it next to the executable as `<name>.toml`:
 
 ```toml
 name = "my-plugin"
@@ -169,7 +189,17 @@ capabilities = ["tools", "wires"]
 - **bedrock** — AWS Bedrock wire (SigV4 signing, ConverseStream API)
 - **copilot** — GitHub Copilot wire (OAuth token exchange, OpenAI-compatible API)
 
-### Plugin config
+### Copilot config (GHE support)
+
+For GitHub Enterprise, create `~/.config/og/plugins/copilot/config.toml`:
+
+```toml
+domain = "github.example.com"
+```
+
+The plugin will use `https://api.github.example.com/copilot_internal/v2/token` for token exchange and read the matching host key from `~/.config/github-copilot/hosts.json`. Without this file, the plugin defaults to `github.com`.
+
+### Plugin enable/disable
 
 ```toml
 [plugins]

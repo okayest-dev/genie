@@ -79,13 +79,23 @@ func (m *Manager) LoadPlugins() error {
 
 	var pluginPaths []string
 	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
 		name := e.Name()
 		if strings.HasPrefix(name, ".") {
 			continue
 		}
+
+		if e.IsDir() {
+			// Directory layout: plugins/<name>/<name> (binary)
+			bin := filepath.Join(m.pluginDir, name, name)
+			info, err := os.Stat(bin)
+			if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+				continue
+			}
+			pluginPaths = append(pluginPaths, bin)
+			continue
+		}
+
+		// Flat layout (backward compat): plugins/<name> (binary)
 		full := filepath.Join(m.pluginDir, name)
 		info, err := os.Stat(full)
 		if err != nil {

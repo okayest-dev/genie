@@ -321,3 +321,160 @@ done
 
 	mgr.Shutdown()
 }
+
+func TestManagerLoadDirectoryPlugin(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pluginScript := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"wires":false,"providers":false,"version":1},"id":'"$id"'}'
+            ;;
+        "tools/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":[{"name":"dir-tool","description":"A directory plugin tool","parameters":{"type":"object","properties":{}}}]},"id":'"$id"'}'
+            ;;
+        "tools/call")
+            echo '{"jsonrpc":"2.0","result":{"content":[{"type":"text","text":"dir tool result"}]},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	// Create directory layout: plugins/dir-plugin/dir-plugin (binary)
+	pluginDir := filepath.Join(tmpDir, "dir-plugin")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(pluginDir, "dir-plugin")
+	if err := os.WriteFile(binPath, []byte(pluginScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create manifest inside directory
+	manifestContent := `
+name = "dir-plugin"
+version = "1.0.0"
+capabilities = ["tools"]
+`
+	manifestPath := filepath.Join(pluginDir, "manifest.toml")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- mgr.LoadPlugins()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["dir-plugin"]
+	if !ok {
+		t.Fatal("dir-plugin not found")
+	}
+
+	if len(p.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(p.Tools))
+	}
+	if p.Tools[0].Name != "dir-tool" {
+		t.Errorf("expected tool name 'dir-tool', got %q", p.Tools[0].Name)
+	}
+
+	mgr.Shutdown()
+}
+
+func TestParseManifestDirectoryLayout(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create directory layout
+	pluginDir := filepath.Join(tmpDir, "my-plugin")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestContent := `
+name = "my-plugin"
+version = "2.0.0"
+capabilities = ["wires"]
+`
+	manifestPath := filepath.Join(pluginDir, "manifest.toml")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseManifest(tmpDir, "my-plugin")
+	if err != nil {
+		t.Fatalf("ParseManifest failed: %v", err)
+	}
+	if m.Name != "my-plugin" {
+		t.Errorf("expected name 'my-plugin', got %q", m.Name)
+	}
+	if m.Version != "2.0.0" {
+		t.Errorf("expected version '2.0.0', got %q", m.Version)
+	}
+	if !m.HasCapability("wires") {
+		t.Error("expected capability 'wires'")
+	}
+}
+
+func TestParseManifestDirectoryTakesPrecedence(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create flat layout
+	flatManifest := `
+name = "flat-plugin"
+version = "1.0.0"
+capabilities = ["tools"]
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "flat-plugin.toml"), []byte(flatManifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create directory layout (should take precedence)
+	pluginDir := filepath.Join(tmpDir, "flat-plugin")
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	dirManifest := `
+name = "flat-plugin"
+version = "2.0.0"
+capabilities = ["wires"]
+`
+	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.toml"), []byte(dirManifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := ParseManifest(tmpDir, "flat-plugin")
+	if err != nil {
+		t.Fatalf("ParseManifest failed: %v", err)
+	}
+	if m.Version != "2.0.0" {
+		t.Errorf("expected directory layout to take precedence, got version %q", m.Version)
+	}
+	if !m.HasCapability("wires") {
+		t.Error("expected directory layout capability 'wires'")
+	}
+}
