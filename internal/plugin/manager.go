@@ -30,6 +30,7 @@ type Plugin struct {
 	Manifest     *Manifest
 	Capabilities Capabilities
 	Tools        []ToolDef
+	Models       []ModelDef
 	Cmd          *exec.Cmd
 	Codec        *Codec
 	mu           sync.Mutex
@@ -316,7 +317,41 @@ func (p *Plugin) loadWires() error {
 	if !result.OK {
 		return fmt.Errorf("wire/init failed")
 	}
+
+	models, err := p.listModels()
+	if err != nil {
+		slog.Warn("wire/list_models failed, continuing without models", "plugin", p.Name, "error", err)
+	} else {
+		p.Models = models
+		slog.Info("plugin models loaded", "plugin", p.Name, "models", len(models))
+	}
+
 	return nil
+}
+
+func (p *Plugin) listModels() ([]ModelDef, error) {
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodWireListModels,
+		ID:      4,
+	}
+	if err := p.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+
+	resp, err := p.Codec.ReadResponse()
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("wire/list_models: %w", resp.Error)
+	}
+
+	var result WireListModelsResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse wire/list_models: %w", err)
+	}
+	return result.Models, nil
 }
 
 func (m *Manager) registerPluginTools(p *Plugin) error {

@@ -11,9 +11,10 @@ const (
 	MethodCapabilitiesList = "capabilities/list"
 	MethodToolsList        = "tools/list"
 	MethodToolsCall        = "tools/call"
-	MethodWireInit         = "wire/init"
-	MethodWireStream       = "wire/stream"
-	MethodPing             = "ping"
+	MethodWireInit       = "wire/init"
+	MethodWireStream     = "wire/stream"
+	MethodWireListModels = "wire/list_models"
+	MethodPing           = "ping"
 	MethodShutdown         = "shutdown"
 )
 
@@ -106,6 +107,15 @@ type WireInitResult struct {
 
 type WireStreamParams struct {
 	Request json.RawMessage `json:"request"`
+}
+
+type WireListModelsResult struct {
+	Models []ModelDef `json:"models"`
+}
+
+type ModelDef struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 }
 
 var (

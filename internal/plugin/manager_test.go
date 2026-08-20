@@ -247,3 +247,77 @@ func TestErrorResponse(t *testing.T) {
 		t.Error("success response has no result")
 	}
 }
+
+func TestManagerLoadWirePlugin(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	pluginScript := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":true,"providers":false,"version":1},"id":'"$id"'}'
+            ;;
+        "wire/init")
+            echo '{"jsonrpc":"2.0","result":{"ok":true},"id":'"$id"'}'
+            ;;
+        "wire/list_models")
+            echo '{"jsonrpc":"2.0","result":{"models":[{"id":"copilot-gpt-4","name":"Copilot GPT-4"},{"id":"copilot-claude-3","name":"Copilot Claude 3"}]},"id":'"$id"'}'
+            ;;
+        "wire/stream")
+            echo '{"jsonrpc":"2.0","result":{"events":[{"kind":"text","text":"hello"}]},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "copilot")
+	if err := os.WriteFile(pluginPath, []byte(pluginScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- mgr.LoadPlugins()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["copilot"]
+	if !ok {
+		t.Fatal("copilot plugin not found")
+	}
+
+	if len(p.Models) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(p.Models))
+	}
+	if p.Models[0].ID != "copilot-gpt-4" {
+		t.Errorf("expected model ID 'copilot-gpt-4', got %q", p.Models[0].ID)
+	}
+	if p.Models[1].Name != "Copilot Claude 3" {
+		t.Errorf("expected model name 'Copilot Claude 3', got %q", p.Models[1].Name)
+	}
+
+	mgr.Shutdown()
+}

@@ -39,6 +39,9 @@ handle_request() {
         "wire/init")
             write_response '{"jsonrpc":"2.0","result":{"ok":true},"id":'"$id"'}'
             ;;
+        "wire/list_models")
+            write_response '{"jsonrpc":"2.0","result":{"models":[{"id":"fake-gpt-4","name":"Fake GPT-4"},{"id":"fake-claude-3","name":"Fake Claude 3"}]},"id":'"$id"'}'
+            ;;
         "wire/stream")
             # Just return a simple response for testing
             write_response '{"jsonrpc":"2.0","result":{"choices":[{"delta":{"content":"Plugin wire response"}}]},"id":'"$id"'}'
