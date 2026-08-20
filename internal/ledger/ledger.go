@@ -173,9 +173,14 @@ func (l *Ledger) Close() error {
 	return nil
 }
 
+// ledgerPath returns the path to the JSONL ledger file for a session.
+func ledgerPath(sessionDir, sessionID string) string {
+	return filepath.Join(sessionDir, sessionID+".changes.jsonl")
+}
+
 // writeBatch appends one batch as a JSON line to the ledger file.
 func (l *Ledger) writeBatch(batch Batch) error {
-	path := filepath.Join(l.sessionDir, l.sessionID+".changes.jsonl")
+	path := ledgerPath(l.sessionDir, l.sessionID)
 	data, err := json.Marshal(batch)
 	if err != nil {
 		return fmt.Errorf("marshal batch: %w", err)
@@ -332,4 +337,52 @@ func computeDelta(diff string) Delta {
 		}
 	}
 	return d
+}
+
+// LoadBatches reads all batches from a session's JSONL ledger file.
+// Batches are returned in reverse chronological order (newest first).
+func LoadBatches(sessionDir, sessionID string) ([]Batch, error) {
+	path := ledgerPath(sessionDir, sessionID)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read ledger: %w", err)
+	}
+
+	var batches []Batch
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var b Batch
+		if err := json.Unmarshal([]byte(line), &b); err != nil {
+			return nil, fmt.Errorf("unmarshal batch: %w", err)
+		}
+		batches = append(batches, b)
+	}
+
+	// Reverse to newest-first.
+	for i, j := 0, len(batches)-1; i < j; i, j = i+1, j-1 {
+		batches[i], batches[j] = batches[j], batches[i]
+	}
+
+	return batches, nil
+}
+
+// LoadBatchByID returns the batch with the given sequence number, or nil if
+// not found.
+func LoadBatchByID(sessionDir, sessionID string, seq int) (*Batch, error) {
+	batches, err := LoadBatches(sessionDir, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range batches {
+		if batches[i].Seq == seq {
+			return &batches[i], nil
+		}
+	}
+	return nil, nil
 }

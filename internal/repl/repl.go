@@ -10,9 +10,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 
 	"github.com/okayest-dev/og/internal/agent"
+	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
 	"github.com/okayest-dev/og/internal/session"
 	"github.com/okayest-dev/og/internal/tools"
@@ -113,11 +115,13 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, sess **se
 
 	case "/help":
 		fmt.Fprintln(cfg.Stdout, "Commands:")
-		fmt.Fprintln(cfg.Stdout, "  /help         show this help")
-		fmt.Fprintln(cfg.Stdout, "  /quit         exit the REPL")
-		fmt.Fprintln(cfg.Stdout, "  /new          start a new session")
-		fmt.Fprintln(cfg.Stdout, "  /model        list available models")
-		fmt.Fprintln(cfg.Stdout, "  /model <id>   switch to a different model")
+		fmt.Fprintln(cfg.Stdout, "  /help             show this help")
+		fmt.Fprintln(cfg.Stdout, "  /quit             exit the REPL")
+		fmt.Fprintln(cfg.Stdout, "  /new              start a new session")
+		fmt.Fprintln(cfg.Stdout, "  /changes          list change batches")
+		fmt.Fprintln(cfg.Stdout, "  /changes <id>     show change details")
+		fmt.Fprintln(cfg.Stdout, "  /model            list available models")
+		fmt.Fprintln(cfg.Stdout, "  /model <id>       switch to a different model")
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
 
@@ -129,6 +133,13 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, sess **se
 		} else {
 			fmt.Fprintf(cfg.Stderr, "session: %s\n", (*sess).ID)
 		}
+
+	case "/changes":
+		args := ""
+		if len(parts) > 1 {
+			args = parts[1]
+		}
+		handleChanges(args, cfg, (*sess).ID, cfg.Stdout)
 
 	case "/model":
 		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
@@ -175,4 +186,65 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, sess **se
 	}
 
 	return false
+}
+
+// fileNames returns a comma-separated list of file paths from a batch's files.
+func fileNames(files []ledger.File) string {
+	names := make([]string, len(files))
+	for i, f := range files {
+		names[i] = f.Path
+	}
+	return strings.Join(names, ", ")
+}
+
+// handleChanges handles the /changes slash command.
+func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		batches, err := ledger.LoadBatches(cfg.SessionDir, sessionID)
+		if err != nil {
+			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+			return
+		}
+		if len(batches) == 0 {
+			fmt.Fprintln(out, "no changes")
+			return
+		}
+		for _, b := range batches {
+			totalDelta := 0
+			for _, f := range b.Files {
+				totalDelta += f.Delta.Added + f.Delta.Removed
+			}
+			fmt.Fprintf(out, "%03d  %s  %d lines  %s\n",
+				b.Seq, b.Time, totalDelta, fileNames(b.Files))
+		}
+		return
+	}
+
+	id, err := strconv.Atoi(args)
+	if err != nil {
+		fmt.Fprintf(out, "og: invalid change id: %s\n", args)
+		return
+	}
+	batch, err := ledger.LoadBatchByID(cfg.SessionDir, sessionID, id)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+		return
+	}
+	if batch == nil {
+		fmt.Fprintf(out, "og: no such change id: %d\n", id)
+		return
+	}
+	for _, f := range batch.Files {
+		fmt.Fprintf(out, "--- %s (%s)\n", f.Path, f.Ops)
+		fmt.Fprintf(out, "+++ delta: +%d/-%d\n", f.Delta.Added, f.Delta.Removed)
+		if strings.Contains(f.Diff, "[binary]") {
+			fmt.Fprintln(out, "[binary file]")
+		} else if strings.Contains(f.Diff, "[truncated") {
+			fmt.Fprintf(out, "%s\n", f.Diff)
+		} else {
+			fmt.Fprint(out, f.Diff)
+		}
+		fmt.Fprintln(out)
+	}
 }

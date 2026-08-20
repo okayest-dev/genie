@@ -411,3 +411,141 @@ func TestMultipleEditsCollapseDiffContent(t *testing.T) {
 		t.Errorf("diff should show final content added: %q", batch.Files[0].Diff)
 	}
 }
+
+func TestLoadBatchesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	batches, err := LoadBatches(dir, "nonexistent-session")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(batches) != 0 {
+		t.Errorf("batches = %d, want 0", len(batches))
+	}
+}
+
+func TestLoadBatchesSingleBatch(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	l.RecordToolCall("call_1")
+	l.Snapshot("test.txt", "old content")
+	l.RecordMutation("test.txt", "old content", "new content", OpOverwrite)
+	if err := l.Close(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	batches, err := LoadBatches(dir, "test-session")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(batches) != 1 {
+		t.Fatalf("batches = %d, want 1", len(batches))
+	}
+	if batches[0].Seq != 0 {
+		t.Errorf("seq = %d, want 0", batches[0].Seq)
+	}
+	if len(batches[0].Files) != 1 {
+		t.Errorf("files = %d, want 1", len(batches[0].Files))
+	}
+}
+
+func TestLoadBatchesMultipleNewestFirst(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	// First batch.
+	l.RecordToolCall("call_1")
+	l.Snapshot("a.txt", "old")
+	l.RecordMutation("a.txt", "old", "new", OpEdit)
+	if err := l.Close(); err != nil {
+		t.Fatalf("close 1: %v", err)
+	}
+
+	// Second batch.
+	l.RecordToolCall("call_2")
+	l.Snapshot("b.txt", "old")
+	l.RecordMutation("b.txt", "old", "new", OpEdit)
+	if err := l.Close(); err != nil {
+		t.Fatalf("close 2: %v", err)
+	}
+
+	// Third batch.
+	l.RecordToolCall("call_3")
+	l.Snapshot("c.txt", "old")
+	l.RecordMutation("c.txt", "old", "new", OpEdit)
+	if err := l.Close(); err != nil {
+		t.Fatalf("close 3: %v", err)
+	}
+
+	batches, err := LoadBatches(dir, "test-session")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(batches) != 3 {
+		t.Fatalf("batches = %d, want 3", len(batches))
+	}
+	// Should be newest first (seq 2, 1, 0).
+	if batches[0].Seq != 2 {
+		t.Errorf("first batch seq = %d, want 2", batches[0].Seq)
+	}
+	if batches[1].Seq != 1 {
+		t.Errorf("second batch seq = %d, want 1", batches[1].Seq)
+	}
+	if batches[2].Seq != 0 {
+		t.Errorf("third batch seq = %d, want 0", batches[2].Seq)
+	}
+}
+
+func TestLoadBatchByID(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	l.RecordToolCall("call_1")
+	l.Snapshot("test.txt", "old content")
+	l.RecordMutation("test.txt", "old content", "new content", OpOverwrite)
+	if err := l.Close(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	batch, err := LoadBatchByID(dir, "test-session", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if batch == nil {
+		t.Fatal("batch = nil, want batch")
+	}
+	if batch.Seq != 0 {
+		t.Errorf("seq = %d, want 0", batch.Seq)
+	}
+}
+
+func TestLoadBatchByIDNotFound(t *testing.T) {
+	dir := t.TempDir()
+	l := New(dir, "test-session")
+
+	l.RecordToolCall("call_1")
+	l.Snapshot("test.txt", "old content")
+	l.RecordMutation("test.txt", "old content", "new content", OpOverwrite)
+	if err := l.Close(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	batch, err := LoadBatchByID(dir, "test-session", 99)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if batch != nil {
+		t.Errorf("batch = %v, want nil", batch)
+	}
+}
+
+func TestLoadBatchByIDEmptySession(t *testing.T) {
+	dir := t.TempDir()
+	batch, err := LoadBatchByID(dir, "nonexistent", 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if batch != nil {
+		t.Errorf("batch = %v, want nil", batch)
+	}
+}
