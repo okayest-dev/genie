@@ -104,6 +104,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer pluginMgr.Shutdown()
 
+	// Build model→client route table from wire plugins.
+	modelRoutes := make(map[string]llm.Client)
+	for _, p := range pluginMgr.GetPlugins() {
+		if !p.Capabilities.Wires {
+			continue
+		}
+		pc := newPluginWireClient(p)
+		for _, m := range p.Models {
+			modelRoutes[m.ID] = pc
+		}
+	}
+	if len(modelRoutes) > 0 {
+		client = llm.NewRoutingClient(client, modelRoutes)
+	}
+
 	// No -p flag: start the interactive REPL.
 	if *prompt == "" {
 		replCfg := &repl.Config{
