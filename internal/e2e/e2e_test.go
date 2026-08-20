@@ -71,6 +71,37 @@ func runInDir(t *testing.T, dir string, env []string, args ...string) (string, s
 	return out.String(), errBuf.String(), code
 }
 
+// runWithStdin runs the binary with the given stdin content, env, and args,
+// and returns stdout, stderr, and the exit code.
+func runWithStdin(t *testing.T, stdin string, env []string, args ...string) (string, string, int) {
+	return runInDirWithStdin(t, "", stdin, env, args...)
+}
+
+// runInDirWithStdin is like runInDir but sets stdin for the subprocess.
+func runInDirWithStdin(t *testing.T, dir, stdin string, env []string, args ...string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(binPath, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			t.Fatalf("run %v: %v", args, err)
+		}
+	}
+	return out.String(), errBuf.String(), code
+}
+
 func TestEmptyPromptUsageError(t *testing.T) {
 	stdout, stderr, code := run(t, nil, "-p", "")
 	if code != 3 {
@@ -1209,4 +1240,268 @@ func TestOGProviderEnvRoutesThroughPlugin(t *testing.T) {
 	// installed it should error.
 	stdout, stderr, code := run(t, append(providerEnv(p), "OG_PROVIDER=copilot"), "-p", "hi")
 	assertCleanFailure(t, stdout, stderr, code, "provider")
+}
+
+// --- Non-interactive completion (og-dea) ---
+
+func TestStdinPipingReadsPrompt(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("got it"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := runWithStdin(t, "what is 2+2?", providerEnv(p), "-p")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "got it\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "got it\n")
+	}
+	// Verify the prompt was read from stdin by checking the request.
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	var body struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Messages) < 2 {
+		t.Fatalf("messages = %d, want >= 2", len(body.Messages))
+	}
+	if body.Messages[1].Role != "user" || body.Messages[1].Content != "what is 2+2?" {
+		t.Errorf("user message = %+v, want user with content %q", body.Messages[1], "what is 2+2?")
+	}
+}
+
+func TestStdinPipingMultiline(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := runWithStdin(t, "line one\nline two\nline three", providerEnv(p), "-p")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	var body struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Messages) < 2 {
+		t.Fatalf("messages = %d, want >= 2", len(body.Messages))
+	}
+	want := "line one\nline two\nline three"
+	if body.Messages[1].Content != want {
+		t.Errorf("user message = %q, want %q", body.Messages[1].Content, want)
+	}
+}
+
+func TestEmptyStdinExits3(t *testing.T) {
+	stdout, stderr, code := runWithStdin(t, "", nil, "-p")
+	if code != 3 {
+		t.Errorf("exit code = %d, want 3", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "usage") {
+		t.Errorf("stderr = %q, want a usage message", stderr)
+	}
+}
+
+func TestStdinPipingAnswerToStdoutToolFramingToStderr(t *testing.T) {
+	// Script a tool call followed by text.
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		if reqCount == 1 {
+			for _, chunk := range []string{
+				fake.ToolCallDelta(0, "call_1", "read", `{"path":"test.txt"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		} else {
+			for _, chunk := range []string{
+				fake.TextDelta("file contents here"),
+				fake.Finish("stop"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}))
+	defer srv.Close()
+
+	stdout, stderr, code := runWithStdin(t, "read test.txt", []string{
+		"OG_BASE_URL=" + srv.URL,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "file contents here") {
+		t.Errorf("stdout = %q, want it to contain 'file contents here'", stdout)
+	}
+	// Tool framing should be on stderr, not stdout.
+	if !strings.Contains(stderr, "── read ") {
+		t.Errorf("stderr missing tool framing: %q", stderr)
+	}
+}
+
+func TestLedgerPersistedInHeadlessMode(t *testing.T) {
+	// Script a write tool call followed by text.
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		if reqCount == 1 {
+			for _, chunk := range []string{
+				fake.ToolCallDelta(0, "call_1", "write", `{"path":"output.txt","content":"hello world"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		} else {
+			for _, chunk := range []string{
+				fake.TextDelta("wrote the file"),
+				fake.Finish("stop"),
+				fake.Done,
+			} {
+				io.WriteString(w, "data: "+chunk+"\n\n")
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}))
+	defer srv.Close()
+
+	sessionDir := t.TempDir()
+	workDir := t.TempDir()
+	stdout, stderr, code := runInDir(t, workDir, []string{
+		"OG_BASE_URL=" + srv.URL,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+		"OG_SESSION_DIR=" + sessionDir,
+	}, "-p", "write output.txt")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "wrote the file") {
+		t.Errorf("stdout = %q, want it to contain 'wrote the file'", stdout)
+	}
+
+	// Check that a ledger file was created.
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var ledgerFile string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".changes.jsonl") {
+			ledgerFile = e.Name()
+			break
+		}
+	}
+	if ledgerFile == "" {
+		t.Fatalf("no ledger file in %v; files: %v", sessionDir, entries)
+	}
+
+	// Verify the ledger contains a batch with the write mutation.
+	data, err := os.ReadFile(filepath.Join(sessionDir, ledgerFile))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "output.txt") {
+		t.Errorf("ledger = %q, want it to reference output.txt", string(data))
+	}
+	if !strings.Contains(string(data), `"ops":"create"`) {
+		t.Errorf("ledger = %q, want ops=create for new file", string(data))
+	}
+}
+
+func TestExitCode0OnSuccess(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	_, _, code := run(t, providerEnv(p), "-p", "hi")
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+}
+
+func TestExitCode1OnProviderError(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Error: &fake.Error{Status: 500, Body: `{"error":{"message":"internal error"}}`},
+	})
+	_, _, code := run(t, providerEnv(p), "-p", "hi")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+func TestExitCode3OnUsageError(t *testing.T) {
+	_, _, code := run(t, nil, "-p", "")
+	if code != 3 {
+		t.Errorf("exit code = %d, want 3", code)
+	}
+}
+
+func TestStdinPipingWithExplicitDash(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("piped"), fake.Finish("stop"), fake.Done},
+	})
+	// -p - is treated as -p (read from stdin); the "-" is not a value.
+	stdout, _, code := runWithStdin(t, "hello via dash", providerEnv(p), "-p", "-")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stdout != "piped\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "piped\n")
+	}
+}
+
+func TestStdinPipingEmptyDashExits3(t *testing.T) {
+	// -p - with empty stdin reads stdin (empty) → exit 3.
+	stdout, stderr, code := runWithStdin(t, "", nil, "-p", "-")
+	if code != 3 {
+		t.Errorf("exit code = %d, want 3", code)
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty", stdout)
+	}
+	if !strings.Contains(stderr, "usage") {
+		t.Errorf("stderr = %q, want a usage message", stderr)
+	}
 }

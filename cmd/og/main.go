@@ -2,17 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
 	"github.com/okayest-dev/og/internal/agent"
 	"github.com/okayest-dev/og/internal/config"
 	"github.com/okayest-dev/og/internal/instruct"
+	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
 	"github.com/okayest-dev/og/internal/plugin"
 	_ "github.com/okayest-dev/og/internal/llm/anthropic"
@@ -48,24 +51,60 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// Pre-scan for -p without a value (e.g. "og -p" or "og -p -").
+	// Go's flag package requires a value after -p, so we detect the
+	// stdin-reading cases before handing off to flag.Parse.
+	pFlag := ""
+	pSeen := false
+	var cleanArgs []string
+	skipNext := false
+	for i, a := range args {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "-p" || a == "--prompt" {
+			pSeen = true
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				pFlag = args[i+1]
+				cleanArgs = append(cleanArgs, a, args[i+1])
+				skipNext = true
+			}
+			// else: -p with no value — don't add to cleanArgs
+			continue
+		}
+		if strings.HasPrefix(a, "-p=") || strings.HasPrefix(a, "--prompt=") {
+			pSeen = true
+			pFlag = strings.SplitN(a, "=", 2)[1]
+			cleanArgs = append(cleanArgs, a)
+			continue
+		}
+		cleanArgs = append(cleanArgs, a)
+	}
+
+	// If -p was seen but no value, read from stdin.
+	var stdinPrompt string
+	if pSeen && pFlag == "" {
+		var ok bool
+		stdinPrompt, ok = readStdinPrompt(stderr)
+		if !ok {
+			return 3
+		}
+	}
+
 	fs := flag.NewFlagSet("og", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	prompt := fs.String("p", "", "run a single prompt")
 	verbose := fs.Bool("v", false, "verbose output")
 	debug := fs.Bool("d", false, "debug output (implies -v)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cleanArgs); err != nil {
 		return 3
 	}
-	var promptSet bool
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "p" {
-			promptSet = true
-		}
-	})
-	if promptSet && *prompt == "" {
-		fs.Usage()
-		return 3
+
+	// If stdinPrompt was set, use it as the prompt.
+	if stdinPrompt != "" {
+		*prompt = stdinPrompt
 	}
 
 	debugEnv := isTruthy(os.Getenv("OG_DEBUG"))
@@ -169,10 +208,38 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if err := agent.RunTurn(context.Background(), client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry, nil, cwd); err != nil {
+	// Create a change ledger for -p mode.
+	ldg := ledger.New(cfg.SessionDir, sess.ID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle SIGINT for exit code 2.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	err = agent.RunTurn(ctx, client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry, ldg, cwd)
+
+	// Close the ledger to flush any recorded mutations.
+	if closeErr := ldg.Close(); closeErr != nil {
+		slog.Error("failed to close ledger", "error", closeErr)
+	}
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 2
+		}
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+
 	fmt.Fprintf(stderr, "session: %s\n", sess.ID)
 	return 0
 }
@@ -214,6 +281,23 @@ func pluginNames(mgr *plugin.Manager) string {
 		return "(none)"
 	}
 	return strings.Join(names, ", ")
+}
+
+// readStdinPrompt reads all of stdin, trims whitespace, and returns the
+// content as a prompt string. If stdin is empty, it prints usage and returns
+// ("", false). On success it returns (prompt, true).
+func readStdinPrompt(stderr io.Writer) (string, bool) {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: reading stdin: %v\n", err)
+		return "", false
+	}
+	prompt := strings.TrimSpace(string(data))
+	if prompt == "" {
+		fmt.Fprint(stderr, usage)
+		return "", false
+	}
+	return prompt, true
 }
 
 // configureSlog sets up the global slog handler. LevelWarn means silent (no
