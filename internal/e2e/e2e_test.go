@@ -1009,3 +1009,204 @@ func TestToolCallDisabledToolError(t *testing.T) {
 		t.Errorf("stdout = %q, want it to contain 'tool is disabled'", stdout)
 	}
 }
+
+// --- Multi-wire E2E tests ---
+
+func TestAnthropicWire(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.AnthropicMessageStart(),
+			fake.AnthropicTextDelta("Hello from Anthropic"),
+			fake.AnthropicMessageDelta("end_turn"),
+			fake.Done,
+		},
+	})
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_WIRE=anthropic"), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "Hello from Anthropic\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "Hello from Anthropic\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Path != "/messages" {
+		t.Errorf("request path = %q, want /messages", reqs[0].Path)
+	}
+}
+
+func TestResponsesAPIWire(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.ResponsesTextDelta("Hello from Responses"),
+			fake.ResponsesCompleted(),
+			fake.Done,
+		},
+	})
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_WIRE=responses"), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "Hello from Responses\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "Hello from Responses\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Path != "/responses" {
+		t.Errorf("request path = %q, want /responses", reqs[0].Path)
+	}
+}
+
+func TestGoogleWire(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.GoogleTextDelta("Hello from Google"),
+			fake.GoogleFinish("STOP"),
+			fake.Done,
+		},
+	})
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_WIRE=google", "OG_MODEL=gemini-test"), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "Hello from Google\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "Hello from Google\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if !strings.HasPrefix(reqs[0].Path, "/models/") {
+		t.Errorf("request path = %q, want /models/...", reqs[0].Path)
+	}
+}
+
+func TestWireAutoDetectionClaudeToAnthropic(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.AnthropicMessageStart(),
+			fake.AnthropicTextDelta("detected"),
+			fake.AnthropicMessageDelta("end_turn"),
+			fake.Done,
+		},
+	})
+	stdout, stderr, code := run(t, []string{
+		"OG_BASE_URL=" + p.URL,
+		"OG_MODEL=claude-3-sonnet",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "detected\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "detected\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Path != "/messages" {
+		t.Errorf("request path = %q, want /messages (auto-detected anthropic)", reqs[0].Path)
+	}
+}
+
+func TestWireAutoDetectionGeminiToGoogle(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.GoogleTextDelta("detected"),
+			fake.GoogleFinish("STOP"),
+			fake.Done,
+		},
+	})
+	stdout, stderr, code := run(t, []string{
+		"OG_BASE_URL=" + p.URL,
+		"OG_MODEL=gemini-flash",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "detected\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "detected\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if !strings.HasPrefix(reqs[0].Path, "/models/") {
+		t.Errorf("request path = %q, want /models/... (auto-detected google)", reqs[0].Path)
+	}
+}
+
+func TestExplicitWireOverrideInConfig(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.AnthropicMessageStart(),
+			fake.AnthropicTextDelta("from config"),
+			fake.AnthropicMessageDelta("end_turn"),
+			fake.Done,
+		},
+	})
+	dir := configDir(t, fmt.Sprintf("base_url = %q\nwire = \"anthropic\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OG_MODEL=test-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "from config\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "from config\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Path != "/messages" {
+		t.Errorf("request path = %q, want /messages", reqs[0].Path)
+	}
+}
+
+func TestUnknownModelFallsBackToOpenAI(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, []string{
+		"OG_BASE_URL=" + p.URL,
+		"OG_MODEL=unknown-model",
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	reqs := p.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Path != "/chat/completions" {
+		t.Errorf("request path = %q, want /chat/completions (fallback)", reqs[0].Path)
+	}
+}
+
+func TestOGProviderEnvRoutesThroughPlugin(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{
+			fake.AnthropicMessageStart(),
+			fake.AnthropicTextDelta("via env"),
+			fake.AnthropicMessageDelta("end_turn"),
+			fake.Done,
+		},
+	})
+	// OG_PROVIDER would normally name a loaded plugin, but with no plugins
+	// installed it should error.
+	stdout, stderr, code := run(t, append(providerEnv(p), "OG_PROVIDER=copilot"), "-p", "hi")
+	assertCleanFailure(t, stdout, stderr, code, "provider")
+}

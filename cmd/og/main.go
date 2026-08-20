@@ -57,6 +57,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 3
 	}
+	var promptSet bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "p" {
+			promptSet = true
+		}
+	})
+	if promptSet && *prompt == "" {
+		fs.Usage()
+		return 3
+	}
 
 	debugEnv := isTruthy(os.Getenv("OG_DEBUG"))
 	debug = boolPtr(*debug || debugEnv)

@@ -1,7 +1,7 @@
-// Package fake provides an in-process, scripted OpenAI-compatible provider.
-// It is the single place the wire is fabricated: every black-box test drives
-// the compiled og binary against this server and asserts only observable
-// behavior (stdout, stderr, exit codes).
+// Package fake provides in-process, scripted fake providers for E2E testing.
+// It supports OpenAI chat/completions, Anthropic Messages, OpenAI Responses-API,
+// and Google generateContent wire formats. Tests drive the compiled og binary
+// against these servers and assert only observable behavior.
 package fake
 
 import (
@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"time"
 )
@@ -100,6 +101,18 @@ func (p *Provider) serve(w http.ResponseWriter, r *http.Request) {
 		p.serveChat(w, behavior)
 		return
 	}
+	if r.Method == http.MethodPost && r.URL.Path == "/messages" {
+		p.serveAnthropic(w, behavior)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/responses" {
+		p.serveResponses(w, behavior)
+		return
+	}
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/models/") && strings.HasSuffix(r.URL.Path, ":generateContent") {
+		p.serveGoogle(w, behavior)
+		return
+	}
 	http.NotFound(w, r)
 }
 
@@ -125,7 +138,82 @@ func (p *Provider) serveChat(w http.ResponseWriter, b Behavior) {
 	}
 }
 
+// serveAnthropic serves the Anthropic Messages wire format.
+func (p *Provider) serveAnthropic(w http.ResponseWriter, b Behavior) {
+	if b.Error != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(b.Error.Status)
+		io.WriteString(w, b.Error.Body)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	for _, chunk := range b.Chunks {
+		if b.Delay > 0 {
+			time.Sleep(b.Delay)
+		}
+		// Anthropic SSE uses event: + data: on separate lines, then blank line.
+		for _, line := range strings.Split(chunk, "\n") {
+			io.WriteString(w, line+"\n")
+		}
+		io.WriteString(w, "\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
+// serveResponses serves the OpenAI Responses-API wire format.
+func (p *Provider) serveResponses(w http.ResponseWriter, b Behavior) {
+	if b.Error != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(b.Error.Status)
+		io.WriteString(w, b.Error.Body)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	for _, chunk := range b.Chunks {
+		if b.Delay > 0 {
+			time.Sleep(b.Delay)
+		}
+		io.WriteString(w, chunk+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
+// serveGoogle serves the Google generateContent wire format.
+func (p *Provider) serveGoogle(w http.ResponseWriter, b Behavior) {
+	if b.Error != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(b.Error.Status)
+		io.WriteString(w, b.Error.Body)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	for _, chunk := range b.Chunks {
+		if b.Delay > 0 {
+			time.Sleep(b.Delay)
+		}
+		io.WriteString(w, "data: "+chunk+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}
+
 // SSE helpers for building chunk payloads.
+
+// --- OpenAI chat/completions helpers ---
 
 // TextDelta builds a chat.completion.chunk carrying a content delta.
 func TextDelta(content string) string {
@@ -169,6 +257,102 @@ func ToolCallDelta(index int, id, name, arguments string) string {
 		"object":  "chat.completion.chunk",
 		"model":   "m",
 		"choices": []map[string]any{choice},
+	})
+	return string(b)
+}
+
+// --- Anthropic Messages helpers ---
+
+// AnthropicTextDelta builds an Anthropic content_block_delta event.
+func AnthropicTextDelta(text string) string {
+	b, _ := json.Marshal(map[string]any{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": map[string]any{
+			"type": "text_delta",
+			"text": text,
+		},
+	})
+	return "event: content_block_delta\ndata: " + string(b)
+}
+
+// AnthropicMessageDelta builds an Anthropic message_delta event with stop reason.
+func AnthropicMessageDelta(stopReason string) string {
+	b, _ := json.Marshal(map[string]any{
+		"type": "message_delta",
+		"delta": map[string]any{
+			"stop_reason": stopReason,
+		},
+		"usage": map[string]any{
+			"output_tokens": 0,
+		},
+	})
+	return "event: message_delta\ndata: " + string(b)
+}
+
+// AnthropicMessageStart builds an Anthropic message_start event.
+func AnthropicMessageStart() string {
+	b, _ := json.Marshal(map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"usage": map[string]any{
+				"input_tokens": 10,
+			},
+		},
+	})
+	return "event: message_start\ndata: " + string(b)
+}
+
+// --- OpenAI Responses-API helpers ---
+
+// ResponsesTextDelta builds a response.output_text.delta event.
+func ResponsesTextDelta(text string) string {
+	b, _ := json.Marshal(map[string]any{
+		"type":  "response.output_text.delta",
+		"delta": text,
+	})
+	return fmt.Sprintf("event: response.output_text.delta\ndata: %s", string(b))
+}
+
+// ResponsesCompleted builds a response.completed event.
+func ResponsesCompleted() string {
+	b, _ := json.Marshal(map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"status": "completed",
+		},
+	})
+	return fmt.Sprintf("event: response.completed\ndata: %s", string(b))
+}
+
+// --- Google generateContent helpers ---
+
+// GoogleTextDelta builds a Google chunk with text delta.
+func GoogleTextDelta(text string) string {
+	b, _ := json.Marshal(map[string]any{
+		"candidates": []map[string]any{
+			{
+				"content": map[string]any{
+					"parts": []map[string]any{
+						{"text": text},
+					},
+				},
+				"finishReason": nil,
+			},
+		},
+	})
+	return string(b)
+}
+
+// GoogleFinish builds a Google chunk with finish reason.
+func GoogleFinish(reason string) string {
+	b, _ := json.Marshal(map[string]any{
+		"candidates": []map[string]any{
+			{
+				"content": map[string]any{},
+				"finishReason": reason,
+			},
+		},
 	})
 	return string(b)
 }

@@ -73,7 +73,7 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 				continue
 			}
 			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-			if data == "" {
+			if data == "" || data == "[DONE]" {
 				continue
 			}
 			var ch chunk
