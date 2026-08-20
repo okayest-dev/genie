@@ -15,6 +15,7 @@ import (
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/llm"
 	"github.com/okayest-dev/og/internal/plugin"
+	_ "github.com/okayest-dev/og/internal/llm/anthropic"
 	_ "github.com/okayest-dev/og/internal/llm/google"
 	_ "github.com/okayest-dev/og/internal/llm/openai"
 	_ "github.com/okayest-dev/og/internal/llm/responses"
