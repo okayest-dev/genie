@@ -104,19 +104,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer pluginMgr.Shutdown()
 
-	// Build model→client route table from wire plugins.
-	modelRoutes := make(map[string]llm.Client)
-	for _, p := range pluginMgr.GetPlugins() {
+	// Route through an explicit provider or build a model-based route table.
+	if cfg.Provider != "" {
+		p, ok := pluginMgr.GetPlugins()[cfg.Provider]
+		if !ok {
+			fmt.Fprintf(stderr, "Error: provider %q not found (loaded plugins: %s)\n", cfg.Provider, pluginNames(pluginMgr))
+			return 1
+		}
 		if !p.Capabilities.Wires {
-			continue
+			fmt.Fprintf(stderr, "Error: provider %q does not support wires\n", cfg.Provider)
+			return 1
 		}
-		pc := newPluginWireClient(p)
-		for _, m := range p.Models {
-			modelRoutes[m.ID] = pc
+		client = newPluginWireClient(p)
+	} else {
+		modelRoutes := make(map[string]llm.Client)
+		for _, p := range pluginMgr.GetPlugins() {
+			if !p.Capabilities.Wires {
+				continue
+			}
+			pc := newPluginWireClient(p)
+			for _, m := range p.Models {
+				modelRoutes[m.ID] = pc
+			}
 		}
-	}
-	if len(modelRoutes) > 0 {
-		client = llm.NewRoutingClient(client, modelRoutes)
+		if len(modelRoutes) > 0 {
+			client = llm.NewRoutingClient(client, modelRoutes)
+		}
 	}
 
 	// No -p flag: start the interactive REPL.
@@ -180,6 +193,17 @@ func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration)
 	}
 
 	return reg
+}
+
+func pluginNames(mgr *plugin.Manager) string {
+	names := make([]string, 0)
+	for name := range mgr.GetPlugins() {
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return "(none)"
+	}
+	return strings.Join(names, ", ")
 }
 
 // configureSlog sets up the global slog handler. LevelWarn means silent (no

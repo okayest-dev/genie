@@ -59,6 +59,11 @@ type Config struct {
 	// Wire selects the wire implementation. Empty means auto-detect from
 	// the model ID prefix.
 	Wire string
+	// Provider names a plugin to route all requests through (e.g.
+	// "copilot"). When set, the harness looks for a loaded wire plugin
+	// with that name and uses it directly. Empty falls back to Wire/model
+	// auto-detection.
+	Provider string
 	// Gateway is an optional URL override for the provider gateway.
 	Gateway string
 	// InstructionFile is an optional agent-instruction source loaded after
@@ -86,6 +91,7 @@ type fileConfig struct {
 	BaseURL         string    `toml:"base_url"`
 	APIKeyEnv       string    `toml:"api_key_env"`
 	Wire            string    `toml:"wire"`
+	Provider        string    `toml:"provider"`
 	Gateway         string    `toml:"gateway"`
 	InstructionFile string    `toml:"instruction_file"`
 	SessionDir      string    `toml:"session_dir"`
@@ -138,6 +144,9 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		if fc.Wire != "" {
 			cfg.Wire = fc.Wire
 		}
+		if fc.Provider != "" {
+			cfg.Provider = fc.Provider
+		}
 		if fc.Gateway != "" {
 			cfg.Gateway = fc.Gateway
 		}
@@ -168,6 +177,7 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 	slog.Info("config loaded",
 		"model", cfg.Model,
 		"base_url", cfg.BaseURL,
+		"provider", cfg.Provider,
 		"instruction_file", cfg.InstructionFile,
 		"session_dir", cfg.SessionDir,
 	)
@@ -260,6 +270,10 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	if v := env["OG_WIRE"]; v != "" {
 		cfg.Wire = v
 		applied = append(applied, "OG_WIRE")
+	}
+	if v := env["OG_PROVIDER"]; v != "" {
+		cfg.Provider = v
+		applied = append(applied, "OG_PROVIDER")
 	}
 	if v := env["OG_GATEWAY"]; v != "" {
 		cfg.Gateway = v

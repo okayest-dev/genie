@@ -89,6 +89,7 @@ model = "big-pickle"
 base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
 # wire = "openai"            # auto-detect from model prefix
+# provider = "copilot"       # route through a wire plugin (e.g. copilot, bedrock)
 # instruction_file = ""      # path to agent instruction file
 # session_dir = ""           # defaults to ~/.config/og/sessions
 bash_timeout = 120
@@ -113,6 +114,7 @@ bash = true
 | `OG_BASE_URL` | Provider base URL |
 | `OG_API_KEY_ENV` | Name of env var holding the API key |
 | `OG_WIRE` | Wire protocol override |
+| `OG_PROVIDER` | Route through a wire plugin by name |
 | `OG_GATEWAY` | Gateway URL override |
 | `OG_INSTRUCTION_FILE` | Path to agent instruction file |
 | `OG_SESSION_DIR` | Session storage directory |
