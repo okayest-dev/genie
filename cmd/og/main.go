@@ -14,6 +14,7 @@ import (
 	"github.com/okayest-dev/og/internal/config"
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/og/internal/plugin"
 	_ "github.com/okayest-dev/og/internal/llm/google"
 	_ "github.com/okayest-dev/og/internal/llm/openai"
 	_ "github.com/okayest-dev/og/internal/llm/responses"
@@ -93,6 +94,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// Build the tool registry from config.
 	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
+
+	// Load plugins.
+	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, registry)
+	if err := pluginMgr.LoadPlugins(); err != nil {
+		fmt.Fprintf(stderr, "Error loading plugins: %v\n", err)
+		return 1
+	}
+	defer pluginMgr.Shutdown()
 
 	// No -p flag: start the interactive REPL.
 	if *prompt == "" {

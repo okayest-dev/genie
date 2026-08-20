@@ -55,3 +55,11 @@ _Avoid_: model provider, backend
 **Wire protocol**:
 The HTTP request/response format between harness and provider. v1: OpenAI chat/completions. Later: Anthropic messages, OpenAI responses, Google generateContent.
 _Avoid_: API, transport format
+
+**Wire registry**:
+The mapping from a model ID (or config override) to the correct wire protocol implementation. Auto-detects from model ID prefix when no explicit `wire` config is set.
+_Avoid_: provider selector, wire router
+
+**Wire**:
+A concrete implementation of `llm.Client` for a specific wire protocol — one package under `internal/llm/` (e.g. `openai/`, `anthropic/`, `responses/`, `google/`). Each wire handles request serialisation, SSE streaming, tool-call delta accumulation, and error mapping for its protocol.
+_Avoid_: provider implementation, client

@@ -1,30 +1,30 @@
-# Issue tracker: Local Markdown
+# Issue tracker: Beads (bd)
 
-Issues and specs for this repo live as markdown files in `.scratch/`.
+Issues live in the bd (beads) database at `.beads/`. The issue prefix is `og`, so issues are named `og-<hash>` (e.g. `og-rtt`).
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` — never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- Issues are created with `bd create "Title" -t <type>` and linked with `bd dep add <child> <parent>`
+- Triage state is tracked via issue status (`open` / `in_progress` / `closed`) and labels
+- Feature areas use labels: `feature:og-harness`, `feature:og-v1`, `feature:debug-verbose-flag`
+- Wayfinder tickets use type labels: `type:research`, `type:grilling`, `type:prototype`, `type:task`
+- Wayfinder maps use the `wayfinder:map` label
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+Run `bd create` to create a new issue. Apply appropriate type, labels, and description.
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+Run `bd show <id>` to view the full issue body and audit trail.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
+Used by `/wayfinder`. The **map** is a bd issue with the `wayfinder:map` label — the canonical artifact. Its tickets are child issues linked via `bd dep add`.
 
-- **Map**: `.scratch/<effort>/map.md` — the Notes / Decisions-so-far / Fog body.
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+- **Map**: `bd show <map-id>` — the low-res view of the effort.
+- **Child ticket**: `bd create` as child of the map, with type label (`wayfinder:research`, `wayfinder:grilling`, etc.)
+- **Blocking**: `bd dep add <child> <parent> --type blocks` — a ticket is unblocked when every ticket blocking it is closed.
+- **Frontier**: `bd ready` returns open, unblocked, unclaimed tickets — the edge of the known.
+- **Claim**: `bd update <id> --claim` sets assignee and in_progress status before any work.
+- **Resolve**: record the answer in a comment, close with `bd close <id> --reason "..."`, and update the map's Decisions-so-far if needed.

@@ -70,6 +70,12 @@ type Config struct {
 	BashTimeout time.Duration
 	// Tools are the four per-tool enable switches.
 	Tools Tools
+	// PluginDir is the directory where plugins are discovered.
+	PluginDir string
+	// PluginEnable is an explicit allowlist of plugin names to load.
+	PluginEnable []string
+	// PluginDisable is a denylist of plugin names to skip.
+	PluginDisable []string
 }
 
 // fileConfig is the TOML schema. Tool booleans and bash_timeout are pointers
@@ -85,6 +91,7 @@ type fileConfig struct {
 	SessionDir      string    `toml:"session_dir"`
 	BashTimeout     *int      `toml:"bash_timeout"` // seconds
 	Tools           toolsFile `toml:"tools"`
+	Plugins         pluginsFile `toml:"plugins"`
 }
 
 type toolsFile struct {
@@ -92,6 +99,12 @@ type toolsFile struct {
 	Write *bool `toml:"write"`
 	Edit  *bool `toml:"edit"`
 	Bash  *bool `toml:"bash"`
+}
+
+type pluginsFile struct {
+	Dir     string   `toml:"dir"`
+	Enable  []string `toml:"enable"`
+	Disable []string `toml:"disable"`
 }
 
 // Parse resolves the full configuration from raw config-file content and an
@@ -139,6 +152,7 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 			cfg.BashTimeout = time.Duration(*fc.BashTimeout) * time.Second
 		}
 		applyTools(&cfg.Tools, fc.Tools)
+		applyPlugins(&cfg, fc.Plugins, userConfigDir)
 	}
 
 	applied, err := applyEnv(&cfg, env)
@@ -207,6 +221,7 @@ func defaults(userConfigDir string) Config {
 		SessionDir:  filepath.Join(userConfigDir, "og", "sessions"),
 		BashTimeout: defaultBashTimeout,
 		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true},
+		PluginDir:   filepath.Join(userConfigDir, "og", "plugins"),
 	}
 }
 
@@ -269,7 +284,28 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 		cfg.BashTimeout = time.Duration(secs) * time.Second
 		applied = append(applied, "OG_BASH_TIMEOUT")
 	}
+	if v := env["OG_PLUGIN_DIR"]; v != "" {
+		cfg.PluginDir = v
+		applied = append(applied, "OG_PLUGIN_DIR")
+	}
 	return applied, nil
+}
+
+func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) {
+	if src.Dir != "" {
+		cfg.PluginDir = expandPath(src.Dir, userConfigDir)
+	} else {
+		cfg.PluginDir = filepath.Join(userConfigDir, "og", "plugins")
+	}
+	cfg.PluginEnable = src.Enable
+	cfg.PluginDisable = src.Disable
+}
+
+func expandPath(path, baseDir string) string {
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(baseDir, path[2:])
+	}
+	return path
 }
 
 func environMap() map[string]string {
