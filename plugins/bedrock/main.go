@@ -1,6 +1,20 @@
 // Bedrock wire plugin for og.
 // Reads AWS credentials from ~/.aws/credentials, implements SigV4 signing,
 // streams via ConverseStream API.
+//
+// Configuration via config.toml next to the plugin binary:
+//
+//	region       = "us-east-1"      # AWS region (default: us-east-1)
+//	profile      = "my-profile"     # AWS profile name (default: default)
+//	max_tokens   = 4096             # Max output tokens (default: 4096)
+//	endpoint_url = ""               # Custom endpoint URL for VPC (optional)
+//
+// Environment variable overrides (take precedence over config.toml):
+//
+//	OG_BEDROCK_REGION       - AWS region
+//	OG_BEDROCK_PROFILE      - AWS profile name
+//	OG_BEDROCK_MAX_TOKENS   - Max output tokens
+//	OG_BEDROCK_ENDPOINT_URL - Custom endpoint URL
 package main
 
 import (
@@ -18,11 +32,20 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
 	"github.com/okayest-dev/og/plugins/shared"
 )
+
+type bedrockConfig struct {
+	Region      string `toml:"region"`
+	Profile     string `toml:"profile"`
+	MaxTokens   int    `toml:"max_tokens"`
+	EndpointURL string `toml:"endpoint_url"`
+}
 
 type AWSCredentials struct {
 	AccessKeyID     string
@@ -33,13 +56,16 @@ type AWSCredentials struct {
 
 type BedrockClient struct {
 	creds      AWSCredentials
+	maxTokens  int
+	endpoint   string
 	httpClient *http.Client
 }
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	creds, err := loadCredentials()
+	cfg := loadConfig()
+	creds, err := loadCredentials(cfg)
 	if err != nil {
 		slog.Error("failed to load AWS credentials", "error", err)
 		os.Exit(1)
@@ -47,6 +73,8 @@ func main() {
 
 	client := &BedrockClient{
 		creds:      creds,
+		maxTokens:  loadMaxTokens(cfg),
+		endpoint:   loadEndpointURL(cfg),
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 	}
 
@@ -61,7 +89,10 @@ func main() {
 	h.SetModels(models)
 
 	h.OnInit(func() error {
-		slog.Info("bedrock wire plugin initialized", "region", creds.Region)
+		slog.Info("bedrock wire plugin initialized", "region", creds.Region, "max_tokens", client.maxTokens)
+		if client.endpoint != "" {
+			slog.Info("using custom endpoint", "url", client.endpoint)
+		}
 		return nil
 	})
 
@@ -75,19 +106,54 @@ func main() {
 	}
 }
 
-func loadCredentials() (AWSCredentials, error) {
+func loadConfig() bedrockConfig {
+	exe, err := os.Executable()
+	if err != nil {
+		return bedrockConfig{}
+	}
+	dir := filepath.Dir(exe)
+	data, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		return bedrockConfig{}
+	}
+	var cfg bedrockConfig
+	if _, err := toml.Decode(string(data), &cfg); err != nil {
+		slog.Warn("failed to parse bedrock config, using defaults", "error", err)
+		return bedrockConfig{}
+	}
+	if cfg.Region != "" {
+		slog.Info("bedrock config loaded", "region", cfg.Region, "profile", cfg.Profile)
+	}
+	return cfg
+}
+
+func loadCredentials(cfg bedrockConfig) (AWSCredentials, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return AWSCredentials{}, fmt.Errorf("home dir: %w", err)
 	}
 
-	profile := os.Getenv("AWS_PROFILE")
+	// Profile: env > config.toml > default
+	profile := os.Getenv("OG_BEDROCK_PROFILE")
+	if profile == "" {
+		profile = os.Getenv("AWS_PROFILE")
+	}
+	if profile == "" {
+		profile = cfg.Profile
+	}
 	if profile == "" {
 		profile = "default"
 	}
 
+	// Region: env > config.toml > ~/.aws/config > default
 	creds := AWSCredentials{
-		Region: os.Getenv("AWS_REGION"),
+		Region: os.Getenv("OG_BEDROCK_REGION"),
+	}
+	if creds.Region == "" {
+		creds.Region = os.Getenv("AWS_REGION")
+	}
+	if creds.Region == "" {
+		creds.Region = cfg.Region
 	}
 
 	// Read ~/.aws/credentials
@@ -99,7 +165,7 @@ func loadCredentials() (AWSCredentials, error) {
 		creds.SessionToken = section["aws_session_token"]
 	}
 
-	// Read ~/.aws/config for region
+	// Read ~/.aws/config for region (if not set yet)
 	configPath := filepath.Join(home, ".aws", "config")
 	if data, err := os.ReadFile(configPath); err == nil {
 		section := parseINISection(string(data), profile)
@@ -108,7 +174,7 @@ func loadCredentials() (AWSCredentials, error) {
 		}
 	}
 
-	// Env vars override
+	// Env vars override (standard AWS vars)
 	if v := os.Getenv("AWS_ACCESS_KEY_ID"); v != "" {
 		creds.AccessKeyID = v
 	}
@@ -127,11 +193,33 @@ func loadCredentials() (AWSCredentials, error) {
 	}
 
 	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
-		return AWSCredentials{}, fmt.Errorf("no AWS credentials found")
+		return AWSCredentials{}, fmt.Errorf("no AWS credentials found — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or configure ~/.aws/credentials")
 	}
 
 	slog.Info("loaded AWS credentials", "region", creds.Region, "profile", profile)
 	return creds, nil
+}
+
+// loadMaxTokens resolves the max_tokens from env > config > default.
+func loadMaxTokens(cfg bedrockConfig) int {
+	if v := os.Getenv("OG_BEDROCK_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		slog.Warn("invalid OG_BEDROCK_MAX_TOKENS, using default", "value", v)
+	}
+	if cfg.MaxTokens > 0 {
+		return cfg.MaxTokens
+	}
+	return 4096
+}
+
+// loadEndpointURL resolves the endpoint URL from env > config > empty.
+func loadEndpointURL(cfg bedrockConfig) string {
+	if v := os.Getenv("OG_BEDROCK_ENDPOINT_URL"); v != "" {
+		return v
+	}
+	return cfg.EndpointURL
 }
 
 func parseINISection(data, section string) map[string]string {
@@ -203,16 +291,22 @@ func (c *BedrockClient) streamConverse(request json.RawMessage) (json.RawMessage
 	payload, err := json.Marshal(map[string]any{
 		"messages": bedrockMessages,
 		"inferenceConfig": map[string]any{
-			"maxTokens": 4096,
+			"maxTokens": c.maxTokens,
 		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com/model/%s/converse-stream", c.creds.Region, req.Model)
+	endpoint := ""
+	if c.endpoint != "" {
+		endpoint = c.endpoint
+	} else {
+		endpoint = fmt.Sprintf("https://bedrock-runtime.%s.amazonaws.com", c.creds.Region)
+	}
+	url := fmt.Sprintf("%s/model/%s/converse-stream", endpoint, req.Model)
 
-	httpReq, err := http.NewRequest("POST", endpoint, bytes.NewReader(payload))
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
