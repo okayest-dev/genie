@@ -63,7 +63,7 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 
 	return func(yield func(llm.Event) bool) {
 		defer resp.Body.Close()
-		scanner := newLineScanner(resp.Body)
+		scanner := llm.NewScanner(resp.Body)
 		for scanner.Scan() {
 			if ctx.Err() != nil {
 				return

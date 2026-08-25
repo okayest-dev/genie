@@ -71,7 +71,7 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 
 	return func(yield func(llm.Event) bool) {
 		defer resp.Body.Close()
-		scanner := newSSEScanner(resp.Body)
+		scanner := llm.NewScanner(resp.Body)
 
 		// Tool call accumulation state, keyed by content_block index.
 		type toolAcc struct {

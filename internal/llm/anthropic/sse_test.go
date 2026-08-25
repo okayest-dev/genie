@@ -161,7 +161,7 @@ func TestParseEventThinkingDeltaIgnored(t *testing.T) {
 
 func TestParseSSELines(t *testing.T) {
 	input := "event: message_start\ndata: {\"type\":\"message_start\"}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n"
-	sc := newSSEScanner(strings.NewReader(input))
+	sc := llm.NewScanner(strings.NewReader(input))
 
 	evt1, err := parseSSELines(sc)
 	if err != nil {

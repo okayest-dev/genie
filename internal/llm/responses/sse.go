@@ -1,9 +1,7 @@
 package responses
 
 import (
-	"bufio"
 	"encoding/json"
-	"io"
 
 	"github.com/okayest-dev/og/internal/llm"
 )
@@ -12,14 +10,6 @@ import (
 type sseEvent struct {
 	event string
 	data  json.RawMessage
-}
-
-// newSSEScanner scans an SSE body line by line, with headroom for long
-// data lines.
-func newSSEScanner(r io.Reader) *bufio.Scanner {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	return sc
 }
 
 // parseEvent converts one Responses-API SSE event into normalized events.

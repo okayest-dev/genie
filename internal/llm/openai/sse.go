@@ -1,9 +1,6 @@
 package openai
 
 import (
-	"bufio"
-	"io"
-
 	"github.com/okayest-dev/og/internal/llm"
 )
 
@@ -48,12 +45,4 @@ func canonicalFinishReason(reason string) llm.FinishReason {
 	default:
 		return llm.FinishOther
 	}
-}
-
-// newSSEScanner scans an SSE body line by line, with headroom for long
-// data lines.
-func newSSEScanner(r io.Reader) *bufio.Scanner {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	return sc
 }

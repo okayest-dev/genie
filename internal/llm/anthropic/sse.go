@@ -147,13 +147,6 @@ func errorKindFromType(errType string) llm.ErrorKind {
 	}
 }
 
-// newSSEScanner scans an SSE body line by line, with headroom for long data lines.
-func newSSEScanner(r io.Reader) *bufio.Scanner {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-	return sc
-}
-
 // parseSSELines reads an SSE stream line by line and returns the next sseEvent.
 // It returns io.EOF when the stream ends. Blank lines separate events; it
 // accumulates event: and data: lines until a blank line, then yields one event.
