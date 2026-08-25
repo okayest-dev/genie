@@ -64,7 +64,7 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 
 	return func(yield func(llm.Event) bool) {
 		defer resp.Body.Close()
-		scanner := newSSEScanner(resp.Body)
+		scanner := llm.NewScanner(resp.Body)
 		toolCalls := make(map[int]*llm.ToolCall) // accumulated by output_index
 		var currentEvent sseEvent
 		for scanner.Scan() {
