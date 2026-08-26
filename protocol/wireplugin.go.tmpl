@@ -1,0 +1,161 @@
+// Code generated from protocol/schema.yaml. DO NOT EDIT.
+
+package {{ .Protocol.Package }}
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+// Protocol version.
+const ProtocolVersion = {{ .Protocol.Version }}
+
+// Method constants.
+const (
+{{- range .Constants }}
+	{{ .Name }} = "{{ .Value }}"
+{{- end }}
+)
+
+// Error codes.
+const (
+{{- range .ErrorCodes }}
+	{{ .Name }} = {{ .Value }}
+{{- end }}
+)
+
+// Protocol types.
+{{- range .Types }}
+
+type {{ .Name }} struct {
+{{- range .Fields }}
+	{{ .Name }} {{ .Type }} {{ bt }}json:"{{ .JSON }}{{ if .Omitempty }},omitempty{{ end }}"{{ bt }}
+{{- end }}
+}
+{{- end }}
+
+// Handler reads JSON-RPC requests from stdin and writes responses to stdout.
+type Handler struct {
+{{- range .Handler.Struct.Fields }}
+	{{ .Name }} {{ .Type }}
+{{- end }}
+}
+
+// NewHandler creates a handler with the given capabilities.
+func NewHandler(caps Capabilities) *Handler {
+	return &Handler{
+		scanner: bufio.NewScanner(os.Stdin),
+		writer:  json.NewEncoder(os.Stdout),
+		caps:    caps,
+	}
+}
+{{ range .Handler.Methods }}
+func (h *Handler) {{ .Name }}({{ range $i, $p := .Params }}{{ if $i }}, {{ end }}{{ $p.Name }} {{ $p.Type }}{{ end }}) {
+{{- if eq .Name "SetModels" }}
+	h.models = models
+{{- else if eq .Name "OnInit" }}
+	h.onInit = fn
+{{- else if eq .Name "OnStream" }}
+	h.onStream = fn
+{{- end }}
+}
+{{ end }}
+// Run reads requests from stdin and writes responses until EOF or error.
+func (h *Handler) Run() error {
+	for h.scanner.Scan() {
+		line := h.scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var req Request
+		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			h.writeError(req.ID, ParseError, "parse error")
+			continue
+		}
+
+		h.handleRequest(&req)
+	}
+	return h.scanner.Err()
+}
+
+func (h *Handler) handleRequest(req *Request) {
+	switch req.Method {
+{{- range .Handler.Dispatch }}
+{{- if eq .Method "default" }}
+	default:
+		h.writeError(req.ID, MethodNotFound, "method not found")
+{{- else }}
+	case {{ .Method }}:
+		{{- if contains .Action "onInit" }}
+		if h.onInit != nil {
+			if err := h.onInit(); err != nil {
+				h.writeError(req.ID, InternalError, err.Error())
+				return
+			}
+		}
+		h.writeResult(req.ID, WireInitResult{OK: true})
+		{{- else if contains .Action "WireListModels" }}
+		h.writeResult(req.ID, WireListModelsResult{Models: h.models})
+		{{- else if contains .Action "onStream" }}
+		if h.onStream == nil {
+			h.writeError(req.ID, MethodNotFound, "wire/stream not implemented")
+			return
+		}
+		result, err := h.onStream(req.Params)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeRawResult(req.ID, result)
+		{{- else if contains .Action "caps" }}
+		h.writeResult(req.ID, h.caps)
+		{{- else if contains .Action "pong" }}
+		h.writeResult(req.ID, map[string]bool{"pong": true})
+		{{- else if contains .Action "ok" }}
+		h.writeResult(req.ID, map[string]bool{"ok": true})
+		os.Exit(0)
+		{{- end }}
+{{- end }}
+{{- end }}
+	}
+}
+
+func (h *Handler) writeResult(id any, result any) {
+	data, _ := json.Marshal(result)
+	resp := Response{
+		JSONRPC: "2.0",
+		Result:  data,
+		ID:      id,
+	}
+	h.writer.Encode(resp)
+}
+
+func (h *Handler) writeRawResult(id any, raw json.RawMessage) {
+	resp := Response{
+		JSONRPC: "2.0",
+		Result:  raw,
+		ID:      id,
+	}
+	h.writer.Encode(resp)
+}
+
+func (h *Handler) writeError(id any, code int, message string) {
+	resp := Response{
+		JSONRPC: "2.0",
+		Error:   &Error{Code: code, Message: message},
+		ID:      id,
+	}
+	h.writer.Encode(resp)
+}
+
+// ParseParams unmarshals raw JSON-RPC params into a typed struct.
+func ParseParams[T any](raw json.RawMessage) (T, error) {
+	var result T
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return result, fmt.Errorf("parse params: %w", err)
+	}
+	return result, nil
+}
