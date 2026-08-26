@@ -299,7 +299,7 @@ func inputToWire(messages []llm.Message) []map[string]any {
 
 // toolsToWire maps tool definitions to the Responses-API tools array. Returns
 // nil when there are no tools, which omits the field from the JSON payload.
-func toolsToWire(tools []llm.ToolDef) any {
+func toolsToWire(tools []llm.ToolDef) []map[string]any {
 	if len(tools) == 0 {
 		return nil
 	}

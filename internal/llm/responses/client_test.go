@@ -211,15 +211,14 @@ func TestToolsToWire(t *testing.T) {
 	if result == nil {
 		t.Fatal("tools = nil, want array")
 	}
-	arr := result.([]map[string]any)
-	if len(arr) != 1 {
-		t.Fatalf("tools len = %d, want 1", len(arr))
+	if len(result) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(result))
 	}
-	if arr[0]["name"] != "read" {
-		t.Errorf("name = %v, want read", arr[0]["name"])
+	if result[0]["name"] != "read" {
+		t.Errorf("name = %v, want read", result[0]["name"])
 	}
-	if arr[0]["type"] != "function" {
-		t.Errorf("type = %v, want function", arr[0]["type"])
+	if result[0]["type"] != "function" {
+		t.Errorf("type = %v, want function", result[0]["type"])
 	}
 }
 
