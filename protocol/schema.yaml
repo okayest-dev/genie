@@ -1,0 +1,226 @@
+# og wire plugin protocol schema
+# This is the source of truth for generating standalone Go plugin packages.
+# Each plugin vendors the generated output as internal/wireplugin/.
+
+protocol:
+  version: 1
+  package: wireplugin
+  transport: stdio
+  encoding: ndjson-rpc-2.0
+
+constants:
+  - name: MethodCapabilitiesList
+    value: "capabilities/list"
+  - name: MethodToolsList
+    value: "tools/list"
+  - name: MethodToolsCall
+    value: "tools/call"
+  - name: MethodWireInit
+    value: "wire/init"
+  - name: MethodWireStream
+    value: "wire/stream"
+  - name: MethodWireListModels
+    value: "wire/list_models"
+  - name: MethodPing
+    value: "ping"
+  - name: MethodShutdown
+    value: "shutdown"
+
+error_codes:
+  - name: ParseError
+    value: -32700
+  - name: InvalidRequest
+    value: -32600
+  - name: MethodNotFound
+    value: -32601
+  - name: InvalidParams
+    value: -32602
+  - name: InternalError
+    value: -32603
+
+types:
+  - name: Request
+    fields:
+      - name: JSONRPC
+        json: jsonrpc
+        type: string
+      - name: Method
+        json: method
+        type: string
+      - name: Params
+        json: params
+        type: json.RawMessage
+        omitempty: true
+      - name: ID
+        json: id
+        type: any
+
+  - name: Response
+    fields:
+      - name: JSONRPC
+        json: jsonrpc
+        type: string
+      - name: Result
+        json: result
+        type: json.RawMessage
+        omitempty: true
+      - name: Error
+        json: error
+        type: "*Error"
+        omitempty: true
+      - name: ID
+        json: id
+        type: any
+
+  - name: Error
+    fields:
+      - name: Code
+        json: code
+        type: int
+      - name: Message
+        json: message
+        type: string
+
+  - name: Capabilities
+    fields:
+      - name: Tools
+        json: tools
+        type: bool
+      - name: Wires
+        json: wires
+        type: bool
+      - name: Providers
+        json: providers
+        type: bool
+      - name: Version
+        json: version
+        type: int
+
+  - name: WireInitResult
+    fields:
+      - name: OK
+        json: ok
+        type: bool
+
+  - name: ModelDef
+    fields:
+      - name: ID
+        json: id
+        type: string
+      - name: Name
+        json: name
+        type: string
+        omitempty: true
+
+  - name: WireListModelsResult
+    fields:
+      - name: Models
+        json: models
+        type: "[]ModelDef"
+
+handler:
+  struct:
+    fields:
+      - name: scanner
+        type: "*bufio.Scanner"
+      - name: writer
+        type: "*json.Encoder"
+      - name: caps
+        type: Capabilities
+      - name: models
+        type: "[]ModelDef"
+      - name: onInit
+        type: "func() error"
+      - name: onStream
+        type: "func(request json.RawMessage) (json.RawMessage, error)"
+
+  methods:
+    - name: SetModels
+      receiver: "*Handler"
+      params:
+        - name: models
+          type: "[]ModelDef"
+
+    - name: OnInit
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func() error"
+
+    - name: OnStream
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(request json.RawMessage) (json.RawMessage, error)"
+
+  # Methods that are not configurable - always generated as-is
+  static_methods:
+    - name: NewHandler
+      params:
+        - name: caps
+          type: Capabilities
+      returns:
+        - "*Handler"
+
+    - name: Run
+      receiver: "*Handler"
+      returns:
+        - "error"
+
+    - name: writeResult
+      receiver: "*Handler"
+      params:
+        - name: id
+          type: any
+        - name: result
+          type: any
+
+    - name: writeRawResult
+      receiver: "*Handler"
+      params:
+        - name: id
+          type: any
+        - name: raw
+          type: json.RawMessage
+
+    - name: writeError
+      receiver: "*Handler"
+      params:
+        - name: id
+          type: any
+        - name: code
+          type: int
+        - name: message
+          type: string
+
+    - name: handleRequest
+      receiver: "*Handler"
+      params:
+        - name: req
+          type: "*Request"
+
+  dispatch:
+    - method: MethodCapabilitiesList
+      action: "writeResult with caps"
+    - method: MethodWireInit
+      action: "call onInit, write WireInitResult{OK: true}"
+    - method: MethodWireListModels
+      action: "writeResult with WireListModelsResult{Models: models}"
+    - method: MethodWireStream
+      action: "call onStream with params, write raw result"
+    - method: MethodPing
+      action: "writeResult with map[string]bool{\"pong\": true}"
+    - method: MethodShutdown
+      action: "writeResult with map[string]bool{\"ok\": true}, os.Exit(0)"
+    - method: default
+      action: "writeError -32601 \"method not found\""
+
+parse_params:
+  name: ParseParams
+  generic: true
+  params:
+    - name: raw
+      type: json.RawMessage
+  returns:
+    - "T"
+    - "error"
