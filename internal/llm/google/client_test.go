@@ -204,8 +204,7 @@ func TestToolsToWire(t *testing.T) {
 	if result == nil {
 		t.Fatal("tools = nil, want array")
 	}
-	arr := result.([]map[string]any)
-	funcs := arr[0]["functionDeclarations"].([]map[string]any)
+	funcs := result[0]["functionDeclarations"].([]map[string]any)
 	if len(funcs) != 1 || funcs[0]["name"] != "read" {
 		t.Errorf("functions = %+v, want [{name: read}]", funcs)
 	}

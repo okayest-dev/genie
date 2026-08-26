@@ -270,7 +270,7 @@ func messagesToWire(messages []llm.Message) []map[string]any {
 
 // toolsToWire maps tool definitions to the wire's tools array. A nil or
 // empty slice produces nil, which omits the field from the JSON payload.
-func toolsToWire(tools []llm.ToolDef) any {
+func toolsToWire(tools []llm.ToolDef) []map[string]any {
 	if len(tools) == 0 {
 		return nil
 	}
