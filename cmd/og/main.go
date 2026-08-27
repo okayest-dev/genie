@@ -278,7 +278,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if runAgent != nil {
 		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
 	}
-	ctxClient := contextmgr.New(client, sess)
+	ctxClient := contextmgr.New(client, sess, contextmgr.WithTurns(cfg.Context.Turns))
 	err = agent.RunTurn(ctx, ctxClient, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, turnOpts...)
 
 	// Close the ledger to flush any recorded mutations.

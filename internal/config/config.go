@@ -45,6 +45,15 @@ type Tools struct {
 	Bash  bool
 }
 
+// Context holds the harness-level context-management knobs. These control how
+// prior conversation turns are carried into each new turn.
+type Context struct {
+	// Turns is the number of prior turns of history injected into each new
+	// turn's request. Zero means unlimited (the whole conversation), which is
+	// the default so the model remembers every earlier turn.
+	Turns int
+}
+
 // Config is the resolved harness configuration.
 type Config struct {
 	// Model is the session's model id (default big-pickle).
@@ -84,24 +93,27 @@ type Config struct {
 	// DefaultAgent is the name of the agent definition loaded at startup.
 	// Empty means no default agent (current behaviour).
 	DefaultAgent string
+	// Context configures harness-level context management (history window).
+	Context Context
 }
 
 // fileConfig is the TOML schema. Tool booleans and bash_timeout are pointers
 // so an omitted key leaves the default; scalars fall back to defaults when
 // empty.
 type fileConfig struct {
-	Model           string    `toml:"model"`
-	BaseURL         string    `toml:"base_url"`
-	APIKeyEnv       string    `toml:"api_key_env"`
-	Wire            string    `toml:"wire"`
-	Provider        string    `toml:"provider"`
-	Gateway         string    `toml:"gateway"`
-	InstructionFile string    `toml:"instruction_file"`
-	SessionDir      string    `toml:"session_dir"`
-	BashTimeout     *int      `toml:"bash_timeout"` // seconds
-	Tools           toolsFile `toml:"tools"`
+	Model           string      `toml:"model"`
+	BaseURL         string      `toml:"base_url"`
+	APIKeyEnv       string      `toml:"api_key_env"`
+	Wire            string      `toml:"wire"`
+	Provider        string      `toml:"provider"`
+	Gateway         string      `toml:"gateway"`
+	InstructionFile string      `toml:"instruction_file"`
+	SessionDir      string      `toml:"session_dir"`
+	BashTimeout     *int        `toml:"bash_timeout"` // seconds
+	Tools           toolsFile   `toml:"tools"`
 	Plugins         pluginsFile `toml:"plugins"`
-	DefaultAgent    string    `toml:"default_agent"`
+	Context         contextFile `toml:"context"`
+	DefaultAgent    string      `toml:"default_agent"`
 }
 
 type toolsFile struct {
@@ -115,6 +127,10 @@ type pluginsFile struct {
 	Dir     string   `toml:"dir"`
 	Enable  []string `toml:"enable"`
 	Disable []string `toml:"disable"`
+}
+
+type contextFile struct {
+	Turns *int `toml:"turns"`
 }
 
 // Parse resolves the full configuration from raw config-file content and an
@@ -166,6 +182,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		}
 		applyTools(&cfg.Tools, fc.Tools)
 		applyPlugins(&cfg, fc.Plugins, userConfigDir)
+		if fc.Context.Turns != nil {
+			if *fc.Context.Turns < 0 {
+				return nil, fmt.Errorf("config: context.turns must be non-negative, got %d", *fc.Context.Turns)
+			}
+			cfg.Context.Turns = *fc.Context.Turns
+		}
 		if fc.DefaultAgent != "" {
 			cfg.DefaultAgent = fc.DefaultAgent
 		}
@@ -318,6 +340,17 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	if v := env["OG_DEFAULT_AGENT"]; v != "" {
 		cfg.DefaultAgent = v
 		applied = append(applied, "OG_DEFAULT_AGENT")
+	}
+	if v := env["OG_CONTEXT_TURNS"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: OG_CONTEXT_TURNS: %q is not a number", v)
+		}
+		if n < 0 {
+			return nil, fmt.Errorf("config: OG_CONTEXT_TURNS must be non-negative, got %d", n)
+		}
+		cfg.Context.Turns = n
+		applied = append(applied, "OG_CONTEXT_TURNS")
 	}
 	return applied, nil
 }

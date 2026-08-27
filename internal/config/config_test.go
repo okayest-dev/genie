@@ -60,6 +60,9 @@ func TestPureDefaults(t *testing.T) {
 	if cfg.Gateway != "" {
 		t.Errorf("Gateway = %q, want empty by default", cfg.Gateway)
 	}
+	if cfg.Context.Turns != 0 {
+		t.Errorf("Context.Turns = %d, want 0 (unlimited history) by default", cfg.Context.Turns)
+	}
 }
 
 // fullConfig is a config file that sets every v1 key.
@@ -298,6 +301,45 @@ func TestEmptyEnvVarMeansUnset(t *testing.T) {
 	}
 	if cfg.Model != "file-model" {
 		t.Errorf("Model = %q, want %q (empty env var must not override)", cfg.Model, "file-model")
+	}
+}
+
+func TestContextTurnsFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nturns = 5\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.Turns != 5 {
+		t.Errorf("Context.Turns = %d, want 5", cfg.Context.Turns)
+	}
+}
+
+func TestContextTurnsEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nturns = 5\n"), "/home/u", env("OG_CONTEXT_TURNS", "3"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.Turns != 3 {
+		t.Errorf("Context.Turns = %d, want 3 (env overrides file)", cfg.Context.Turns)
+	}
+}
+
+func TestContextTurnsMustNotBeNegative(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		file    string
+		envVars map[string]string
+	}{
+		{name: "file negative", file: "[context]\nturns = -1", envVars: nil},
+		{name: "env negative", envVars: env("OG_CONTEXT_TURNS", "-1")},
+		{name: "env non-numeric", envVars: env("OG_CONTEXT_TURNS", "lots")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
+			if err == nil {
+				t.Fatalf("Parse accepted %q %v; want an error for an invalid context turns", tc.file, tc.envVars)
+			}
+		})
 	}
 }
 

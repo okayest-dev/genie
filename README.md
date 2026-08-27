@@ -104,6 +104,9 @@ bash = true
 # dir = "~/.config/og/plugins"
 # enable = ["my-plugin"]
 # disable = ["broken-plugin"]
+
+[context]
+# turns = 0   # prior turns of history carried into each new turn; 0 = all
 ```
 
 ### Environment variables
@@ -120,6 +123,7 @@ bash = true
 | `OG_SESSION_DIR` | Session storage directory |
 | `OG_BASH_TIMEOUT` | Bash command timeout (seconds) |
 | `OG_PLUGIN_DIR` | Plugin discovery directory |
+| `OG_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
 | `OG_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
 
 ### Debug and verbose modes

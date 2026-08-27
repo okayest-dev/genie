@@ -45,6 +45,15 @@ type Config struct {
 	Stderr       io.Writer
 }
 
+// contextTurns returns the history window from the harness config, defaulting
+// to unlimited (0) when no config is present (e.g. unit tests).
+func contextTurns(cfg *Config) int {
+	if cfg.Cfg == nil {
+		return 0
+	}
+	return cfg.Cfg.Context.Turns
+}
+
 // replState holds mutable agent state for the duration of a REPL session.
 type replState struct {
 	currentAgent  *config.ResolvedAgent
@@ -67,7 +76,7 @@ func Run(ctx context.Context, cfg *Config) error {
 
 	state := &replState{
 		currentAgent: cfg.DefaultAgent,
-		client:       contextmgr.New(cfg.Client, sess),
+		client:       contextmgr.New(cfg.Client, sess, contextmgr.WithTurns(contextTurns(cfg))),
 	}
 	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
@@ -262,7 +271,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 			fmt.Fprintf(cfg.Stderr, "session: %s\n", (*sess).ID)
 			// Rebind the context client to the new session so history
 			// injection follows the current session, not the discarded one.
-			state.client = contextmgr.New(cfg.Client, *sess)
+			state.client = contextmgr.New(cfg.Client, *sess, contextmgr.WithTurns(contextTurns(cfg)))
 		}
 
 	case "/changes":

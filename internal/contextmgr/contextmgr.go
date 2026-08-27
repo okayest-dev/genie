@@ -19,11 +19,27 @@ import (
 type ContextManager struct {
 	inner llm.Client
 	sess  *session.Session
+	// turns is the number of prior turns of history injected into each new
+	// turn's request. Zero means unlimited (the whole conversation).
+	turns int
+}
+
+// Option configures a ContextManager at construction time.
+type Option func(*ContextManager)
+
+// WithTurns limits history injection to the `turns` most recent prior turns.
+// Zero means unlimited (the default).
+func WithTurns(turns int) Option {
+	return func(m *ContextManager) { m.turns = turns }
 }
 
 // New wraps inner so that Stream requests gain the session's prior history.
-func New(inner llm.Client, sess *session.Session) *ContextManager {
-	return &ContextManager{inner: inner, sess: sess}
+func New(inner llm.Client, sess *session.Session, opts ...Option) *ContextManager {
+	m := &ContextManager{inner: inner, sess: sess}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Stream injects prior-turn history from the session into the request and
@@ -88,13 +104,7 @@ func (m *ContextManager) injectHistory(req llm.Request) llm.Request {
 		return req
 	}
 
-	var prior []llm.Message
-	for _, msg := range history[:start] {
-		if msg.Role == llm.RoleSystem {
-			continue
-		}
-		prior = append(prior, msg)
-	}
+	prior := m.windowPrior(history[:start])
 
 	current := history[start:]
 	messages := make([]llm.Message, 0, len(prior)+len(current))
@@ -104,4 +114,37 @@ func (m *ContextManager) injectHistory(req llm.Request) llm.Request {
 
 	req.Messages = messages
 	return req
+}
+
+// windowPrior returns the prior-history region flattened into a message list
+// with the leading system-role instruction messages dropped. A turn always
+// begins with a system-role instruction message, so the region can be split
+// into turns at those boundaries. When m.turns is positive it keeps only the
+// most recent m.turns turns; zero or negative means unlimited.
+func (m *ContextManager) windowPrior(raw []llm.Message) []llm.Message {
+	var turns [][]llm.Message
+	var cur []llm.Message
+	for _, msg := range raw {
+		if msg.Role == llm.RoleSystem {
+			if len(cur) > 0 {
+				turns = append(turns, cur)
+			}
+			cur = nil
+			continue
+		}
+		cur = append(cur, msg)
+	}
+	if len(cur) > 0 {
+		turns = append(turns, cur)
+	}
+
+	if m.turns > 0 && len(turns) > m.turns {
+		turns = turns[len(turns)-m.turns:]
+	}
+
+	var out []llm.Message
+	for _, t := range turns {
+		out = append(out, t...)
+	}
+	return out
 }
