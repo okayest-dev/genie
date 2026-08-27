@@ -15,6 +15,7 @@ import (
 
 	"github.com/okayest-dev/og/internal/agent"
 	"github.com/okayest-dev/og/internal/config"
+	"github.com/okayest-dev/og/internal/contextmgr"
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
@@ -277,7 +278,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if runAgent != nil {
 		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
 	}
-	err = agent.RunTurn(ctx, client, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, nil, turnOpts...)
+	ctxClient := contextmgr.New(client, sess)
+	err = agent.RunTurn(ctx, ctxClient, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, turnOpts...)
 
 	// Close the ledger to flush any recorded mutations.
 	if closeErr := ldg.Close(); closeErr != nil {
