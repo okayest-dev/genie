@@ -20,28 +20,51 @@ const DefaultPrompt = "You are og, a helpful terminal agent."
 //  2. The config instruction file, if set (errors if the file is missing).
 //  3. An AGENTS.md in cwd, if present (no parent-directory walk).
 func Load(cfg *config.Config, cwd string) (string, error) {
+	return LoadWithAgent(cfg, nil, cwd)
+}
+
+// LoadWithAgent assembles the instruction with an optional agent override.
+// When agent is nil, behaves identically to Load.
+// When agent is set:
+//   - agent.InstructionFile replaces cfg.InstructionFile (if agent's is non-empty)
+//   - agent.InheritAgentsMD controls AGENTS.md inclusion (default true)
+func LoadWithAgent(cfg *config.Config, agent *config.ResolvedAgent, cwd string) (string, error) {
 	instruction := DefaultPrompt
 
-	if cfg.InstructionFile != "" {
-		b, err := os.ReadFile(cfg.InstructionFile)
-		if err != nil {
-			return "", fmt.Errorf("instruction file %s: %w", cfg.InstructionFile, err)
-		}
-		instruction += "\n" + string(b)
-		slog.Info("instruction file loaded", "path", cfg.InstructionFile, "bytes", len(b))
-		slog.Debug("instruction source", "name", "instruction_file", "path", cfg.InstructionFile, "bytes", len(b))
+	// Determine which instruction file to use.
+	instructionFile := cfg.InstructionFile
+	if agent != nil && agent.InstructionFile != "" {
+		instructionFile = agent.InstructionFile
 	}
 
-	agentsPath := filepath.Join(cwd, "AGENTS.md")
-	b, err := os.ReadFile(agentsPath)
-	if err == nil {
+	if instructionFile != "" {
+		b, err := os.ReadFile(instructionFile)
+		if err != nil {
+			return "", fmt.Errorf("instruction file %s: %w", instructionFile, err)
+		}
 		instruction += "\n" + string(b)
-		slog.Info("AGENTS.md loaded", "path", agentsPath, "bytes", len(b))
-		slog.Debug("instruction source", "name", "AGENTS.md", "path", agentsPath, "bytes", len(b))
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("reading AGENTS.md: %w", err)
-	} else {
-		slog.Info("AGENTS.md not found", "path", agentsPath)
+		slog.Info("instruction file loaded", "path", instructionFile, "bytes", len(b))
+		slog.Debug("instruction source", "name", "instruction_file", "path", instructionFile, "bytes", len(b))
+	}
+
+	// AGENTS.md: included unless agent explicitly excludes it.
+	inheritAgentsMD := true
+	if agent != nil {
+		inheritAgentsMD = agent.InheritAgentsMD
+	}
+
+	if inheritAgentsMD {
+		agentsPath := filepath.Join(cwd, "AGENTS.md")
+		b, err := os.ReadFile(agentsPath)
+		if err == nil {
+			instruction += "\n" + string(b)
+			slog.Info("AGENTS.md loaded", "path", agentsPath, "bytes", len(b))
+			slog.Debug("instruction source", "name", "AGENTS.md", "path", agentsPath, "bytes", len(b))
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("reading AGENTS.md: %w", err)
+		} else {
+			slog.Info("AGENTS.md not found", "path", agentsPath)
+		}
 	}
 
 	slog.Info("instruction assembled", "total_bytes", len(instruction))

@@ -81,6 +81,9 @@ type Config struct {
 	PluginEnable []string
 	// PluginDisable is a denylist of plugin names to skip.
 	PluginDisable []string
+	// DefaultAgent is the name of the agent definition loaded at startup.
+	// Empty means no default agent (current behaviour).
+	DefaultAgent string
 }
 
 // fileConfig is the TOML schema. Tool booleans and bash_timeout are pointers
@@ -98,6 +101,7 @@ type fileConfig struct {
 	BashTimeout     *int      `toml:"bash_timeout"` // seconds
 	Tools           toolsFile `toml:"tools"`
 	Plugins         pluginsFile `toml:"plugins"`
+	DefaultAgent    string    `toml:"default_agent"`
 }
 
 type toolsFile struct {
@@ -162,6 +166,9 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		}
 		applyTools(&cfg.Tools, fc.Tools)
 		applyPlugins(&cfg, fc.Plugins, userConfigDir)
+		if fc.DefaultAgent != "" {
+			cfg.DefaultAgent = fc.DefaultAgent
+		}
 	}
 
 	applied, err := applyEnv(&cfg, env)
@@ -180,6 +187,7 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		"provider", cfg.Provider,
 		"instruction_file", cfg.InstructionFile,
 		"session_dir", cfg.SessionDir,
+		"default_agent", cfg.DefaultAgent,
 	)
 	slog.Debug("config resolved",
 		"model", cfg.Model,
@@ -202,11 +210,16 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 
 // Load reads the config file from os.UserConfigDir()/og/config.toml (missing
 // means pure defaults) and resolves the full configuration from the process
-// environment.
+// environment. OG_CONFIG_DIR overrides the config directory used for deriving
+// default paths.
 func Load() (*Config, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+	dir := os.Getenv("OG_CONFIG_DIR")
+	if dir == "" {
+		var err error
+		dir, err = os.UserConfigDir()
+		if err != nil {
+			return nil, fmt.Errorf("config: %w", err)
+		}
 	}
 	path := filepath.Join(dir, "og", configFileName)
 	file, err := os.ReadFile(path)
@@ -301,6 +314,10 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	if v := env["OG_PLUGIN_DIR"]; v != "" {
 		cfg.PluginDir = v
 		applied = append(applied, "OG_PLUGIN_DIR")
+	}
+	if v := env["OG_DEFAULT_AGENT"]; v != "" {
+		cfg.DefaultAgent = v
+		applied = append(applied, "OG_DEFAULT_AGENT")
 	}
 	return applied, nil
 }

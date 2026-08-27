@@ -19,23 +19,48 @@ import (
 	"github.com/okayest-dev/og/internal/tools"
 )
 
+// Option configures a RunTurn call.
+type Option func(*turnOptions)
+
+type turnOptions struct {
+	agentName string
+}
+
+// WithAgentName attaches an agent name to the user message in the session log.
+func WithAgentName(name string) Option {
+	return func(o *turnOptions) { o.agentName = name }
+}
+
 // RunTurn runs the agent loop against c: build the canonical conversation,
 // stream the reply, and when the model returns tool calls, execute them
-// serially and feed results back. instruction is the assembled system
-// prompt. out receives text deltas; errOut receives tool framing headers.
+// serially and feed results back. instruction is the assembled agent
+// instruction. out receives text deltas; errOut receives tool framing headers.
 // If sess is non-nil, the conversation is persisted. If registry is nil,
 // no tools are sent and tool calls are not processed. If ldg is non-nil,
 // file mutations are captured in the change ledger. cwd is the working
-// directory for resolving relative file paths.
-func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string) error {
-	messages := []llm.Message{
-		{Role: llm.RoleSystem, Content: instruction},
-		{Role: llm.RoleUser, Content: prompt},
+// directory for resolving relative file paths. prevMessages are messages
+// from previous turns (excluding system messages) that provide context.
+// opts configures optional behaviour (e.g. WithAgentName for session logging).
+func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string, prevMessages []llm.Message, opts ...Option) error {
+	var to turnOptions
+	for _, o := range opts {
+		o(&to)
 	}
+	messages := make([]llm.Message, 0, 2+len(prevMessages))
+	messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: instruction})
+	messages = append(messages, prevMessages...)
+	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: prompt})
 
 	// Persist the system and user messages to the transcript.
 	if sess != nil {
 		for _, msg := range messages {
+			// Attach agent name metadata to the user message.
+			if to.agentName != "" && msg.Role == llm.RoleUser {
+				if err := sess.AppendWithMeta(msg, map[string]string{"agent": to.agentName}); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := sess.Append(msg); err != nil {
 				return err
 			}

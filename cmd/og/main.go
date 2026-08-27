@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,14 +32,15 @@ import (
 	"github.com/okayest-dev/og/internal/tools/writetool"
 )
 
-const usage = `usage: og [-v] [-d] [-p prompt]
+const usage = `usage: og [-v] [-d] [-a agent] [-p prompt]
 
 og is a minimal terminal agent harness.
 
 Flags:
-  -p prompt   run a single prompt, print the reply to stdout, and exit
-  -v          verbose output: high-level flow to stderr
-  -d          debug output: low-level detail to stderr (implies -v)
+  -a agent   load a named agent definition for this run
+  -p prompt  run a single prompt, print the reply to stdout, and exit
+  -v         verbose output: high-level flow to stderr
+  -d         debug output: low-level detail to stderr (implies -v)
 
 Environment:
   OG_DEBUG    enable debug mode (true/1/yes)
@@ -96,6 +98,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	prompt := fs.String("p", "", "run a single prompt")
+	agentFlag := fs.String("a", "", "agent definition to load for this run")
 	verbose := fs.Bool("v", false, "verbose output")
 	debug := fs.Bool("d", false, "debug output (implies -v)")
 	if err := fs.Parse(cleanArgs); err != nil {
@@ -123,14 +126,53 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-	instruction, err := instruct.Load(cfg, cwd)
+
+	// Build the tool registry from config.
+	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
+
+	// Resolve the agent for this run.
+	var runAgent *config.ResolvedAgent
+	agentName := *agentFlag
+	if agentName == "" && cfg.DefaultAgent != "" {
+		agentName = cfg.DefaultAgent
+	}
+
+	if agentName != "" {
+		agentReg := resolveAgentReg(cwd)
+		resolved, err := agentReg.GetResolved(agentName, cfg)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", err)
+			return 3
+		}
+		if err := registry.ValidateTools(resolved.Tools); err != nil {
+			fmt.Fprintf(stderr, "Error: agent %q: %v\n", agentName, err)
+			return 3
+		}
+		runAgent = resolved
+	}
+
+	// Apply agent overrides to model.
+	runModel := cfg.Model
+	if runAgent != nil && runAgent.Model != "" {
+		runModel = runAgent.Model
+	}
+
+	// Assemble instruction with agent context.
+	instruction, err := instruct.LoadWithAgent(cfg, runAgent, cwd)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+
+	// Agent-scoped registry.
+	runRegistry := registry
+	if runAgent != nil && runAgent.Tools != nil {
+		runRegistry = registry.Subset(runAgent.Tools)
+	}
+
 	wire := cfg.Wire
 	if wire == "" {
-		wire = llm.DetectWire(cfg.Model)
+		wire = llm.DetectWire(runModel)
 	}
 	baseURL := cfg.BaseURL
 	if cfg.Gateway != "" {
@@ -142,11 +184,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Build the tool registry from config.
-	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
-
 	// Load plugins.
-	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, registry)
+	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, runRegistry)
 	if err := pluginMgr.LoadPlugins(); err != nil {
 		fmt.Fprintf(stderr, "Error loading plugins: %v\n", err)
 		return 1
@@ -183,15 +222,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// No -p flag: start the interactive REPL.
 	if *prompt == "" {
+		var agentReg *config.AgentReg
+		if runAgent != nil || cfg.DefaultAgent != "" {
+			agentReg = resolveAgentReg(cwd)
+		}
 		replCfg := &repl.Config{
-			Client:      client,
-			Model:       cfg.Model,
-			Instruction: instruction,
-			SessionDir:  cfg.SessionDir,
-			Registry:    registry,
-			Stdin:       os.Stdin,
-			Stdout:      stdout,
-			Stderr:      stderr,
+			Client:       client,
+			Model:        runModel,
+			Instruction:  instruction,
+			SessionDir:   cfg.SessionDir,
+			Registry:     runRegistry,
+			Cwd:          cwd,
+			Cfg:          cfg,
+			AgentReg:     agentReg,
+			DefaultAgent: runAgent,
+			BashTimeout:  cfg.BashTimeout,
+			Stdin:        os.Stdin,
+			Stdout:       stdout,
+			Stderr:       stderr,
 		}
 		err := repl.Run(context.Background(), replCfg)
 		if err != nil {
@@ -225,7 +273,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	err = agent.RunTurn(ctx, client, cfg.Model, instruction, *prompt, stdout, stderr, sess, registry, ldg, cwd)
+	var turnOpts []agent.Option
+	if runAgent != nil {
+		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
+	}
+	err = agent.RunTurn(ctx, client, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, nil, turnOpts...)
 
 	// Close the ledger to flush any recorded mutations.
 	if closeErr := ldg.Close(); closeErr != nil {
@@ -242,6 +294,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stderr, "session: %s\n", sess.ID)
 	return 0
+}
+
+// resolveAgentReg creates an AgentReg from the standard directories.
+func resolveAgentReg(cwd string) *config.AgentReg {
+	globalDir := filepath.Join(os.Getenv("OG_CONFIG_DIR"), "og", "agents")
+	if os.Getenv("OG_CONFIG_DIR") == "" {
+		if dir, err := os.UserConfigDir(); err == nil {
+			globalDir = filepath.Join(dir, "og", "agents")
+		}
+	}
+	localDir := filepath.Join(cwd, ".og", "agents")
+	return config.NewAgentReg(globalDir, localDir)
 }
 
 // buildRegistry creates the tool registry, registering available tools and

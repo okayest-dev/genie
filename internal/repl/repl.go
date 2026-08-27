@@ -8,12 +8,17 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/okayest-dev/og/internal/agent"
+	"github.com/okayest-dev/og/internal/config"
+	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
 	"github.com/okayest-dev/og/internal/session"
@@ -24,14 +29,26 @@ const prompt = "og> "
 
 // Config holds the dependencies for running the REPL.
 type Config struct {
-	Client      llm.Client
-	Model       string
-	Instruction string
-	SessionDir  string
-	Registry    *tools.Registry
-	Stdin       io.Reader
-	Stdout      io.Writer
-	Stderr      io.Writer
+	Client       llm.Client
+	Model        string
+	Instruction  string // default instruction (no-agent fallback)
+	SessionDir   string
+	Registry     *tools.Registry // global registry
+	Cwd          string          // working directory for AGENTS.md lookup
+	Cfg          *config.Config  // harness config (for instruction assembly, agent resolution)
+	AgentReg     *config.AgentReg
+	DefaultAgent *config.ResolvedAgent
+	BashTimeout  time.Duration
+	Stdin        io.Reader
+	Stdout       io.Writer
+	Stderr       io.Writer
+}
+
+// replState holds mutable agent state for the duration of a REPL session.
+type replState struct {
+	currentAgent  *config.ResolvedAgent
+	previousAgent *config.ResolvedAgent
+	instruction   string
 }
 
 // Run starts the interactive REPL loop. It reads user input, runs agent
@@ -42,6 +59,11 @@ func Run(ctx context.Context, cfg *Config) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 	fmt.Fprintf(cfg.Stderr, "session: %s\n", sess.ID)
+
+	state := &replState{
+		currentAgent: cfg.DefaultAgent,
+	}
+	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
 	// Set up signal handling for Ctrl+C.
 	sigCh := make(chan os.Signal, 1)
@@ -71,41 +93,138 @@ func Run(ctx context.Context, cfg *Config) error {
 			continue
 		}
 
-		// Handle slash commands.
+		// 1. Parse @name one-shot (before slash commands).
+		if agentName, rest, ok := parseInlineAgent(line); ok {
+			handleInlineAgent(ctx, agentName, rest, cfg, state, sess, sigCh)
+			continue
+		}
+
+		// 2. Handle slash commands.
 		if strings.HasPrefix(line, "/") {
-			if handleSlashCommand(ctx, line, cfg, &sess) {
+			if handleSlashCommand(ctx, line, cfg, state, &sess) {
 				return nil
 			}
 			continue
 		}
 
-		// Run the agent turn with context for cancellation.
-		turnCtx, cancel := context.WithCancel(ctx)
+		// 3. Normal turn.
+		runTurn(ctx, cfg, state, line, sess, sigCh)
+	}
+}
 
-		// Run the turn in a goroutine so we can listen for Ctrl+C.
-		errCh := make(chan error, 1)
-		go func() {
-			errCh <- agent.RunTurn(turnCtx, cfg.Client, cfg.Model, cfg.Instruction, line, cfg.Stdout, cfg.Stderr, sess, cfg.Registry, nil, "")
-		}()
+// resolveInstruction assembles the instruction for the current agent.
+func resolveInstruction(cfg *Config, agent *config.ResolvedAgent) string {
+	if agent == nil {
+		return cfg.Instruction
+	}
+	s, err := instruct.LoadWithAgent(cfg.Cfg, agent, cfg.Cwd)
+	if err != nil {
+		slog.Error("failed to resolve instruction", "error", err)
+		return cfg.Instruction
+	}
+	return s
+}
 
-		// Wait for turn to complete or Ctrl+C.
-		select {
-		case <-sigCh:
-			// Ctrl+C mid-turn: cancel the turn.
-			cancel()
-			fmt.Fprintln(cfg.Stderr, "\n[turn cancelled]")
-		case err := <-errCh:
-			cancel()
-			if err != nil {
-				fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
-			}
+// resolveRegistry returns the tool registry scoped to the current agent.
+func resolveRegistry(cfg *Config, agent *config.ResolvedAgent) *tools.Registry {
+	if agent == nil {
+		return cfg.Registry
+	}
+	if agent.Tools == nil {
+		return cfg.Registry
+	}
+	return cfg.Registry.Subset(agent.Tools)
+}
+
+// currentModel returns the model for the current agent, falling back to config.
+func currentModel(cfg *Config, agent *config.ResolvedAgent) string {
+	if agent != nil && agent.Model != "" {
+		return agent.Model
+	}
+	return cfg.Model
+}
+
+// inlineAgentName matches a valid agent name at the start of a line.
+var inlineAgentName = regexp.MustCompile(`^@([a-z0-9-]+)(?:\s|$)`)
+
+// parseInlineAgent checks if a line starts with @name and extracts the
+// agent name and remaining prompt. Returns ("", "", false) if not an inline agent.
+func parseInlineAgent(line string) (agentName, prompt string, ok bool) {
+	m := inlineAgentName.FindStringSubmatch(line)
+	if m == nil {
+		return "", "", false
+	}
+	return m[1], strings.TrimSpace(line[len(m[0]):]), true
+}
+
+// handleInlineAgent runs a one-shot agent turn, then reverts state.
+func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Config, state *replState, sess *session.Session, sigCh <-chan os.Signal) {
+	if prompt == "" {
+		fmt.Fprintf(cfg.Stderr, "og: @%s requires a prompt\n", agentName)
+		return
+	}
+
+	// Look up the agent.
+	resolved, err := cfg.AgentReg.GetResolved(agentName, cfg.Cfg)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "og: %v\n", err)
+		return
+	}
+
+	// Validate tools.
+	if err := cfg.Registry.ValidateTools(resolved.Tools); err != nil {
+		fmt.Fprintf(cfg.Stderr, "og: agent %q: %v\n", agentName, err)
+		return
+	}
+
+	// Save and switch.
+	state.previousAgent = state.currentAgent
+	state.currentAgent = resolved
+
+	// Run the turn.
+	runTurn(ctx, cfg, state, prompt, sess, sigCh)
+
+	// Revert.
+	state.currentAgent = state.previousAgent
+	state.previousAgent = nil
+	state.instruction = resolveInstruction(cfg, state.currentAgent)
+}
+
+// runTurn executes a single agent turn with the current agent state.
+func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, sess *session.Session, sigCh <-chan os.Signal) {
+	// Resolve instruction for this turn.
+	instruction := resolveInstruction(cfg, state.currentAgent)
+	registry := resolveRegistry(cfg, state.currentAgent)
+	model := currentModel(cfg, state.currentAgent)
+
+	var opts []agent.Option
+	if state.currentAgent != nil {
+		opts = append(opts, agent.WithAgentName(state.currentAgent.Name))
+	}
+
+	turnCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- agent.RunTurn(turnCtx, cfg.Client, model, instruction, prompt,
+			cfg.Stdout, cfg.Stderr, sess, registry, nil, cfg.Cwd,
+			filterHistory(sess.History()), opts...)
+	}()
+
+	select {
+	case <-sigCh:
+		cancel()
+		fmt.Fprintln(cfg.Stderr, "\n[turn cancelled]")
+	case err := <-errCh:
+		cancel()
+		if err != nil {
+			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
 		}
 	}
 }
 
 // handleSlashCommand processes a slash command and returns true if the REPL
 // should exit.
-func handleSlashCommand(ctx context.Context, line string, cfg *Config, sess **session.Session) bool {
+func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *replState, sess **session.Session) bool {
 	parts := strings.SplitN(line, " ", 2)
 	cmd := strings.ToLower(parts[0])
 
@@ -122,6 +241,10 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, sess **se
 		fmt.Fprintln(cfg.Stdout, "  /changes <id>     show change details")
 		fmt.Fprintln(cfg.Stdout, "  /model            list available models")
 		fmt.Fprintln(cfg.Stdout, "  /model <id>       switch to a different model")
+		fmt.Fprintln(cfg.Stdout, "  /agent            list available agents")
+		fmt.Fprintln(cfg.Stdout, "  /agent <name>     switch to a named agent")
+		fmt.Fprintln(cfg.Stdout, "")
+		fmt.Fprintln(cfg.Stdout, "  @<name> <prompt>  one-shot agent switch")
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
 
@@ -181,11 +304,79 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, sess **se
 			fmt.Fprintf(cfg.Stdout, "model: %s\n", cfg.Model)
 		}
 
+	case "/agent":
+		if cfg.AgentReg == nil {
+			fmt.Fprintln(cfg.Stdout, "no agents configured")
+			return false
+		}
+		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+			// List agents.
+			names := cfg.AgentReg.List()
+			if len(names) == 0 {
+				fmt.Fprintln(cfg.Stdout, "no agents configured")
+				return false
+			}
+			fmt.Fprintln(cfg.Stdout, "Available agents:")
+			for _, name := range names {
+				_marker := "  "
+				if state.currentAgent != nil && state.currentAgent.Name == name {
+					_marker = "* "
+				}
+				def, _ := cfg.AgentReg.Get(name)
+				resolved, _ := cfg.AgentReg.GetResolved(name, cfg.Cfg)
+				modelStr := ""
+				if resolved != nil {
+					modelStr = fmt.Sprintf("  model: %s", resolved.Model)
+				}
+				toolsStr := ""
+				if def != nil && def.Tools != nil && resolved != nil {
+					toolsStr = fmt.Sprintf("  tools: %s", strings.Join(resolved.Tools, ", "))
+				}
+				fmt.Fprintf(cfg.Stdout, "%s%s%s%s\n", _marker, name, modelStr, toolsStr)
+			}
+			if state.currentAgent != nil {
+				fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", state.currentAgent.Name)
+			} else {
+				fmt.Fprintln(cfg.Stdout, "\nCurrent: (default)")
+			}
+			return false
+		}
+		// Switch agent.
+		target := strings.TrimSpace(parts[1])
+		resolved, err := cfg.AgentReg.GetResolved(target, cfg.Cfg)
+		if err != nil {
+			fmt.Fprintf(cfg.Stderr, "og: %v\n", err)
+			return false
+		}
+		if err := cfg.Registry.ValidateTools(resolved.Tools); err != nil {
+			fmt.Fprintf(cfg.Stderr, "og: agent %q: %v\n", target, err)
+			return false
+		}
+		state.currentAgent = resolved
+		state.instruction = resolveInstruction(cfg, state.currentAgent)
+		toolsStr := ""
+		if resolved.Tools != nil {
+			toolsStr = fmt.Sprintf(", tools: %s", strings.Join(resolved.Tools, ", "))
+		}
+		fmt.Fprintf(cfg.Stdout, "switched to %s (model: %s%s)\n", resolved.Name, resolved.Model, toolsStr)
+
 	default:
 		fmt.Fprintf(cfg.Stdout, "unknown command: %s (try /help)\n", cmd)
 	}
 
 	return false
+}
+
+// filterHistory strips system messages from the history slice, since RunTurn
+// always injects the current instruction as the sole system message.
+func filterHistory(history []llm.Message) []llm.Message {
+	var out []llm.Message
+	for _, msg := range history {
+		if msg.Role != llm.RoleSystem {
+			out = append(out, msg)
+		}
+	}
+	return out
 }
 
 // fileNames returns a comma-separated list of file paths from a batch's files.

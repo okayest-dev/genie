@@ -24,14 +24,29 @@ type Session struct {
 	TranscriptPath string
 	// dir is the session directory.
 	dir string
+	// msgs holds the in-memory message mirror, growing as Append is called.
+	msgs []llm.Message
 }
 
 // TranscriptLine is one line in the JSONL transcript.
 type TranscriptLine struct {
-	// Role is the message role (system, user, assistant).
+	// Role is the message role (system, user, assistant, tool).
 	Role string `json:"role"`
 	// Content is the message content.
 	Content string `json:"content"`
+	// ToolCalls holds the tool calls made by an assistant message.
+	ToolCalls []transcriptToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID links a tool result message back to its call.
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// Metadata carries optional key-value pairs (e.g. agent name on user turns).
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// transcriptToolCall is the JSONL representation of a tool call.
+type transcriptToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // New creates a new session in the given directory. It creates the directory
@@ -57,9 +72,34 @@ func New(dir string) (*Session, error) {
 
 // Append adds a message to the session transcript.
 func (s *Session) Append(msg llm.Message) error {
+	return s.AppendWithMeta(msg, nil)
+}
+
+// AppendWithMeta adds a message with optional metadata to the transcript.
+// The metadata is persisted in the JSONL but not carried in llm.Message.
+func (s *Session) AppendWithMeta(msg llm.Message, meta map[string]string) error {
 	line := TranscriptLine{
 		Role:    msg.Role,
 		Content: msg.Content,
+	}
+
+	if len(msg.ToolCalls) > 0 {
+		line.ToolCalls = make([]transcriptToolCall, len(msg.ToolCalls))
+		for i, tc := range msg.ToolCalls {
+			line.ToolCalls[i] = transcriptToolCall{
+				ID:        tc.ID,
+				Name:      tc.Name,
+				Arguments: tc.Arguments,
+			}
+		}
+	}
+
+	if msg.ToolCallID != "" {
+		line.ToolCallID = msg.ToolCallID
+	}
+
+	if len(meta) > 0 {
+		line.Metadata = meta
 	}
 
 	data, err := json.Marshal(line)
@@ -79,12 +119,14 @@ func (s *Session) Append(msg llm.Message) error {
 		return fmt.Errorf("session: write to transcript: %w", err)
 	}
 
+	s.msgs = append(s.msgs, msg)
+
 	slog.Debug("message appended to transcript", "session", s.ID, "role", msg.Role)
 	return nil
 }
 
 // Load reconstructs the canonical conversation from the transcript file.
-// Messages are returned in order.
+// Messages are returned in order, including tool call metadata.
 func (s *Session) Load() ([]llm.Message, error) {
 	data, err := os.ReadFile(s.TranscriptPath)
 	if err != nil {
@@ -101,13 +143,46 @@ func (s *Session) Load() ([]llm.Message, error) {
 		if err := decoder.Decode(&line); err != nil {
 			return nil, fmt.Errorf("session: decode transcript line: %w", err)
 		}
-		messages = append(messages, llm.Message{
+		msg := llm.Message{
 			Role:    line.Role,
 			Content: line.Content,
-		})
+		}
+		if len(line.ToolCalls) > 0 {
+			msg.ToolCalls = make([]llm.ToolCall, len(line.ToolCalls))
+			for i, tc := range line.ToolCalls {
+				msg.ToolCalls[i] = llm.ToolCall{
+					ID:        tc.ID,
+					Name:      tc.Name,
+					Arguments: tc.Arguments,
+				}
+			}
+		}
+		if line.ToolCallID != "" {
+			msg.ToolCallID = line.ToolCallID
+		}
+		messages = append(messages, msg)
 	}
 
 	return messages, nil
+}
+
+// History returns the in-memory message mirror. This is the ordered list of
+// all messages appended to this session since creation (or since Load
+// populated it). Unlike Load, it does not re-read the transcript file.
+func (s *Session) History() []llm.Message {
+	return s.msgs
+}
+
+// LoadInto loads the transcript from disk and populates the in-memory message
+// mirror. Use this when resuming an existing session so that History returns
+// the full conversation state.
+func (s *Session) LoadInto() error {
+	msgs, err := s.Load()
+	if err != nil {
+		return err
+	}
+	s.msgs = msgs
+	return nil
 }
 
 // generateID creates a unique session id based on timestamp and random suffix.
