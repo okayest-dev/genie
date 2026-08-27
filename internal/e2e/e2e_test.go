@@ -912,6 +912,47 @@ func TestREPLCrossTurnHistory(t *testing.T) {
 	}
 }
 
+// TestREPLContextTurnsWindow verifies the configurable context_turns window is
+// honoured end-to-end: with OG_CONTEXT_TURNS=1, the third turn's request to
+// the provider carries only the immediately preceding turn, not the first.
+func TestREPLContextTurnsWindow(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("turn reply"), fake.Finish("stop"), fake.Done},
+	})
+
+	env := append(providerEnv(p), "OG_CONTEXT_TURNS=1")
+	_, stderr, code := runWithStdin(t, "first question\nsecond question\nthird question\n/quit\n", env)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("requests received = %d, want 3", len(reqs))
+	}
+
+	third := decodeTurnMessages(t, reqs[2].Body)
+	for _, m := range third {
+		if m.Content == "first question" {
+			t.Errorf("third turn request carried a dropped-out turn: %+v", third)
+		}
+	}
+
+	// With a window of 1, the second turn and the current (third) turn must
+	// still be present.
+	for _, want := range []string{"second question", "third question"} {
+		found := false
+		for _, m := range third {
+			if m.Role == "user" && m.Content == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("third turn request missing %q: %+v", want, third)
+		}
+	}
+}
+
 // decodeTurnMessages unmarshals the messages array of a chat request body.
 func decodeTurnMessages(t *testing.T, body string) []struct {
 	Role    string `json:"role"`

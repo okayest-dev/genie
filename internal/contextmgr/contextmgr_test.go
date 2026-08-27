@@ -196,6 +196,84 @@ func TestToolLoopDoesNotDuplicateCurrentTurn(t *testing.T) {
 	}
 }
 
+// TestCrossTurnWindowKeepsRecentTurns is the acceptance for og-8qu.5: with a
+// window of N turns, only the most recent N prior turns are injected. After
+// three prior turns with a window of 2, the request carries turns 3 and 2 but
+// not turn 1.
+func TestCrossTurnWindowKeepsRecentTurns(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	m := New(inner, s, WithTurns(2))
+
+	// Turn 1.
+	simulateTurn(t, s, "sys", "turn one")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "turn one answer"}); err != nil {
+		t.Fatal(err)
+	}
+	// Turn 2.
+	simulateTurn(t, s, "sys", "turn two")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "turn two answer"}); err != nil {
+		t.Fatal(err)
+	}
+	// Turn 3.
+	simulateTurn(t, s, "sys", "turn three")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "turn three answer"}); err != nil {
+		t.Fatal(err)
+	}
+	// Turn 4 (current): the request must carry the last two prior turns
+	// (turn 3 and turn 2) but elide turn 1.
+	req := simulateTurn(t, s, "sys", "turn four")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	want := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "turn two"},
+		{Role: llm.RoleAssistant, Content: "turn two answer"},
+		{Role: llm.RoleUser, Content: "turn three"},
+		{Role: llm.RoleAssistant, Content: "turn three answer"},
+		{Role: llm.RoleUser, Content: "turn four"},
+	}
+	if !reflect.DeepEqual(inner.gotReq.Messages, want) {
+		t.Errorf("windowed request messages:\n got %+v\nwant %+v", inner.gotReq.Messages, want)
+	}
+}
+
+// TestCrossTurnWindowZeroMeansUnlimited confirms the default (no option or
+// WithTurns(0)) injects every prior turn, so the model can reference turn 1
+// after three turns.
+func TestCrossTurnWindowZeroMeansUnlimited(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	m := New(inner, s)
+
+	simulateTurn(t, s, "sys", "turn one")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "turn one answer"}); err != nil {
+		t.Fatal(err)
+	}
+	simulateTurn(t, s, "sys", "turn two")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "turn two answer"}); err != nil {
+		t.Fatal(err)
+	}
+	req := simulateTurn(t, s, "sys", "turn three")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	want := []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "turn one"},
+		{Role: llm.RoleAssistant, Content: "turn one answer"},
+		{Role: llm.RoleUser, Content: "turn two"},
+		{Role: llm.RoleAssistant, Content: "turn two answer"},
+		{Role: llm.RoleUser, Content: "turn three"},
+	}
+	if !reflect.DeepEqual(inner.gotReq.Messages, want) {
+		t.Errorf("unlimited request messages:\n got %+v\nwant %+v", inner.gotReq.Messages, want)
+	}
+}
+
 func TestStreamSurfacesEventsUnchanged(t *testing.T) {
 	s := newSession(t)
 	evs := []llm.Event{
