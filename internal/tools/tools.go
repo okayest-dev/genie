@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/okayest-dev/og/internal/llm"
 )
@@ -97,6 +98,52 @@ func (r *Registry) ToolDefs() []llm.ToolDef {
 		})
 	}
 	return defs
+}
+
+// Copy returns a new Registry with the same tools and disabled state.
+func (r *Registry) Copy() *Registry {
+	c := NewRegistry()
+	for _, t := range r.tools {
+		c.Register(t)
+	}
+	for name, disabled := range r.disabled {
+		if disabled {
+			c.Disable(name)
+		}
+	}
+	return c
+}
+
+// Subset returns a new Registry containing only the tools whose names
+// appear in the allowed list, in the same order as the original.
+// Names not found in the registry are silently skipped.
+// If allowed is nil or empty, returns a copy of the full registry.
+func (r *Registry) Subset(allowed []string) *Registry {
+	if len(allowed) == 0 {
+		return r.Copy()
+	}
+	sub := NewRegistry()
+	for _, name := range allowed {
+		if t, ok := r.Get(name); ok {
+			sub.Register(t)
+		}
+	}
+	return sub
+}
+
+// ValidateTools checks that every name in the list is registered and not
+// disabled. Returns an error listing all unavailable tools.
+func (r *Registry) ValidateTools(names []string) error {
+	var missing []string
+	for _, name := range names {
+		if _, ok := r.Get(name); !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("tool(s) not available: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // ValidateArgs checks that args is valid JSON and satisfies the given JSON

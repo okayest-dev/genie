@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -428,5 +429,38 @@ func TestInvalidWireNameFromEnvFailsFast(t *testing.T) {
 	_, err := Parse(nil, "/home/u", env("OG_WIRE", "bogus"))
 	if err == nil {
 		t.Fatal("Parse accepted unknown wire name from env; want an error")
+	}
+}
+
+// TestPluginDirDerivedFromConfigDir verifies that the default plugin directory
+// is derived from the same base directory as the config file. Both should
+// resolve to <configDir>/og/plugins.
+func TestPluginDirDerivedFromConfigDir(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u/.config", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := "/home/u/.config/og/plugins"
+	if cfg.PluginDir != want {
+		t.Errorf("PluginDir = %q, want %q (should be derived from config dir)", cfg.PluginDir, want)
+	}
+}
+
+// TestConfigDirEnvOverride verifies that OG_CONFIG_DIR overrides the config
+// directory used for deriving default paths (session dir, plugin dir).
+func TestConfigDirEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OG_CONFIG_DIR", dir)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	wantPlugins := filepath.Join(dir, "og", "plugins")
+	if cfg.PluginDir != wantPlugins {
+		t.Errorf("PluginDir = %q, want %q", cfg.PluginDir, wantPlugins)
+	}
+	wantSessions := filepath.Join(dir, "og", "sessions")
+	if cfg.SessionDir != wantSessions {
+		t.Errorf("SessionDir = %q, want %q", cfg.SessionDir, wantSessions)
 	}
 }
