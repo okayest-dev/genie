@@ -18,6 +18,7 @@ import (
 
 	"github.com/okayest-dev/og/internal/agent"
 	"github.com/okayest-dev/og/internal/config"
+	"github.com/okayest-dev/og/internal/contextmgr"
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
@@ -49,6 +50,10 @@ type replState struct {
 	currentAgent  *config.ResolvedAgent
 	previousAgent *config.ResolvedAgent
 	instruction   string
+	// client is the context-wrapped Client (around cfg.Client) bound to the
+	// current session. It owns history injection so each turn's request
+	// carries earlier turns' messages.
+	client llm.Client
 }
 
 // Run starts the interactive REPL loop. It reads user input, runs agent
@@ -62,6 +67,7 @@ func Run(ctx context.Context, cfg *Config) error {
 
 	state := &replState{
 		currentAgent: cfg.DefaultAgent,
+		client:       contextmgr.New(cfg.Client, sess),
 	}
 	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
@@ -205,9 +211,8 @@ func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, 
 	turnCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- agent.RunTurn(turnCtx, cfg.Client, model, instruction, prompt,
-			cfg.Stdout, cfg.Stderr, sess, registry, nil, cfg.Cwd,
-			filterHistory(sess.History()), opts...)
+		errCh <- agent.RunTurn(turnCtx, state.client, model, instruction, prompt,
+			cfg.Stdout, cfg.Stderr, sess, registry, nil, cfg.Cwd, opts...)
 	}()
 
 	select {
@@ -255,6 +260,9 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
 		} else {
 			fmt.Fprintf(cfg.Stderr, "session: %s\n", (*sess).ID)
+			// Rebind the context client to the new session so history
+			// injection follows the current session, not the discarded one.
+			state.client = contextmgr.New(cfg.Client, *sess)
 		}
 
 	case "/changes":
@@ -267,7 +275,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 	case "/model":
 		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
 			// List models.
-			models, err := cfg.Client.ListModels(ctx)
+			models, err := state.client.ListModels(ctx)
 			if err != nil {
 				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
 				return false
@@ -284,7 +292,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		} else {
 			// Switch model.
 			target := strings.TrimSpace(parts[1])
-			models, err := cfg.Client.ListModels(ctx)
+			models, err := state.client.ListModels(ctx)
 			if err != nil {
 				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
 				return false
@@ -365,18 +373,6 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 	}
 
 	return false
-}
-
-// filterHistory strips system messages from the history slice, since RunTurn
-// always injects the current instruction as the sole system message.
-func filterHistory(history []llm.Message) []llm.Message {
-	var out []llm.Message
-	for _, msg := range history {
-		if msg.Role != llm.RoleSystem {
-			out = append(out, msg)
-		}
-	}
-	return out
 }
 
 // fileNames returns a comma-separated list of file paths from a batch's files.

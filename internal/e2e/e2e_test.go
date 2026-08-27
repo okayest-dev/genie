@@ -848,6 +848,124 @@ func TestSessionPersistence(t *testing.T) {
 	}
 }
 
+// TestREPLCrossTurnHistory drives the REPL across two turns and asserts that
+// the second turn's request to the provider carries the first turn's messages,
+// proving history injection: the model can reference earlier context.
+func TestREPLCrossTurnHistory(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("turn reply"), fake.Finish("stop"), fake.Done},
+	})
+
+	// Two REPL turns then quit. Each turn produces one chat request.
+	_, stderr, code := runWithStdin(t, "first question\nsecond question\n/quit\n", providerEnv(p))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests received = %d, want 2", len(reqs))
+	}
+
+	firstTurn := decodeTurnMessages(t, reqs[0].Body)
+	if len(firstTurn) != 2 {
+		t.Fatalf("first turn messages = %d, want 2", len(firstTurn))
+	}
+	if firstTurn[1].Role != "user" || firstTurn[1].Content != "first question" {
+		t.Errorf("first turn user = %+v, want user 'first question'", firstTurn[1])
+	}
+
+	secondTurn := decodeTurnMessages(t, reqs[1].Body)
+
+	// The second turn's request must include the first turn's messages so the
+	// model remembers prior context.
+	var priorUser, priorAssistant, currentUser bool
+	for _, m := range secondTurn {
+		switch {
+		case m.Role == "user" && m.Content == "first question":
+			priorUser = true
+		case m.Role == "assistant" && m.Content == "turn reply":
+			priorAssistant = true
+		case m.Role == "user" && m.Content == "second question":
+			currentUser = true
+		}
+	}
+	if !priorUser {
+		t.Errorf("second turn request missing first turn user message: %+v", secondTurn)
+	}
+	if !priorAssistant {
+		t.Errorf("second turn request missing first turn assistant message: %+v", secondTurn)
+	}
+	if !currentUser {
+		t.Errorf("second turn request missing current user message: %+v", secondTurn)
+	}
+
+	// The current turn must not be doubled: exactly one "second question".
+	count := 0
+	for _, m := range secondTurn {
+		if m.Role == "user" && m.Content == "second question" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("current user message appears %d times, want 1", count)
+	}
+}
+
+// decodeTurnMessages unmarshals the messages array of a chat request body.
+func decodeTurnMessages(t *testing.T, body string) []struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+} {
+	t.Helper()
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	return req.Messages
+}
+
+// TestREPLNewResetsHistory verifies that /new starts a fresh session: a turn
+// after /new must not carry messages from the previous session.
+func TestREPLNewResetsHistory(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("turn reply"), fake.Finish("stop"), fake.Done},
+	})
+
+	_, stderr, code := runWithStdin(t, "first question\n/new\nsecond question\n/quit\n", providerEnv(p))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests received = %d, want 2", len(reqs))
+	}
+
+	second := decodeTurnMessages(t, reqs[1].Body)
+	for _, m := range second {
+		if m.Content == "first question" {
+			t.Errorf("turn after /new carried previous session message: %+v", second)
+		}
+	}
+
+	// The new session's current user message must still be present.
+	found := false
+	for _, m := range second {
+		if m.Role == "user" && m.Content == "second question" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("turn after /new missing current user message: %+v", second)
+	}
+}
+
 func TestToolCallExecutedAndResultFedBack(t *testing.T) {
 	// Script: first response is a tool call for "read", second response is text.
 	p := scriptedProvider(t, fake.Behavior{

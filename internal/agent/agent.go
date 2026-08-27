@@ -31,25 +31,26 @@ func WithAgentName(name string) Option {
 	return func(o *turnOptions) { o.agentName = name }
 }
 
-// RunTurn runs the agent loop against c: build the canonical conversation,
-// stream the reply, and when the model returns tool calls, execute them
-// serially and feed results back. instruction is the assembled agent
-// instruction. out receives text deltas; errOut receives tool framing headers.
-// If sess is non-nil, the conversation is persisted. If registry is nil,
-// no tools are sent and tool calls are not processed. If ldg is non-nil,
-// file mutations are captured in the change ledger. cwd is the working
-// directory for resolving relative file paths. prevMessages are messages
-// from previous turns (excluding system messages) that provide context.
-// opts configures optional behaviour (e.g. WithAgentName for session logging).
-func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string, prevMessages []llm.Message, opts ...Option) error {
+// RunTurn runs the agent loop against c: build the canonical conversation for
+// the current turn, stream the reply, and when the model returns tool calls,
+// execute them serially and feed results back. instruction is the assembled
+// agent instruction. out receives text deltas; errOut
+// receives tool framing headers. If sess is non-nil, the conversation is
+// persisted. If registry is nil, no tools are sent and tool calls are not
+// processed. If ldg is non-nil, file mutations are captured in the change
+// ledger. cwd is the working directory for resolving relative file paths.
+// Prior-turn history is not threaded here: the client wrapping c owns history
+// injection from the session. opts configures optional behaviour (e.g.
+// WithAgentName for session logging).
+func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string, opts ...Option) error {
 	var to turnOptions
 	for _, o := range opts {
 		o(&to)
 	}
-	messages := make([]llm.Message, 0, 2+len(prevMessages))
-	messages = append(messages, llm.Message{Role: llm.RoleSystem, Content: instruction})
-	messages = append(messages, prevMessages...)
-	messages = append(messages, llm.Message{Role: llm.RoleUser, Content: prompt})
+	messages := []llm.Message{
+		{Role: llm.RoleSystem, Content: instruction},
+		{Role: llm.RoleUser, Content: prompt},
+	}
 
 	// Persist the system and user messages to the transcript.
 	if sess != nil {
