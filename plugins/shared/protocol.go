@@ -9,13 +9,21 @@ import (
 )
 
 const (
-	MethodCapabilitiesList = "capabilities/list"
-	MethodWireInit         = "wire/init"
-	MethodWireStream       = "wire/stream"
-	MethodWireListModels   = "wire/list_models"
-	MethodPing             = "ping"
-	MethodShutdown         = "shutdown"
+	MethodCapabilitiesList     = "capabilities/list"
+	MethodWireInit             = "wire/init"
+	MethodWireStream           = "wire/stream"
+	MethodWireListModels       = "wire/list_models"
+	MethodContextBeforeRequest = "context/before_request"
+	MethodContextAfterResponse = "context/after_response"
+	MethodContextCompact       = "context/compact"
+	MethodContextCondense      = "context/condense"
+	MethodPing                 = "ping"
+	MethodShutdown             = "shutdown"
 )
+
+// ProtocolVersion is the wire plugin protocol version (v2 adds granular
+// context-hook capabilities).
+const ProtocolVersion = 2
 
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -40,7 +48,17 @@ type Capabilities struct {
 	Tools     bool `json:"tools"`
 	Wires     bool `json:"wires"`
 	Providers bool `json:"providers"`
-	Version   int  `json:"version"`
+	// Granular context-hook capabilities (protocol v2).
+	BeforeRequest bool `json:"context_before"`
+	AfterResponse bool `json:"context_after"`
+	CompactHook   bool `json:"context_compact"`
+	CondenseHook  bool `json:"context_condense"`
+	Version       int  `json:"version"`
+}
+
+// HasAny reports whether the plugin declares at least one capability.
+func (c *Capabilities) HasAny() bool {
+	return c.Tools || c.Wires || c.Providers || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook
 }
 
 type WireInitResult struct {
@@ -59,13 +77,70 @@ type WireListModelsResult struct {
 	Models []ModelDef `json:"models"`
 }
 
+// Context types for the context/* hook family (protocol v2).
+type ContextMessage struct {
+	Role       string            `json:"role"`
+	Content    string            `json:"content"`
+	ToolCalls  []ContextToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+}
+
+type ContextToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type ContextRequest struct {
+	Model    string           `json:"model"`
+	Messages []ContextMessage `json:"messages"`
+	Tools    []ToolDef        `json:"tools,omitempty"`
+}
+
+type ContextBeforeRequestResult struct {
+	Request ContextRequest `json:"request"`
+}
+
+type ContextAfterResponseParams struct {
+	Request ContextRequest `json:"request"`
+	Usage   Usage          `json:"usage"`
+}
+
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+type ContextAfterResponseResult struct {
+	Usage Usage `json:"usage"`
+}
+
+type ContextCompactResult struct {
+	Request ContextRequest `json:"request"`
+}
+
+type ContextCondenseResult struct {
+	Request ContextRequest `json:"request"`
+}
+
+type ToolDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
 type Handler struct {
-	scanner    *bufio.Scanner
-	writer     *json.Encoder
-	caps       Capabilities
-	models     []ModelDef
-	onInit     func() error
-	onStream  func(request json.RawMessage) (json.RawMessage, error)
+	scanner         *bufio.Scanner
+	writer          *json.Encoder
+	caps            Capabilities
+	models          []ModelDef
+	onInit          func() error
+	onStream        func(request json.RawMessage) (json.RawMessage, error)
+	onBeforeRequest func(request ContextRequest) (ContextRequest, error)
+	onAfterResponse func(request ContextRequest, usage Usage) (Usage, error)
+	onCompact       func(request ContextRequest) (ContextRequest, error)
+	onCondense      func(request ContextRequest) (ContextRequest, error)
 }
 
 func NewHandler(caps Capabilities) *Handler {
@@ -86,6 +161,22 @@ func (h *Handler) OnInit(fn func() error) {
 
 func (h *Handler) OnStream(fn func(request json.RawMessage) (json.RawMessage, error)) {
 	h.onStream = fn
+}
+
+func (h *Handler) OnBeforeRequest(fn func(request ContextRequest) (ContextRequest, error)) {
+	h.onBeforeRequest = fn
+}
+
+func (h *Handler) OnAfterResponse(fn func(request ContextRequest, usage Usage) (Usage, error)) {
+	h.onAfterResponse = fn
+}
+
+func (h *Handler) OnCompact(fn func(request ContextRequest) (ContextRequest, error)) {
+	h.onCompact = fn
+}
+
+func (h *Handler) OnCondense(fn func(request ContextRequest) (ContextRequest, error)) {
+	h.onCondense = fn
 }
 
 func (h *Handler) Run() error {
@@ -131,6 +222,70 @@ func (h *Handler) handleRequest(req *Request) {
 			return
 		}
 		h.writeRawResult(req.ID, result)
+	case MethodContextBeforeRequest:
+		if h.onBeforeRequest == nil {
+			h.writeError(req.ID, -32601, "context/before_request not implemented")
+			return
+		}
+		params, err := ParseParams[ContextRequest](req.Params)
+		if err != nil {
+			h.writeError(req.ID, -32602, err.Error())
+			return
+		}
+		out, err := h.onBeforeRequest(params)
+		if err != nil {
+			h.writeError(req.ID, -32603, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextBeforeRequestResult{Request: out})
+	case MethodContextAfterResponse:
+		if h.onAfterResponse == nil {
+			h.writeError(req.ID, -32601, "context/after_response not implemented")
+			return
+		}
+		params, err := ParseParams[ContextAfterResponseParams](req.Params)
+		if err != nil {
+			h.writeError(req.ID, -32602, err.Error())
+			return
+		}
+		out, err := h.onAfterResponse(params.Request, params.Usage)
+		if err != nil {
+			h.writeError(req.ID, -32603, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextAfterResponseResult{Usage: out})
+	case MethodContextCompact:
+		if h.onCompact == nil {
+			h.writeError(req.ID, -32601, "context/compact not implemented")
+			return
+		}
+		params, err := ParseParams[ContextRequest](req.Params)
+		if err != nil {
+			h.writeError(req.ID, -32602, err.Error())
+			return
+		}
+		out, err := h.onCompact(params)
+		if err != nil {
+			h.writeError(req.ID, -32603, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextCompactResult{Request: out})
+	case MethodContextCondense:
+		if h.onCondense == nil {
+			h.writeError(req.ID, -32601, "context/condense not implemented")
+			return
+		}
+		params, err := ParseParams[ContextRequest](req.Params)
+		if err != nil {
+			h.writeError(req.ID, -32602, err.Error())
+			return
+		}
+		out, err := h.onCondense(params)
+		if err != nil {
+			h.writeError(req.ID, -32603, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextCondenseResult{Request: out})
 	case MethodPing:
 		h.writeResult(req.ID, map[string]bool{"pong": true})
 	case MethodShutdown:

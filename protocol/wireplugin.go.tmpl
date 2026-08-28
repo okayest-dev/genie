@@ -59,6 +59,14 @@ func (h *Handler) {{ .Name }}({{ range $i, $p := .Params }}{{ if $i }}, {{ end }
 	h.onInit = fn
 {{- else if eq .Name "OnStream" }}
 	h.onStream = fn
+{{- else if eq .Name "OnBeforeRequest" }}
+	h.onBeforeRequest = fn
+{{- else if eq .Name "OnAfterResponse" }}
+	h.onAfterResponse = fn
+{{- else if eq .Name "OnCompact" }}
+	h.onCompact = fn
+{{- else if eq .Name "OnCondense" }}
+	h.onCondense = fn
 {{- end }}
 }
 {{ end }}
@@ -110,6 +118,70 @@ func (h *Handler) handleRequest(req *Request) {
 			return
 		}
 		h.writeRawResult(req.ID, result)
+		{{- else if contains .Action "onBeforeRequest" }}
+		if h.onBeforeRequest == nil {
+			h.writeError(req.ID, MethodNotFound, "context/before_request not implemented")
+			return
+		}
+		params, perr := ParseParams[ContextRequest](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onBeforeRequest(params)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextBeforeRequestResult{Request: out})
+		{{- else if contains .Action "onAfterResponse" }}
+		if h.onAfterResponse == nil {
+			h.writeError(req.ID, MethodNotFound, "context/after_response not implemented")
+			return
+		}
+		params, perr := ParseParams[ContextAfterResponseParams](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onAfterResponse(params.Request, params.Usage)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextAfterResponseResult{Usage: out})
+		{{- else if contains .Action "onCompact" }}
+		if h.onCompact == nil {
+			h.writeError(req.ID, MethodNotFound, "context/compact not implemented")
+			return
+		}
+		params, perr := ParseParams[ContextRequest](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onCompact(params)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextCompactResult{Request: out})
+		{{- else if contains .Action "onCondense" }}
+		if h.onCondense == nil {
+			h.writeError(req.ID, MethodNotFound, "context/condense not implemented")
+			return
+		}
+		params, perr := ParseParams[ContextRequest](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onCondense(params)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, ContextCondenseResult{Request: out})
 		{{- else if contains .Action "caps" }}
 		h.writeResult(req.ID, h.caps)
 		{{- else if contains .Action "pong" }}

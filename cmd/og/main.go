@@ -19,15 +19,15 @@ import (
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
-	"github.com/okayest-dev/og/internal/modelinfo"
-	"github.com/okayest-dev/og/internal/plugin"
-	"github.com/okayest-dev/og/internal/tokens"
 	_ "github.com/okayest-dev/og/internal/llm/anthropic"
 	_ "github.com/okayest-dev/og/internal/llm/google"
 	_ "github.com/okayest-dev/og/internal/llm/openai"
 	_ "github.com/okayest-dev/og/internal/llm/responses"
+	"github.com/okayest-dev/og/internal/modelinfo"
+	"github.com/okayest-dev/og/internal/plugin"
 	"github.com/okayest-dev/og/internal/repl"
 	"github.com/okayest-dev/og/internal/session"
+	"github.com/okayest-dev/og/internal/tokens"
 	"github.com/okayest-dev/og/internal/tools"
 	"github.com/okayest-dev/og/internal/tools/bashtool"
 	"github.com/okayest-dev/og/internal/tools/edittool"
@@ -240,11 +240,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 			resolver.Seed(m.ID, m.ContextWindow)
 		}
 	}
+
+	// Build the plugin context seam from loaded plugins + [context.plugins]. A
+	// single-active conflict (multiple plugins claiming compact/condense without
+	// an explicit active_compact/active_condense choice) is a hard startup error;
+	// hook failures later degrade gracefully with a visible terminal message.
+	ctxSeam, err := plugin.NewContextSeam(pluginMgr.PluginsInOrder(), plugin.ContextConfig{
+		Order:          cfg.Context.PluginsOrder,
+		ActiveCompact:  cfg.Context.ActiveCompact,
+		ActiveCondense: cfg.Context.ActiveCondense,
+	}, func(msg string) { fmt.Fprintf(stderr, "context degraded: %s\n", msg) })
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+
 	counter := tokens.New()
 	ctxOpts := []contextmgr.Option{
 		contextmgr.WithTurns(cfg.Context.Turns),
 		contextmgr.WithCounter(counter),
 		contextmgr.WithResolver(resolver),
+		contextmgr.WithHooks(ctxSeam),
+		contextmgr.WithOnDegrade(func(msg string) { fmt.Fprintf(stderr, "context degraded: %s\n", msg) }),
 	}
 
 	// No -p flag: start the interactive REPL.

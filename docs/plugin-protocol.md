@@ -9,7 +9,7 @@ Plugins are external executables that communicate with og over stdin/stdout usin
 - **Transport**: stdio (stdin for requests, stdout for responses)
 - **Encoding**: UTF-8 JSON
 - **Framing**: One JSON object per line (NDJSON)
-- **Protocol Version**: 1
+- **Protocol Version**: 2
 
 Plugins can be written in any language that can read from stdin and write to stdout.
 
@@ -89,7 +89,11 @@ Standard JSON-RPC error codes:
     "tools": true,
     "wires": false,
     "providers": false,
-    "version": 1
+    "context_before": true,
+    "context_after": false,
+    "context_compact": false,
+    "context_condense": false,
+    "version": 2
   },
   "id": 1
 }
@@ -99,7 +103,11 @@ Standard JSON-RPC error codes:
 - `tools` (boolean): Plugin provides tools
 - `wires` (boolean): Plugin provides wire protocols
 - `providers` (boolean): Plugin provides provider access (collapsed into wires)
-- `version` (integer): Protocol version (must be 1)
+- `context_before` (boolean): Plugin declares a `context/before_request` hook
+- `context_after` (boolean): Plugin declares a `context/after_response` hook
+- `context_compact` (boolean): Plugin declares a `context/compact` hook (single-active)
+- `context_condense` (boolean): Plugin declares a `context/condense` hook (single-active)
+- `version` (integer): Protocol version (must be 2)
 
 ### tools/list
 
@@ -282,6 +290,121 @@ Each tool definition contains:
 - `name` (string, optional): Human-readable display name
 - `context_window` (integer, optional): The model's authoritative context window in tokens, as reported by the plugin's provider. Omit when the provider does not expose one — the harness never guesses. Users can correct a missing or wrong value with a per-model `context.windows` override in `[context]` config, which takes precedence over this field.
 
+### context/before_request
+
+**Direction**: Host → Plugin
+
+**Purpose**: Rewrite the outgoing request before it is sent to the model. This hook runs after the harness has injected prior-turn history, so it sees the full message list. Multiple before hooks form a deterministic ordered filter chain (config `order`, defaulting to registration order); each hook sees the previous hook's result. A failing before hook is skipped (its contribution dropped) and its degradation surfaced to the terminal; the request still proceeds.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "context/before_request",
+  "params": {
+    "model": "claude-sonnet-4-5",
+    "messages": [ { "role": "user", "content": "hi" } ],
+    "tools": [ { "name": "greet", "description": "...", "parameters": {} } ]
+  },
+  "id": 7
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "request": {
+      "model": "claude-sonnet-4-5",
+      "messages": [ { "role": "user", "content": "hi [rewritten]" } ],
+      "tools": [ { "name": "greet", "description": "...", "parameters": {} } ]
+    }
+  },
+  "id": 7
+}
+```
+
+### context/after_response
+
+**Direction**: Host → Plugin
+
+**Purpose**: Observe a completed turn and report a narrow usage delta. It runs once the model's response for a turn has fully drained. It returns a narrow `usage` delta and must **never** rewrite history.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "context/after_response",
+  "params": {
+    "request": { "model": "claude-sonnet-4-5", "messages": [] },
+    "usage": { "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120 }
+  },
+  "id": 8
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "usage": { "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120 }
+  },
+  "id": 8
+}
+```
+
+### context/compact
+
+**Direction**: Host → Plugin
+
+**Purpose**: Summarise / evict history into a rewritten request to keep the conversation within its context budget. **Single-active**: at most one implementation runs. The harness's built-in compactor is the default when no plugin is selected; when multiple plugins declare this hook the host fails at startup until an explicit `active_compact` is chosen in `[context.plugins]`.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "context/compact",
+  "params": { "model": "claude-sonnet-4-5", "messages": [ { "role": "user", "content": "..." } ] },
+  "id": 9
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": { "request": { "model": "claude-sonnet-4-5", "messages": [ { "role": "user", "content": "[summary]" } ] } },
+  "id": 9
+}
+```
+
+### context/condense
+
+**Direction**: Host → Plugin
+
+**Purpose**: Narrow (condense) tool outputs in history into a rewritten request. Single-active, exactly like `context/compact`, governed by `active_condense`. **NB**: the default built-in compactor/condenser body is inert (a no-op) in this protocol version; the seam simply passes the request through unchanged.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "context/condense",
+  "params": { "model": "claude-sonnet-4-5", "messages": [ { "role": "tool", "content": "lots of output" } ] },
+  "id": 10
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": { "request": { "model": "claude-sonnet-4-5", "messages": [ { "role": "tool", "content": "[narrowed]" } ] } },
+  "id": 10
+}
+```
+
 ### ping
 
 **Direction**: Host → Plugin
@@ -349,7 +472,7 @@ capabilities = ["tools", "wires"]
 **Fields**:
 - `name` (string, required): Plugin name
 - `version` (string, required): Plugin version
-- `capabilities` (array of strings, required): List of capabilities ("tools", "wires", "providers")
+- `capabilities` (array of strings, required): List of capabilities ("tools", "wires", "providers", "context_before", "context_after", "context_compact", "context_condense")
 
 If no manifest is present, the host will probe the plugin with `capabilities/list` after spawning.
 
@@ -416,7 +539,7 @@ def main():
                 "tools": True,
                 "wires": False,
                 "providers": False,
-                "version": 1
+                "version": 2
             }
         elif req["method"] == "tools/list":
             resp["result"] = {

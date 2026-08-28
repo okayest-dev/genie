@@ -69,7 +69,7 @@ func main() {
 		Tools:     false,
 		Wires:     true,
 		Providers: false,
-		Version:   1,
+		Version:   shared.ProtocolVersion,
 	})
 
 	h.SetModels([]shared.ModelDef{

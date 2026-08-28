@@ -65,6 +65,15 @@ type Context struct {
 	// Windows maps a model ID to an explicit context-window override (in
 	// tokens). An override takes precedence over provider-reported data.
 	Windows map[string]int
+	// PluginsOrder is the deterministic chain order for plugin context hooks
+	// (before_request/after_response). A plugin not listed is appended in
+	// registration order. Empty means registration order for all.
+	PluginsOrder []string
+	// ActiveCompact and ActiveCondense name the single-active compact/condense
+	// implementation. "builtin" selects the harness's own (the default); empty
+	// auto-resolves and errors when ambiguous.
+	ActiveCompact  string
+	ActiveCondense string
 }
 
 // Config is the resolved harness configuration.
@@ -143,10 +152,17 @@ type pluginsFile struct {
 }
 
 type contextFile struct {
-	Turns         *int           `toml:"turns"`
-	BudgetTokens  *int           `toml:"budget_tokens"`
-	BudgetPercent *float64       `toml:"budget_percent"`
-	Windows       map[string]int `toml:"windows"`
+	Turns         *int               `toml:"turns"`
+	BudgetTokens  *int               `toml:"budget_tokens"`
+	BudgetPercent *float64           `toml:"budget_percent"`
+	Windows       map[string]int     `toml:"windows"`
+	Plugins       contextPluginsFile `toml:"plugins"`
+}
+
+type contextPluginsFile struct {
+	Order          []string `toml:"order"`
+	ActiveCompact  string   `toml:"active_compact"`
+	ActiveCondense string   `toml:"active_condense"`
 }
 
 // Parse resolves the full configuration from raw config-file content and an
@@ -224,6 +240,15 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 				}
 				cfg.Context.Windows[model] = window
 			}
+		}
+		if len(fc.Context.Plugins.Order) > 0 {
+			cfg.Context.PluginsOrder = fc.Context.Plugins.Order
+		}
+		if fc.Context.Plugins.ActiveCompact != "" {
+			cfg.Context.ActiveCompact = fc.Context.Plugins.ActiveCompact
+		}
+		if fc.Context.Plugins.ActiveCondense != "" {
+			cfg.Context.ActiveCondense = fc.Context.Plugins.ActiveCondense
 		}
 		if fc.DefaultAgent != "" {
 			cfg.DefaultAgent = fc.DefaultAgent

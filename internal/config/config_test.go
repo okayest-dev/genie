@@ -402,6 +402,38 @@ func TestContextWindowOverridesFromFile(t *testing.T) {
 	}
 }
 
+func TestContextPluginsFromFile(t *testing.T) {
+	file := `[context.plugins]
+order = ["b", "a"]
+active_compact = "builtin"
+active_condense = "my-condenser"
+`
+	cfg, err := Parse([]byte(file), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Context.PluginsOrder) != 2 || cfg.Context.PluginsOrder[0] != "b" || cfg.Context.PluginsOrder[1] != "a" {
+		t.Errorf("PluginsOrder = %v, want [b a]", cfg.Context.PluginsOrder)
+	}
+	if cfg.Context.ActiveCompact != "builtin" {
+		t.Errorf("ActiveCompact = %q, want builtin", cfg.Context.ActiveCompact)
+	}
+	if cfg.Context.ActiveCondense != "my-condenser" {
+		t.Errorf("ActiveCondense = %q, want my-condenser", cfg.Context.ActiveCondense)
+	}
+}
+
+func TestContextPluginsUnsetByDefault(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Context.PluginsOrder) != 0 || cfg.Context.ActiveCompact != "" || cfg.Context.ActiveCondense != "" {
+		t.Errorf("context plugins should default empty, got order=%v compact=%q condense=%q",
+			cfg.Context.PluginsOrder, cfg.Context.ActiveCompact, cfg.Context.ActiveCondense)
+	}
+}
+
 func TestBudgetTokensEnvOverridesFile(t *testing.T) {
 	cfg, err := Parse([]byte("[context]\nbudget_tokens = 100000\n"), "/home/u", env("OG_CONTEXT_BUDGET_TOKENS", "300000"))
 	if err != nil {

@@ -39,7 +39,7 @@ func TestGenerateProducesValidGo(t *testing.T) {
 	}
 
 	// Must define protocol version
-	if !strings.Contains(src, "ProtocolVersion = 1") {
+	if !strings.Contains(src, "ProtocolVersion = 2") {
 		t.Error("missing ProtocolVersion constant")
 	}
 }
@@ -53,6 +53,10 @@ func TestGenerateMethodConstants(t *testing.T) {
 		`MethodWireInit = "wire/init"`,
 		`MethodWireStream = "wire/stream"`,
 		`MethodWireListModels = "wire/list_models"`,
+		`MethodContextBeforeRequest = "context/before_request"`,
+		`MethodContextAfterResponse = "context/after_response"`,
+		`MethodContextCompact = "context/compact"`,
+		`MethodContextCondense = "context/condense"`,
 		`MethodPing = "ping"`,
 		`MethodShutdown = "shutdown"`,
 	}
@@ -112,6 +116,10 @@ func TestGenerateHandler(t *testing.T) {
 		"func (h *Handler) SetModels(",
 		"func (h *Handler) OnInit(",
 		"func (h *Handler) OnStream(",
+		"func (h *Handler) OnBeforeRequest(",
+		"func (h *Handler) OnAfterResponse(",
+		"func (h *Handler) OnCompact(",
+		"func (h *Handler) OnCondense(",
 		"func (h *Handler) Run() error",
 		"func (h *Handler) handleRequest(",
 		"func (h *Handler) writeResult(",

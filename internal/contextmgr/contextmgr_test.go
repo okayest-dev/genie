@@ -2,8 +2,10 @@ package contextmgr
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/okayest-dev/og/internal/llm"
@@ -174,7 +176,7 @@ func TestToolLoopDoesNotDuplicateCurrentTurn(t *testing.T) {
 	// The agent's request for the second iteration carries only the current
 	// user prompt plus the fresh tool result, mirroring its loop bookkeeping.
 	req := llm.Request{
-		Model:    "m",
+		Model: "m",
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: "sys"},
 			{Role: llm.RoleUser, Content: "run the tool"},
@@ -404,5 +406,156 @@ func TestTokensUntrackedBeforeFirstStream(t *testing.T) {
 	m := New(inner, s, WithCounter(&fakeCounter{}))
 	if got := m.Tokens(); got != 0 {
 		t.Errorf("Tokens = %d, want 0 before any stream", got)
+	}
+}
+
+// fakeHooks is a scriptable Hooks implementation for exercising the seam.
+type fakeHooks struct {
+	before        func(llm.Request) (llm.Request, error)
+	after         func(llm.Request, llm.Usage) error
+	compact       func(llm.Request) (llm.Request, error)
+	condense      func(llm.Request) (llm.Request, error)
+	afterGotUsage llm.Usage
+}
+
+func (f *fakeHooks) BeforeRequest(_ context.Context, req llm.Request) (llm.Request, error) {
+	if f.before == nil {
+		return req, nil
+	}
+	return f.before(req)
+}
+
+func (f *fakeHooks) AfterResponse(_ context.Context, req llm.Request, usage llm.Usage) error {
+	f.afterGotUsage = usage
+	if f.after == nil {
+		return nil
+	}
+	return f.after(req, usage)
+}
+
+func (f *fakeHooks) Compact(_ context.Context, req llm.Request) (llm.Request, error) {
+	if f.compact == nil {
+		return req, nil
+	}
+	return f.compact(req)
+}
+
+func (f *fakeHooks) Condense(_ context.Context, req llm.Request) (llm.Request, error) {
+	if f.condense == nil {
+		return req, nil
+	}
+	return f.condense(req)
+}
+
+// TestBeforeRequestChainRewrites verifies a plugin before_request hook can
+// rewrite the message list on top of injected history, and that its result is
+// what reaches the inner client.
+func TestBeforeRequestChainRewrites(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	hooks := &fakeHooks{
+		before: func(req llm.Request) (llm.Request, error) {
+			for i := range req.Messages {
+				if req.Messages[i].Role == llm.RoleUser {
+					req.Messages[i].Content += " [annotated]"
+				}
+			}
+			return req, nil
+		},
+	}
+	m := New(inner, s, WithHooks(hooks))
+
+	req := simulateTurn(t, s, "sys", "turn one")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	want := llm.Message{Role: llm.RoleUser, Content: "turn one [annotated]"}
+	if !reflect.DeepEqual(inner.gotReq.Messages[1], want) {
+		t.Errorf("before_request rewrite not forwarded:\n got %+v\nwant %+v", inner.gotReq.Messages[1], want)
+	}
+}
+
+// TestAfterResponseObservesUsage verifies the after_response hook observes the
+// completed stream's usage event.
+func TestAfterResponseObservesUsage(t *testing.T) {
+	s := newSession(t)
+	evs := []llm.Event{
+		{Kind: llm.EventText, Text: "hi"},
+		{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}},
+		{Kind: llm.EventFinish, End: llm.FinishStop},
+	}
+	inner := &mockClient{events: evs}
+	hooks := &fakeHooks{}
+	m := New(inner, s, WithHooks(hooks))
+
+	req := simulateTurn(t, s, "sys", "hi")
+	stream, err := m.Stream(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	for range stream {
+	}
+	want := llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	if !reflect.DeepEqual(hooks.afterGotUsage, want) {
+		t.Errorf("after_response observed usage %+v, want %+v", hooks.afterGotUsage, want)
+	}
+}
+
+// TestBeforeHookFailureDegradesGracefully verifies a failing before_request
+// hook logs, skips its contribution (request proceeds unchanged), and surfaces
+// a visible degradation message, without failing the stream.
+func TestBeforeHookFailureDegradesGracefully(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	hooks := &fakeHooks{
+		before: func(req llm.Request) (llm.Request, error) {
+			return req, errors.New("boom")
+		},
+	}
+	var degraded []string
+	m := New(inner, s, WithHooks(hooks), WithOnDegrade(func(msg string) { degraded = append(degraded, msg) }))
+
+	req := simulateTurn(t, s, "sys", "hi")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream should not fail on hook error: %v", err)
+	}
+	if len(degraded) != 1 {
+		t.Fatalf("expected one degradation message, got %d", len(degraded))
+	}
+	if !strings.Contains(degraded[0], "before_request") {
+		t.Errorf("degradation message %q should mention the failing hook", degraded[0])
+	}
+	if !reflect.DeepEqual(inner.gotReq.Messages, req.Messages) {
+		t.Errorf("request should proceed unchanged on hook failure:\n got %+v\nwant %+v", inner.gotReq.Messages, req.Messages)
+	}
+}
+
+// TestCompactAndCondenseInvoked verifies the active single-active compact and
+// condense hooks are invoked in the documented order (compact then condense)
+// before the request is forwarded.
+func TestCompactAndCondenseInvoked(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	var order []string
+	hooks := &fakeHooks{
+		compact: func(req llm.Request) (llm.Request, error) {
+			order = append(order, "compact")
+			return req, nil
+		},
+		condense: func(req llm.Request) (llm.Request, error) {
+			order = append(order, "condense")
+			return req, nil
+		},
+	}
+	m := New(inner, s, WithHooks(hooks))
+
+	req := simulateTurn(t, s, "sys", "hi")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	want := []string{"compact", "condense"}
+	if !reflect.DeepEqual(order, want) {
+		t.Errorf("hook order %v, want %v", order, want)
 	}
 }
