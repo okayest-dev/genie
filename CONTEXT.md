@@ -75,3 +75,27 @@ _Avoid_: max tokens, model size
 **Budget**:
 The portion of the context window a conversation may consume before the harness intervenes — an absolute `budget_tokens` or a percentage of the window (`budget_percent`, default 75%), keeping headroom so a request cannot silently blow the window.
 _Avoid_: limit, quota
+
+**Agent**:
+A named configuration the harness can run a loop with — an `AgentDef` from an `agents/*.toml` file, resolved to a model, instruction, and tool set. The default agent or a named one (`orchestrator`, `feature-speccing`). Distinct from the "harness".
+_Avoid_: (bare) tool
+
+**Subagent**:
+A delegated child agent — an agent instance spawned by another agent (its parent) to work a task. Runs its own loop and its own session, streams live output, and folds its result back into the parent.
+_Avoid_: child agent (alone), worker
+
+**Delegation**:
+An agent handing a task to a subagent. The subagent works — possibly surfacing output live to the user — and its result folds back into the parent's loop. Start-of-effort mechanism is a tool call behind a delegation seam that can migrate to a real orchestrator.
+_Avoid_: spawn (alone), fork
+
+**Delegated task name**:
+The purpose-derived label an agent assigns to a subagent instance (e.g. `spec-auth-flow`), used to identify and observe it in monitoring. Chosen by the delegating agent, not by position (`subagent-1`).
+_Avoid_: subagent name
+
+**Foreground**:
+The agent the user is currently directly addressing in a session — the primary conversational party. Only one agent is in the foreground at a time.
+_Avoid_: active agent, current agent
+
+**Handoff**:
+An agent yielding the foreground to another named agent, which becomes primary and addresses the user directly, then hands back. Driven by a tool; a stack remembers the return path. Distinct from delegation (delegation stays behind the scenes; handoff puts the target in the foreground).
+_Avoid_: switch (alone), yield (alone)
