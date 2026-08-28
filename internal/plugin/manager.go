@@ -17,11 +17,11 @@ import (
 )
 
 const (
-	MaxPlugins       = 16
-	RequestTimeout   = 5 * time.Second
-	PingInterval     = 30 * time.Second
-	ShutdownGrace    = 2 * time.Second
-	ShutdownForce    = 2 * time.Second
+	MaxPlugins     = 16
+	RequestTimeout = 5 * time.Second
+	PingInterval   = 30 * time.Second
+	ShutdownGrace  = 2 * time.Second
+	ShutdownForce  = 2 * time.Second
 )
 
 type Plugin struct {
@@ -42,6 +42,7 @@ type Plugin struct {
 
 type Manager struct {
 	plugins      map[string]*Plugin
+	pluginOrder  []string
 	pluginsMu    sync.RWMutex
 	toolReg      *tools.Registry
 	wireRegistry map[llm.Wire]llm.Factory
@@ -124,6 +125,12 @@ func (m *Manager) LoadPlugins() error {
 			slog.Info("plugin not in enable list, skipping", "plugin", path)
 			continue
 		}
+		// Discovery order is deterministic (the directory listing is sorted);
+		// record it before spawning the loader goroutine so the context-hook
+		// chain's default order is stable regardless of concurrent loads.
+		m.pluginsMu.Lock()
+		m.pluginOrder = append(m.pluginOrder, filepath.Base(path))
+		m.pluginsMu.Unlock()
 		m.wg.Add(1)
 		go func(p string) {
 			defer m.wg.Done()
@@ -186,14 +193,14 @@ func (m *Manager) loadPlugin(path string) error {
 	ctx, cancel := context.WithCancel(m.ctx)
 	codec := NewCodec(stdout, stdin)
 	p := &Plugin{
-		Name:    name,
-		Path:    path,
+		Name:     name,
+		Path:     path,
 		Manifest: manifest,
-		Cmd:     cmd,
-		Codec:   codec,
-		Active:  true,
-		Cancel:  cancel,
-		Done:    make(chan struct{}),
+		Cmd:      cmd,
+		Codec:    codec,
+		Active:   true,
+		Cancel:   cancel,
+		Done:     make(chan struct{}),
 	}
 
 	m.pluginsMu.Lock()
@@ -568,6 +575,112 @@ func (p *Plugin) StreamWire(request json.RawMessage) (json.RawMessage, error) {
 	}
 }
 
+// callContext performs a single context-hook RPC round-trip with the plugin
+// and returns the raw result for the caller to decode. It holds the plugin's
+// mutex so a hook cannot interleave with a tool call or stream.
+func (p *Plugin) callContext(method string, params any) (json.RawMessage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.Active {
+		return nil, fmt.Errorf("plugin %s is not active", p.Name)
+	}
+
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  method,
+		Params:  mustMarshal(params),
+		ID:      time.Now().UnixNano(),
+	}
+	if err := p.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+
+	respCh := make(chan *Response, 1)
+	go func() {
+		resp, _ := p.Codec.ReadResponse()
+		respCh <- resp
+	}()
+
+	select {
+	case <-ctx.Done():
+		p.Active = false
+		return nil, fmt.Errorf("context hook %s timeout", method)
+	case resp := <-respCh:
+		if resp == nil {
+			p.Active = false
+			return nil, fmt.Errorf("plugin closed connection")
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("context hook %s error: %s", method, resp.Error.Message)
+		}
+		return resp.Result, nil
+	}
+}
+
+// callContextRewrite performs a request-rewriting context-hook round-trip
+// (before_request / compact / condense). It invokes the plugin with the full
+// request, decodes the returned {request: ...} wrapper, and converts it back to
+// a llm.Request. On any failure it returns the original request unchanged, so a
+// failing hook's contribution is dropped rather than partially applied. The
+// decode target is the shared rewrite-result shape; the distinct named result
+// types (ContextBeforeRequestResult, ContextCompactResult, ContextCondenseResult)
+// are all identical to it, so this one decode serves all three.
+func (p *Plugin) callContextRewrite(ctx context.Context, method, label string, req llm.Request) (llm.Request, error) {
+	result, err := p.callContext(method, toContextRequest(req))
+	if err != nil {
+		return req, err
+	}
+	var out ContextBeforeRequestResult
+	if err := json.Unmarshal(result, &out); err != nil {
+		return req, fmt.Errorf("parse %s: %w", label, err)
+	}
+	return fromContextRequest(out.Request), nil
+}
+
+// CallContextBefore invokes a plugin's before_request hook, returning the
+// possibly-rewritten request to continue the chain or forward.
+func (p *Plugin) CallContextBefore(ctx context.Context, req llm.Request) (llm.Request, error) {
+	return p.callContextRewrite(ctx, MethodContextBeforeRequest, "context/before_request", req)
+}
+
+// CallContextAfter invokes a plugin's after_response hook, which observes the
+// completed turn and reports a narrow usage delta. It never rewrites history.
+func (p *Plugin) CallContextAfter(ctx context.Context, req llm.Request, usage llm.Usage) (llm.Usage, error) {
+	params := ContextAfterResponseParams{
+		Request: toContextRequest(req),
+		Usage:   Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens},
+	}
+	result, err := p.callContext(MethodContextAfterResponse, params)
+	if err != nil {
+		return usage, err
+	}
+	var out ContextAfterResponseResult
+	if err := json.Unmarshal(result, &out); err != nil {
+		return usage, fmt.Errorf("parse context/after_response: %w", err)
+	}
+	return llm.Usage{
+		PromptTokens:     out.Usage.PromptTokens,
+		CompletionTokens: out.Usage.CompletionTokens,
+		TotalTokens:      out.Usage.TotalTokens,
+	}, nil
+}
+
+// CallContextCompact invokes a plugin's compact hook, which summarises/evicts
+// history into a rewritten request.
+func (p *Plugin) CallContextCompact(ctx context.Context, req llm.Request) (llm.Request, error) {
+	return p.callContextRewrite(ctx, MethodContextCompact, "context/compact", req)
+}
+
+// CallContextCondense invokes a plugin's condense hook, which narrows tool
+// outputs in history into a rewritten request.
+func (p *Plugin) CallContextCondense(ctx context.Context, req llm.Request) (llm.Request, error) {
+	return p.callContextRewrite(ctx, MethodContextCondense, "context/condense", req)
+}
+
 func (m *Manager) GetPlugins() map[string]*Plugin {
 	m.pluginsMu.RLock()
 	defer m.pluginsMu.RUnlock()
@@ -576,6 +689,21 @@ func (m *Manager) GetPlugins() map[string]*Plugin {
 		result[k] = v
 	}
 	return result
+}
+
+// PluginsInOrder returns the successfully-loaded plugins in discovery
+// (registration) order, which is deterministic and drives the default
+// context-hook chain order.
+func (m *Manager) PluginsInOrder() []*Plugin {
+	m.pluginsMu.RLock()
+	defer m.pluginsMu.RUnlock()
+	var out []*Plugin
+	for _, name := range m.pluginOrder {
+		if p, ok := m.plugins[name]; ok {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (m *Manager) RegisterToolFactory(factory func() tools.Tool) {

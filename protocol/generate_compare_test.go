@@ -32,6 +32,10 @@ func TestGeneratedMatchesSharedProtocol(t *testing.T) {
 	requiredTypes := []string{
 		"Request", "Response", "Error", "Capabilities",
 		"WireInitResult", "ModelDef", "WireListModelsResult",
+		"ToolDef", "ContextMessage", "ContextToolCall", "ContextRequest",
+		"ContextBeforeRequestResult", "ContextAfterResponseParams",
+		"ContextAfterResponseResult", "ContextCompactResult", "ContextCondenseResult",
+		"Usage",
 	}
 
 	for _, name := range requiredTypes {
@@ -66,6 +70,7 @@ func TestGeneratedMatchesSharedProtocol(t *testing.T) {
 
 	requiredMethods := []string{
 		"SetModels", "OnInit", "OnStream", "Run",
+		"OnBeforeRequest", "OnAfterResponse", "OnCompact", "OnCondense",
 	}
 
 	for _, name := range requiredMethods {
@@ -84,6 +89,8 @@ func TestGeneratedMatchesSharedProtocol(t *testing.T) {
 	requiredConsts := []string{
 		"MethodCapabilitiesList", "MethodWireInit", "MethodWireStream",
 		"MethodWireListModels", "MethodPing", "MethodShutdown",
+		"MethodContextBeforeRequest", "MethodContextAfterResponse",
+		"MethodContextCompact", "MethodContextCondense",
 	}
 
 	for _, name := range requiredConsts {

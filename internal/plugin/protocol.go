@@ -3,19 +3,25 @@ package plugin
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/okayest-dev/og/internal/llm"
 )
 
 const (
-	ProtocolVersion = 1
+	ProtocolVersion = 2
 
-	MethodCapabilitiesList = "capabilities/list"
-	MethodToolsList        = "tools/list"
-	MethodToolsCall        = "tools/call"
-	MethodWireInit       = "wire/init"
-	MethodWireStream     = "wire/stream"
-	MethodWireListModels = "wire/list_models"
-	MethodPing           = "ping"
-	MethodShutdown         = "shutdown"
+	MethodCapabilitiesList     = "capabilities/list"
+	MethodToolsList            = "tools/list"
+	MethodToolsCall            = "tools/call"
+	MethodWireInit             = "wire/init"
+	MethodWireStream           = "wire/stream"
+	MethodWireListModels       = "wire/list_models"
+	MethodContextBeforeRequest = "context/before_request"
+	MethodContextAfterResponse = "context/after_response"
+	MethodContextCompact       = "context/compact"
+	MethodContextCondense      = "context/condense"
+	MethodPing                 = "ping"
+	MethodShutdown             = "shutdown"
 )
 
 type Request struct {
@@ -70,7 +76,60 @@ type Capabilities struct {
 	Tools     bool `json:"tools"`
 	Wires     bool `json:"wires"`
 	Providers bool `json:"providers"`
-	Version   int  `json:"version"`
+	// Context hooks the plugin can perform, declared granularly so a plugin
+	// participates in context processing without faking unrelated seams.
+	BeforeRequest bool `json:"context_before"`
+	AfterResponse bool `json:"context_after"`
+	CompactHook   bool `json:"context_compact"`
+	CondenseHook  bool `json:"context_condense"`
+	Version       int  `json:"version"`
+}
+
+// HasAny reports whether the plugin declares at least one capability. A plugin
+// that declares none is a protocol/validation error.
+func (c *Capabilities) HasAny() bool {
+	return c.Tools || c.Wires || c.Providers || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook
+}
+
+// PresenceMask is a bit-field of the capabilities present, so a peer can detect
+// which seams a plugin participates in without re-negotiating the protocol.
+type PresenceMask int
+
+const (
+	PresenceTools PresenceMask = 1 << iota
+	PresenceWires
+	PresenceProviders
+	PresenceBeforeRequest
+	PresenceAfterResponse
+	PresenceCompact
+	PresenceCondense
+)
+
+// Mask returns the capability presence bitmask for this declaration.
+func (c *Capabilities) Mask() PresenceMask {
+	var m PresenceMask
+	if c.Tools {
+		m |= PresenceTools
+	}
+	if c.Wires {
+		m |= PresenceWires
+	}
+	if c.Providers {
+		m |= PresenceProviders
+	}
+	if c.BeforeRequest {
+		m |= PresenceBeforeRequest
+	}
+	if c.AfterResponse {
+		m |= PresenceAfterResponse
+	}
+	if c.CompactHook {
+		m |= PresenceCompact
+	}
+	if c.CondenseHook {
+		m |= PresenceCondense
+	}
+	return m
 }
 
 type ToolDef struct {
@@ -113,6 +172,68 @@ type WireListModelsResult struct {
 	Models []ModelDef `json:"models"`
 }
 
+// ContextMessage is the canonical message shape passed to and returned from a
+// context hook. It mirrors llm.Message with explicit JSON tags so plugins have
+// a stable wire schema to rewrite.
+type ContextMessage struct {
+	Role       string            `json:"role"`
+	Content    string            `json:"content"`
+	ToolCalls  []ContextToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+}
+
+// ContextToolCall is one function call carried by an assistant message.
+type ContextToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ContextRequest is the request handed to a context hook. A before/compact/
+// condense hook returns a (possibly rewritten) request; an after hook observes
+// it and returns only a usage delta.
+type ContextRequest struct {
+	Model    string           `json:"model"`
+	Messages []ContextMessage `json:"messages"`
+	Tools    []ToolDef        `json:"tools,omitempty"`
+}
+
+// ContextBeforeRequestResult is the result of a before_request hook: the
+// possibly-rewritten request to continue the chain/forward.
+type ContextBeforeRequestResult struct {
+	Request ContextRequest `json:"request"`
+}
+
+// ContextAfterResponseParams carries the observed completion data to an
+// after_response hook.
+type ContextAfterResponseParams struct {
+	Request ContextRequest `json:"request"`
+	Usage   Usage          `json:"usage"`
+}
+
+// Usage mirrors llm.Usage on the wire for after_response hooks.
+type Usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// ContextAfterResponseResult is the narrow usage/session delta an
+// after_response hook reports; it never rewrites history.
+type ContextAfterResponseResult struct {
+	Usage Usage `json:"usage"`
+}
+
+// ContextCompactResult / ContextCondenseResult carry the rewritten history a
+// single-active compact/condense implementation produces.
+type ContextCompactResult struct {
+	Request ContextRequest `json:"request"`
+}
+
+type ContextCondenseResult struct {
+	Request ContextRequest `json:"request"`
+}
+
 type ModelDef struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
@@ -122,12 +243,12 @@ type ModelDef struct {
 }
 
 var (
-	ErrInvalidJSONRPC    = errors.New("invalid JSON-RPC version")
-	ErrMissingID         = errors.New("missing request ID")
-	ErrMethodNotFound    = errors.New("method not found")
-	ErrInvalidParams     = errors.New("invalid params")
-	ErrInternalError     = errors.New("internal error")
-	ErrProtocolVersion   = errors.New("unsupported protocol version")
+	ErrInvalidJSONRPC       = errors.New("invalid JSON-RPC version")
+	ErrMissingID            = errors.New("missing request ID")
+	ErrMethodNotFound       = errors.New("method not found")
+	ErrInvalidParams        = errors.New("invalid params")
+	ErrInternalError        = errors.New("internal error")
+	ErrProtocolVersion      = errors.New("unsupported protocol version")
 	ErrCapabilitiesMismatch = errors.New("capabilities mismatch")
 )
 
@@ -145,7 +266,7 @@ func (c *Capabilities) Validate() error {
 	if c.Version != ProtocolVersion {
 		return ErrProtocolVersion
 	}
-	if !c.Tools && !c.Wires && !c.Providers {
+	if !c.HasAny() {
 		return ErrCapabilitiesMismatch
 	}
 	return nil
@@ -171,4 +292,40 @@ func toString(v any) string {
 		b, _ := json.Marshal(v)
 		return string(b)
 	}
+}
+
+// toContextRequest converts an llm.Request into the wire shape handed to a
+// context hook.
+func toContextRequest(req llm.Request) ContextRequest {
+	out := ContextRequest{Model: req.Model}
+	for _, td := range req.Tools {
+		out.Tools = append(out.Tools, ToolDef{Name: td.Name, Description: td.Description, Parameters: td.Parameters})
+	}
+	out.Messages = make([]ContextMessage, 0, len(req.Messages))
+	for _, m := range req.Messages {
+		cm := ContextMessage{Role: m.Role, Content: m.Content, ToolCallID: m.ToolCallID}
+		for _, tc := range m.ToolCalls {
+			cm.ToolCalls = append(cm.ToolCalls, ContextToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})
+		}
+		out.Messages = append(out.Messages, cm)
+	}
+	return out
+}
+
+// fromContextRequest converts a hook-returned wire request back into an
+// llm.Request.
+func fromContextRequest(cr ContextRequest) llm.Request {
+	out := llm.Request{Model: cr.Model}
+	for _, td := range cr.Tools {
+		out.Tools = append(out.Tools, llm.ToolDef{Name: td.Name, Description: td.Description, Parameters: td.Parameters})
+	}
+	out.Messages = make([]llm.Message, 0, len(cr.Messages))
+	for _, cm := range cr.Messages {
+		m := llm.Message{Role: cm.Role, Content: cm.Content, ToolCallID: cm.ToolCallID}
+		for _, tc := range cm.ToolCalls {
+			m.ToolCalls = append(m.ToolCalls, llm.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments})
+		}
+		out.Messages = append(out.Messages, m)
+	}
+	return out
 }

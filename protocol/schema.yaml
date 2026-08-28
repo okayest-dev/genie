@@ -3,7 +3,7 @@
 # Each plugin vendors the generated output as internal/wireplugin/.
 
 protocol:
-  version: 1
+  version: 2
   package: wireplugin
   transport: stdio
   encoding: ndjson-rpc-2.0
@@ -21,6 +21,14 @@ constants:
     value: "wire/stream"
   - name: MethodWireListModels
     value: "wire/list_models"
+  - name: MethodContextBeforeRequest
+    value: "context/before_request"
+  - name: MethodContextAfterResponse
+    value: "context/after_response"
+  - name: MethodContextCompact
+    value: "context/compact"
+  - name: MethodContextCondense
+    value: "context/condense"
   - name: MethodPing
     value: "ping"
   - name: MethodShutdown
@@ -92,6 +100,18 @@ types:
       - name: Providers
         json: providers
         type: bool
+      - name: BeforeRequest
+        json: context_before
+        type: bool
+      - name: AfterResponse
+        json: context_after
+        type: bool
+      - name: CompactHook
+        json: context_compact
+        type: bool
+      - name: CondenseHook
+        json: context_condense
+        type: bool
       - name: Version
         json: version
         type: int
@@ -118,6 +138,105 @@ types:
         json: models
         type: "[]ModelDef"
 
+  - name: ToolDef
+    fields:
+      - name: Name
+        json: name
+        type: string
+      - name: Description
+        json: description
+        type: string
+      - name: Parameters
+        json: parameters
+        type: "map[string]any"
+
+  - name: ContextMessage
+    fields:
+      - name: Role
+        json: role
+        type: string
+      - name: Content
+        json: content
+        type: string
+      - name: ToolCalls
+        json: tool_calls
+        type: "[]ContextToolCall"
+        omitempty: true
+      - name: ToolCallID
+        json: tool_call_id
+        type: string
+        omitempty: true
+
+  - name: ContextToolCall
+    fields:
+      - name: ID
+        json: id
+        type: string
+      - name: Name
+        json: name
+        type: string
+      - name: Arguments
+        json: arguments
+        type: string
+
+  - name: ContextRequest
+    fields:
+      - name: Model
+        json: model
+        type: string
+      - name: Messages
+        json: messages
+        type: "[]ContextMessage"
+      - name: Tools
+        json: tools
+        type: "[]ToolDef"
+        omitempty: true
+
+  - name: ContextBeforeRequestResult
+    fields:
+      - name: Request
+        json: request
+        type: ContextRequest
+
+  - name: Usage
+    fields:
+      - name: PromptTokens
+        json: prompt_tokens
+        type: int
+      - name: CompletionTokens
+        json: completion_tokens
+        type: int
+      - name: TotalTokens
+        json: total_tokens
+        type: int
+
+  - name: ContextAfterResponseParams
+    fields:
+      - name: Request
+        json: request
+        type: ContextRequest
+      - name: Usage
+        json: usage
+        type: Usage
+
+  - name: ContextAfterResponseResult
+    fields:
+      - name: Usage
+        json: usage
+        type: Usage
+
+  - name: ContextCompactResult
+    fields:
+      - name: Request
+        json: request
+        type: ContextRequest
+
+  - name: ContextCondenseResult
+    fields:
+      - name: Request
+        json: request
+        type: ContextRequest
+
 handler:
   struct:
     fields:
@@ -133,6 +252,14 @@ handler:
         type: "func() error"
       - name: onStream
         type: "func(request json.RawMessage) (json.RawMessage, error)"
+      - name: onBeforeRequest
+        type: "func(request ContextRequest) (ContextRequest, error)"
+      - name: onAfterResponse
+        type: "func(request ContextRequest, usage Usage) (Usage, error)"
+      - name: onCompact
+        type: "func(request ContextRequest) (ContextRequest, error)"
+      - name: onCondense
+        type: "func(request ContextRequest) (ContextRequest, error)"
 
   methods:
     - name: SetModels
@@ -152,6 +279,30 @@ handler:
       params:
         - name: fn
           type: "func(request json.RawMessage) (json.RawMessage, error)"
+
+    - name: OnBeforeRequest
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(request ContextRequest) (ContextRequest, error)"
+
+    - name: OnAfterResponse
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(request ContextRequest, usage Usage) (Usage, error)"
+
+    - name: OnCompact
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(request ContextRequest) (ContextRequest, error)"
+
+    - name: OnCondense
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(request ContextRequest) (ContextRequest, error)"
 
   # Methods that are not configurable - always generated as-is
   static_methods:
@@ -208,6 +359,14 @@ handler:
       action: "writeResult with WireListModelsResult{Models: models}"
     - method: MethodWireStream
       action: "call onStream with params, write raw result"
+    - method: MethodContextBeforeRequest
+      action: "call onBeforeRequest, write ContextBeforeRequestResult"
+    - method: MethodContextAfterResponse
+      action: "call onAfterResponse, write ContextAfterResponseResult"
+    - method: MethodContextCompact
+      action: "call onCompact, write ContextCompactResult"
+    - method: MethodContextCondense
+      action: "call onCondense, write ContextCondenseResult"
     - method: MethodPing
       action: "writeResult with map[string]bool{\"pong\": true}"
     - method: MethodShutdown
