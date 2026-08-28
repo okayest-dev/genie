@@ -1,16 +1,23 @@
 // Package contextmgr implements ContextManager: a transparent llm.Client
 // wrapper that sits outermost in the client chain (around RoutingClient) and
-// owns history injection. From the caller's perspective it is indistinguishable
-// from any other llm.Client; on Stream it injects prior-turn history from the
-// session so a later turn's request carries earlier turns' messages.
+// owns history injection and token accounting. From the caller's perspective
+// it is indistinguishable from any other llm.Client; on Stream it injects
+// prior-turn history from the session so a later turn's request carries
+// earlier turns' messages, and it computes the outgoing request's token count
+// for the active model via its Counter, against the resolver's authoritative
+// context window and budget.
 package contextmgr
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
+	"log/slog"
 
 	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/og/internal/modelinfo"
 	"github.com/okayest-dev/og/internal/session"
+	"github.com/okayest-dev/og/internal/tokens"
 )
 
 // ContextManager is a pure llm.Client decorator holding a session reference.
@@ -22,6 +29,14 @@ type ContextManager struct {
 	// turns is the number of prior turns of history injected into each new
 	// turn's request. Zero means unlimited (the whole conversation).
 	turns int
+	// counter computes token counts for the active model. Nil disables
+	// token accounting.
+	counter tokens.Counter
+	// resolver supplies the authoritative context window and budget for the
+	// active model. Nil means no window is known.
+	resolver *modelinfo.Resolver
+	// lastTokens is the token count of the most recent outgoing request.
+	lastTokens int
 }
 
 // Option configures a ContextManager at construction time.
@@ -33,6 +48,18 @@ func WithTurns(turns int) Option {
 	return func(m *ContextManager) { m.turns = turns }
 }
 
+// WithCounter attaches the token Counter used to compute the outgoing
+// request's token count for the active model.
+func WithCounter(c tokens.Counter) Option {
+	return func(m *ContextManager) { m.counter = c }
+}
+
+// WithResolver attaches the modelinfo Resolver that supplies the
+// authoritative context window and budget for the active model.
+func WithResolver(r *modelinfo.Resolver) Option {
+	return func(m *ContextManager) { m.resolver = r }
+}
+
 // New wraps inner so that Stream requests gain the session's prior history.
 func New(inner llm.Client, sess *session.Session, opts ...Option) *ContextManager {
 	m := &ContextManager{inner: inner, sess: sess}
@@ -40,6 +67,13 @@ func New(inner llm.Client, sess *session.Session, opts ...Option) *ContextManage
 		opt(m)
 	}
 	return m
+}
+
+// Tokens returns the token count of the most recent outgoing request,
+// computed with the attached Counter. Zero when no Counter is attached or no
+// request has been streamed yet.
+func (m *ContextManager) Tokens() int {
+	return m.lastTokens
 }
 
 // Stream injects prior-turn history from the session into the request and
@@ -50,6 +84,7 @@ func New(inner llm.Client, sess *session.Session, opts ...Option) *ContextManage
 // only re-serials the request so callers stay unaware of context management.
 func (m *ContextManager) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Event], error) {
 	req = m.injectHistory(req)
+	m.recordUsage(ctx, req)
 
 	stream, err := m.inner.Stream(ctx, req)
 	if err != nil {
@@ -147,4 +182,40 @@ func (m *ContextManager) windowPrior(raw []llm.Message) []llm.Message {
 		out = append(out, t...)
 	}
 	return out
+}
+
+// recordUsage computes the token count of the outgoing request for the
+// active model via the attached Counter and records it as the latest usage.
+// With a resolver attached, the count is logged against the authoritative
+// context window and budget so operators can see the headroom. Counting is
+// skipped when no Counter is attached.
+func (m *ContextManager) recordUsage(ctx context.Context, req llm.Request) {
+	if m.counter == nil {
+		return
+	}
+	n := 0
+	for _, msg := range req.Messages {
+		n += m.counter.Count(req.Model, msg.Content)
+		for _, tc := range msg.ToolCalls {
+			n += m.counter.Count(req.Model, tc.Arguments)
+		}
+	}
+	// Tool definitions are part of the prompt context; count each.
+	for _, td := range req.Tools {
+		// Marshal the tool def to approximate its token cost in the prompt.
+		// Exact schema counting is provider-specific; this approximation
+		// uses the same counter as the rest of the request.
+		if data, err := json.Marshal(td); err == nil {
+			n += m.counter.Count(req.Model, string(data))
+		}
+	}
+	m.lastTokens = n
+
+	if m.resolver == nil {
+		slog.Debug("context usage", "model", req.Model, "tokens", n)
+		return
+	}
+	window := m.resolver.ContextWindow(ctx, req.Model)
+	budget := m.resolver.Budget(ctx, req.Model)
+	slog.Debug("context usage", "model", req.Model, "tokens", n, "window", window, "budget", budget)
 }

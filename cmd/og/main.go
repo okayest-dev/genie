@@ -19,7 +19,9 @@ import (
 	"github.com/okayest-dev/og/internal/instruct"
 	"github.com/okayest-dev/og/internal/ledger"
 	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/og/internal/modelinfo"
 	"github.com/okayest-dev/og/internal/plugin"
+	"github.com/okayest-dev/og/internal/tokens"
 	_ "github.com/okayest-dev/og/internal/llm/anthropic"
 	_ "github.com/okayest-dev/og/internal/llm/google"
 	_ "github.com/okayest-dev/og/internal/llm/openai"
@@ -221,6 +223,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Context window & budget: per-model config overrides first, then
+	// authoritative provider data via the optional ModelInfo probe (lazily
+	// probed once per model and cached for the process lifetime).
+	var infoSource modelinfo.Source
+	if p, ok := client.(llm.ModelInfoProvider); ok {
+		infoSource = p
+	}
+	resolver := modelinfo.New(infoSource, cfg.Context.Windows, modelinfo.Options{
+		BudgetTokens:  cfg.Context.BudgetTokens,
+		BudgetPercent: cfg.Context.BudgetPercent,
+	})
+	// Plugin-reported windows are already in hand; seed without probing.
+	for _, p := range pluginMgr.GetPlugins() {
+		for _, m := range p.Models {
+			resolver.Seed(m.ID, m.ContextWindow)
+		}
+	}
+	counter := tokens.New()
+	ctxOpts := []contextmgr.Option{
+		contextmgr.WithTurns(cfg.Context.Turns),
+		contextmgr.WithCounter(counter),
+		contextmgr.WithResolver(resolver),
+	}
+
 	// No -p flag: start the interactive REPL.
 	if *prompt == "" {
 		var agentReg *config.AgentReg
@@ -238,6 +264,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			AgentReg:     agentReg,
 			DefaultAgent: runAgent,
 			BashTimeout:  cfg.BashTimeout,
+			CtxOpts:      ctxOpts,
 			Stdin:        os.Stdin,
 			Stdout:       stdout,
 			Stderr:       stderr,
@@ -278,7 +305,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if runAgent != nil {
 		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
 	}
-	ctxClient := contextmgr.New(client, sess, contextmgr.WithTurns(cfg.Context.Turns))
+	ctxClient := contextmgr.New(client, sess, ctxOpts...)
 	err = agent.RunTurn(ctx, ctxClient, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, turnOpts...)
 
 	// Close the ledger to flush any recorded mutations.

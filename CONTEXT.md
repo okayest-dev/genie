@@ -63,3 +63,15 @@ _Avoid_: provider selector, wire router
 **Wire**:
 A concrete implementation of `llm.Client` for a specific wire protocol — one package under `internal/llm/` (e.g. `openai/`, `anthropic/`, `responses/`, `google/`). Each wire handles request serialisation, SSE streaming, tool-call delta accumulation, and error mapping for its protocol.
 _Avoid_: provider implementation, client
+
+**Counter**:
+The token-counting seam behind an internal interface (`internal/tokens`) — omnitoken for models it has an adapter for, a len/4 heuristic approximation for the rest, so the harness can always count a conversation without failing.
+_Avoid_: tokenizer, counter library
+
+**Context window**:
+The authoritative per-model token limit a conversation is budgeted against — resolved from a config override first, then from provider data (the plugin that introduces the model reports it, or the wire's model-info probe), never from a curated guess; unknown stays zero.
+_Avoid_: max tokens, model size
+
+**Budget**:
+The portion of the context window a conversation may consume before the harness intervenes — an absolute `budget_tokens` or a percentage of the window (`budget_percent`, default 75%), keeping headroom so a request cannot silently blow the window.
+_Avoid_: limit, quota

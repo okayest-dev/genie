@@ -245,6 +245,43 @@ Each tool definition contains:
 
 **Response**: The plugin should return a response compatible with the wire protocol (streaming chunks).
 
+### wire/list_models
+
+**Direction**: Host → Plugin
+
+**Purpose**: Discover the models this plugin can serve. This is the model-provider contract: each model may carry an authoritative context window that the harness budgets conversations against.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "wire/list_models",
+  "id": 6
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "models": [
+      {
+        "id": "claude-sonnet-4-5",
+        "name": "Claude Sonnet 4.5",
+        "context_window": 200000
+      }
+    ]
+  },
+  "id": 6
+}
+```
+
+**Fields** (per model):
+- `id` (string, required): Model identifier used in requests
+- `name` (string, optional): Human-readable display name
+- `context_window` (integer, optional): The model's authoritative context window in tokens, as reported by the plugin's provider. Omit when the provider does not expose one — the harness never guesses. Users can correct a missing or wrong value with a per-model `context.windows` override in `[context]` config, which takes precedence over this field.
+
 ### ping
 
 **Direction**: Host → Plugin

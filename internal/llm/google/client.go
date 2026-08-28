@@ -99,7 +99,9 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 	}, nil
 }
 
-// ListModels returns the provider's model catalog, normalized to IDs.
+// ListModels returns the provider's model catalog, normalized to IDs, with
+// each model's authoritative context window (the provider's inputTokenLimit)
+// when the provider reports it.
 func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 	resp, err := c.doRequest(ctx, http.MethodGet, "/models", nil)
 	if err != nil {
@@ -109,7 +111,8 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 
 	var body struct {
 		Models []struct {
-			Name string `json:"name"`
+			Name            string `json:"name"`
+			InputTokenLimit int    `json:"inputTokenLimit"`
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -118,9 +121,30 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 	models := make([]llm.Model, 0, len(body.Models))
 	for _, m := range body.Models {
 		id := strings.TrimPrefix(m.Name, "models/")
-		models = append(models, llm.Model{ID: id})
+		models = append(models, llm.Model{ID: id, ContextLength: m.InputTokenLimit})
 	}
 	return models, nil
+}
+
+// ModelInfo returns authoritative per-model metadata (the input context
+// window) from the provider, or a zero ModelInfo when the model is unknown or
+// the provider reports no limit. It implements the optional
+// llm.ModelInfoProvider seam.
+func (c *Client) ModelInfo(ctx context.Context, modelID string) (*llm.ModelInfo, error) {
+	resp, err := c.doRequest(ctx, http.MethodGet, "/models/"+modelID, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Name            string `json:"name"`
+		InputTokenLimit int    `json:"inputTokenLimit"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("decode model info: %w", err)
+	}
+	return &llm.ModelInfo{ContextLength: body.InputTokenLimit}, nil
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, payload []byte) (*http.Response, error) {
@@ -310,9 +334,9 @@ type usageMetadata struct {
 }
 
 type chunk struct {
-	Candidates   []candidate    `json:"candidates"`
+	Candidates    []candidate    `json:"candidates"`
 	UsageMetadata *usageMetadata `json:"usageMetadata"`
-	Error        *wireError     `json:"error"`
+	Error         *wireError     `json:"error"`
 }
 
 type wireError struct {

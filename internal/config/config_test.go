@@ -63,6 +63,15 @@ func TestPureDefaults(t *testing.T) {
 	if cfg.Context.Turns != 0 {
 		t.Errorf("Context.Turns = %d, want 0 (unlimited history) by default", cfg.Context.Turns)
 	}
+	if cfg.Context.BudgetTokens != 0 {
+		t.Errorf("Context.BudgetTokens = %d, want 0 (unset → percent) by default", cfg.Context.BudgetTokens)
+	}
+	if cfg.Context.BudgetPercent != 75 {
+		t.Errorf("Context.BudgetPercent = %v, want 75 by default", cfg.Context.BudgetPercent)
+	}
+	if len(cfg.Context.Windows) != 0 {
+		t.Errorf("Context.Windows = %v, want empty by default", cfg.Context.Windows)
+	}
 }
 
 // fullConfig is a config file that sets every v1 key.
@@ -338,6 +347,134 @@ func TestContextTurnsMustNotBeNegative(t *testing.T) {
 			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
 			if err == nil {
 				t.Fatalf("Parse accepted %q %v; want an error for an invalid context turns", tc.file, tc.envVars)
+			}
+		})
+	}
+}
+
+func TestBudgetDefaultsToPercentOfWindow(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.BudgetTokens != 0 {
+		t.Errorf("Context.BudgetTokens = %d, want 0 (unset → derived from percent)", cfg.Context.BudgetTokens)
+	}
+	if cfg.Context.BudgetPercent != 75 {
+		t.Errorf("Context.BudgetPercent = %v, want default 75", cfg.Context.BudgetPercent)
+	}
+}
+
+func TestBudgetTokensFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nbudget_tokens = 200000\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.BudgetTokens != 200000 {
+		t.Errorf("Context.BudgetTokens = %d, want 200000", cfg.Context.BudgetTokens)
+	}
+	// Setting an explicit token budget leaves the percent default untouched.
+	if cfg.Context.BudgetPercent != 75 {
+		t.Errorf("Context.BudgetPercent = %v, want still 75", cfg.Context.BudgetPercent)
+	}
+}
+
+func TestBudgetPercentFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nbudget_percent = 90\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.BudgetPercent != 90 {
+		t.Errorf("Context.BudgetPercent = %v, want 90", cfg.Context.BudgetPercent)
+	}
+}
+
+func TestContextWindowOverridesFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context.windows]\n\"gpt-4o\" = 128000\n\"claude-3-5-sonnet\" = 200000\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Context.Windows["gpt-4o"]; got != 128000 {
+		t.Errorf("Windows[gpt-4o] = %d, want 128000", got)
+	}
+	if got := cfg.Context.Windows["claude-3-5-sonnet"]; got != 200000 {
+		t.Errorf("Windows[claude-3-5-sonnet] = %d, want 200000", got)
+	}
+}
+
+func TestBudgetTokensEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nbudget_tokens = 100000\n"), "/home/u", env("OG_CONTEXT_BUDGET_TOKENS", "300000"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.BudgetTokens != 300000 {
+		t.Errorf("Context.BudgetTokens = %d, want 300000 (env overrides file)", cfg.Context.BudgetTokens)
+	}
+}
+
+func TestBudgetPercentEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nbudget_percent = 60\n"), "/home/u", env("OG_CONTEXT_BUDGET_PERCENT", "80"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.BudgetPercent != 80 {
+		t.Errorf("Context.BudgetPercent = %v, want 80 (env overrides file)", cfg.Context.BudgetPercent)
+	}
+}
+
+func TestBudgetTokensMustBePositive(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		file    string
+		envVars map[string]string
+	}{
+		{name: "file zero", file: "[context]\nbudget_tokens = 0", envVars: nil},
+		{name: "file negative", file: "[context]\nbudget_tokens = -5", envVars: nil},
+		{name: "env zero", envVars: env("OG_CONTEXT_BUDGET_TOKENS", "0")},
+		{name: "env non-numeric", envVars: env("OG_CONTEXT_BUDGET_TOKENS", "lots")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
+			if err == nil {
+				t.Fatalf("Parse accepted %q %v; want an error for an invalid budget_tokens", tc.file, tc.envVars)
+			}
+		})
+	}
+}
+
+func TestBudgetPercentRange(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		file    string
+		envVars map[string]string
+	}{
+		{name: "file zero", file: "[context]\nbudget_percent = 0", envVars: nil},
+		{name: "file negative", file: "[context]\nbudget_percent = -10", envVars: nil},
+		{name: "file over 100", file: "[context]\nbudget_percent = 150", envVars: nil},
+		{name: "env zero", envVars: env("OG_CONTEXT_BUDGET_PERCENT", "0")},
+		{name: "env non-numeric", envVars: env("OG_CONTEXT_BUDGET_PERCENT", "half")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
+			if err == nil {
+				t.Fatalf("Parse accepted %q %v; want an error for an invalid budget_percent", tc.file, tc.envVars)
+			}
+		})
+	}
+}
+
+func TestContextWindowOverrideMustBePositive(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+	}{
+		{name: "zero", file: "[context.windows]\n\"m\" = 0"},
+		{name: "negative", file: "[context.windows]\n\"m\" = -5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", nil)
+			if err == nil {
+				t.Fatalf("Parse accepted %q; want an error for a non-positive context window override", tc.file)
 			}
 		})
 	}

@@ -84,7 +84,18 @@ func (c *pluginWireClient) Stream(_ context.Context, req llm.Request) (iter.Seq[
 func (c *pluginWireClient) ListModels(_ context.Context) ([]llm.Model, error) {
 	models := make([]llm.Model, 0, len(c.plugin.Models))
 	for _, m := range c.plugin.Models {
-		models = append(models, llm.Model{ID: m.ID})
+		models = append(models, llm.Model{ID: m.ID, ContextLength: m.ContextWindow})
 	}
 	return models, nil
+}
+
+// ModelInfo implements the optional llm.ModelInfoProvider seam: the plugin is
+// the authoritative source for its own models' context windows.
+func (c *pluginWireClient) ModelInfo(_ context.Context, modelID string) (*llm.ModelInfo, error) {
+	for _, m := range c.plugin.Models {
+		if m.ID == modelID {
+			return &llm.ModelInfo{ContextLength: m.ContextWindow}, nil
+		}
+	}
+	return &llm.ModelInfo{}, nil
 }

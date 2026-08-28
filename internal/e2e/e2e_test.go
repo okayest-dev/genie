@@ -133,6 +133,17 @@ func scriptedProvider(t *testing.T, b fake.Behavior) *fake.Provider {
 	return p
 }
 
+// chatRequest returns the POST request from the recorded requests.
+// It handles the google wire's lazy model-info probe (GET) preceding the chat POST.
+func chatRequest(reqs []fake.Request) *fake.Request {
+	for i := range reqs {
+		if reqs[i].Method == "POST" {
+			return &reqs[i]
+		}
+	}
+	return nil
+}
+
 // assertCleanFailure checks the "open failure" contract: non-zero exit, a
 // clear Error: line on stderr, nothing on stdout, and never a stack trace.
 func assertCleanFailure(t *testing.T, stdout, stderr string, code int, wantStderr string) {
@@ -1258,6 +1269,7 @@ func TestGoogleWire(t *testing.T) {
 			fake.GoogleFinish("STOP"),
 			fake.Done,
 		},
+		ContextWindow: 1_000_000,
 	})
 	stdout, stderr, code := run(t, append(providerEnv(p), "OG_WIRE=google", "OG_MODEL=gemini-test"), "-p", "hi")
 	if code != 0 {
@@ -1267,11 +1279,17 @@ func TestGoogleWire(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "Hello from Google\n")
 	}
 	reqs := p.Requests()
-	if len(reqs) != 1 {
-		t.Fatalf("requests = %d, want 1", len(reqs))
+	// Two requests: the lazy model-info probe (GET, context window lookup)
+	// followed by the chat POST.
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2 (model-info probe + chat)", len(reqs))
 	}
-	if !strings.HasPrefix(reqs[0].Path, "/models/") {
-		t.Errorf("request path = %q, want /models/...", reqs[0].Path)
+	chat := chatRequest(reqs)
+	if chat == nil {
+		t.Fatalf("no chat POST among requests: %+v", reqs)
+	}
+	if !strings.HasPrefix(chat.Path, "/models/") {
+		t.Errorf("chat path = %q, want /models/...", chat.Path)
 	}
 }
 
@@ -1311,6 +1329,7 @@ func TestWireAutoDetectionGeminiToGoogle(t *testing.T) {
 			fake.GoogleFinish("STOP"),
 			fake.Done,
 		},
+		ContextWindow: 1_000_000,
 	})
 	stdout, stderr, code := run(t, []string{
 		"OG_BASE_URL=" + p.URL,
@@ -1324,11 +1343,17 @@ func TestWireAutoDetectionGeminiToGoogle(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "detected\n")
 	}
 	reqs := p.Requests()
-	if len(reqs) != 1 {
-		t.Fatalf("requests = %d, want 1", len(reqs))
+	// Two requests: the lazy model-info probe (GET, context window lookup)
+	// followed by the chat POST.
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2 (model-info probe + chat)", len(reqs))
 	}
-	if !strings.HasPrefix(reqs[0].Path, "/models/") {
-		t.Errorf("request path = %q, want /models/... (auto-detected google)", reqs[0].Path)
+	chat := chatRequest(reqs)
+	if chat == nil {
+		t.Fatalf("no chat POST among requests: %+v", reqs)
+	}
+	if !strings.HasPrefix(chat.Path, "/models/") {
+		t.Errorf("chat path = %q, want /models/... (auto-detected google)", chat.Path)
 	}
 }
 
@@ -1662,5 +1687,71 @@ func TestStdinPipingEmptyDashExits3(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "usage") {
 		t.Errorf("stderr = %q, want a usage message", stderr)
+	}
+}
+
+// TestContextUsageLoggedAgainstBudget is the og-br8 acceptance at the binary
+// seam: with a per-model context-window override, the debug log reports the
+// outgoing request's token count against the authoritative window and the
+// default 75% budget.
+func TestContextUsageLoggedAgainstBudget(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfg := `
+[context.windows]
+"test-model" = 1000
+`
+	dir := configDir(t, cfg)
+	env := append(providerEnv(p), "OG_CONFIG_DIR="+dir)
+	stdout, stderr, code := run(t, env, "-d", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if !strings.Contains(stderr, "context usage") {
+		t.Errorf("stderr = %q, want a context usage debug line", stderr)
+	}
+	if !strings.Contains(stderr, "window=1000") {
+		t.Errorf("stderr = %q, want window=1000 from the config override", stderr)
+	}
+	// Default budget: 75% of the 1000-token window.
+	if !strings.Contains(stderr, "budget=750") {
+		t.Errorf("stderr = %q, want budget=750 (75%% of window)", stderr)
+	}
+	// The outgoing request's token count is reported and non-zero.
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.Contains(line, "context usage") {
+			if !strings.Contains(line, "tokens=") {
+				t.Errorf("context usage line %q missing tokens=", line)
+			}
+			break
+		}
+	}
+}
+
+// TestContextBudgetTokensOverrideWins is the og-br8 acceptance that an
+// absolute budget_tokens config wins over the percent-of-window derivation.
+func TestContextBudgetTokensOverrideWins(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfg := `
+[context]
+budget_tokens = 123
+
+[context.windows]
+"test-model" = 1000
+`
+	dir := configDir(t, cfg)
+	env := append(providerEnv(p), "OG_CONFIG_DIR="+dir)
+	_, stderr, code := run(t, env, "-d", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "budget=123") {
+		t.Errorf("stderr = %q, want budget=123 (absolute budget_tokens wins)", stderr)
 	}
 }

@@ -116,6 +116,9 @@ type WireListModelsResult struct {
 type ModelDef struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitempty"`
+	// ContextWindow is the model's authoritative context window in tokens as
+	// reported by the model-provider plugin. Zero means unknown.
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 var (
