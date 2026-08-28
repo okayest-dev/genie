@@ -29,6 +29,11 @@ type Behavior struct {
 	// Delay pauses the response after writing each chunk, so tests can
 	// observe deltas arriving before the stream (and process) ends.
 	Delay time.Duration
+
+	// ContextWindow, when > 0, makes the server serve the lazy model-info
+	// probe (GET /models/{model}) with this value as the provider's
+	// authoritative inputTokenLimit — as a real Google provider would.
+	ContextWindow int
 }
 
 // Error scripts a non-stream HTTP error response.
@@ -113,7 +118,24 @@ func (p *Provider) serve(w http.ResponseWriter, r *http.Request) {
 		p.serveGoogle(w, behavior)
 		return
 	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/models/") {
+		p.serveModelInfo(w, behavior)
+		return
+	}
 	http.NotFound(w, r)
+}
+
+// serveModelInfo serves the lazy model-info probe for the Google wire
+// (GET /models/{model}); it answers with the authoritative inputTokenLimit
+// when one is configured in Behavior.
+func (p *Provider) serveModelInfo(w http.ResponseWriter, b Behavior) {
+	if b.ContextWindow <= 0 {
+		http.NotFound(w, &http.Request{})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, `{"name":%q,"inputTokenLimit":%d}`, "", b.ContextWindow)
 }
 
 func (p *Provider) serveChat(w http.ResponseWriter, b Behavior) {

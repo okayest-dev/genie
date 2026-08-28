@@ -252,3 +252,53 @@ func TestDoRequestOmitsApiKeyWhenEmpty(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+// TestListModelsIncludesContextLength asserts the provider's authoritative
+// input token limit is carried onto each Model.
+func TestListModelsIncludesContextLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"models": []map[string]any{
+				{"name": "models/gemini-2.5-pro", "inputTokenLimit": 1048576},
+				{"name": "models/gemini-2.0-flash"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	models, err := NewClient(srv.URL, "").ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) != 2 || models[0].ContextLength != 1048576 {
+		t.Errorf("models[0] = %+v, want ContextLength 1048576", models[0])
+	}
+	if models[1].ContextLength != 0 {
+		t.Errorf("models[1].ContextLength = %d, want 0 (unknown when provider omits it)", models[1].ContextLength)
+	}
+}
+
+// TestModelInfoProbe asserts the optional ModelInfoProvider seam reads the
+// authoritative context window from the provider's per-model endpoint.
+func TestModelInfoProbe(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models/gemini-2.5-pro" {
+			t.Errorf("path = %q, want /models/gemini-2.5-pro", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"name":            "models/gemini-2.5-pro",
+			"inputTokenLimit": 1048576,
+		})
+	}))
+	defer srv.Close()
+
+	info, err := NewClient(srv.URL, "").ModelInfo(context.Background(), "gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("ModelInfo: %v", err)
+	}
+	if info == nil || info.ContextLength != 1048576 {
+		t.Errorf("info = %+v, want ContextLength 1048576", info)
+	}
+}

@@ -31,6 +31,21 @@ func (r *RoutingClient) Stream(ctx context.Context, req Request) (iter.Seq[Event
 	return c.Stream(ctx, req)
 }
 
+// ModelInfo delegates to the client routed for modelID, or the default
+// client, when that client implements ModelInfoProvider. Clients without the
+// optional seam resolve to a zero ModelInfo (unknown), never an invented
+// limit.
+func (r *RoutingClient) ModelInfo(ctx context.Context, modelID string) (*ModelInfo, error) {
+	c, ok := r.routes[modelID]
+	if !ok {
+		c = r.defaultClient
+	}
+	if p, ok := c.(ModelInfoProvider); ok {
+		return p.ModelInfo(ctx, modelID)
+	}
+	return &ModelInfo{}, nil
+}
+
 func (r *RoutingClient) ListModels(ctx context.Context) ([]Model, error) {
 	defaultModels, err := r.defaultClient.ListModels(ctx)
 	if err != nil {

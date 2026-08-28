@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/okayest-dev/og/internal/modelinfo"
 )
 
 // validWire is the set of wire names accepted by the config. Must stay in
@@ -46,12 +47,24 @@ type Tools struct {
 }
 
 // Context holds the harness-level context-management knobs. These control how
-// prior conversation turns are carried into each new turn.
+// prior conversation turns are carried into each new turn and the budget the
+// conversation is kept within.
 type Context struct {
 	// Turns is the number of prior turns of history injected into each new
 	// turn's request. Zero means unlimited (the whole conversation), which is
 	// the default so the model remembers every earlier turn.
 	Turns int
+	// BudgetTokens, when > 0, is the absolute context budget in tokens.
+	// When zero, the budget is derived from BudgetPercent of the model's
+	// authoritative context window.
+	BudgetTokens int
+	// BudgetPercent is the context budget expressed as a percentage of the
+	// model's context window, used when BudgetTokens is not set. Defaults to
+	// 75, keeping headroom so a conversation cannot silently blow the window.
+	BudgetPercent float64
+	// Windows maps a model ID to an explicit context-window override (in
+	// tokens). An override takes precedence over provider-reported data.
+	Windows map[string]int
 }
 
 // Config is the resolved harness configuration.
@@ -130,7 +143,10 @@ type pluginsFile struct {
 }
 
 type contextFile struct {
-	Turns *int `toml:"turns"`
+	Turns         *int           `toml:"turns"`
+	BudgetTokens  *int           `toml:"budget_tokens"`
+	BudgetPercent *float64       `toml:"budget_percent"`
+	Windows       map[string]int `toml:"windows"`
 }
 
 // Parse resolves the full configuration from raw config-file content and an
@@ -187,6 +203,27 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 				return nil, fmt.Errorf("config: context.turns must be non-negative, got %d", *fc.Context.Turns)
 			}
 			cfg.Context.Turns = *fc.Context.Turns
+		}
+		if fc.Context.BudgetTokens != nil {
+			if *fc.Context.BudgetTokens <= 0 {
+				return nil, fmt.Errorf("config: context.budget_tokens must be a positive number of tokens, got %d", *fc.Context.BudgetTokens)
+			}
+			cfg.Context.BudgetTokens = *fc.Context.BudgetTokens
+		}
+		if fc.Context.BudgetPercent != nil {
+			if err := validateBudgetPercent(*fc.Context.BudgetPercent); err != nil {
+				return nil, err
+			}
+			cfg.Context.BudgetPercent = *fc.Context.BudgetPercent
+		}
+		if len(fc.Context.Windows) > 0 {
+			cfg.Context.Windows = make(map[string]int, len(fc.Context.Windows))
+			for model, window := range fc.Context.Windows {
+				if window <= 0 {
+					return nil, fmt.Errorf("config: context.windows[%q] must be a positive number of tokens, got %d", model, window)
+				}
+				cfg.Context.Windows[model] = window
+			}
 		}
 		if fc.DefaultAgent != "" {
 			cfg.DefaultAgent = fc.DefaultAgent
@@ -267,6 +304,7 @@ func defaults(userConfigDir string) Config {
 		BashTimeout: defaultBashTimeout,
 		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true},
 		PluginDir:   filepath.Join(userConfigDir, "og", "plugins"),
+		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
 	}
 }
 
@@ -352,7 +390,39 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 		cfg.Context.Turns = n
 		applied = append(applied, "OG_CONTEXT_TURNS")
 	}
+	if v := env["OG_CONTEXT_BUDGET_TOKENS"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_TOKENS: %q is not a number", v)
+		}
+		if n <= 0 {
+			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_TOKENS must be a positive number of tokens, got %d", n)
+		}
+		cfg.Context.BudgetTokens = n
+		applied = append(applied, "OG_CONTEXT_BUDGET_TOKENS")
+	}
+	if v := env["OG_CONTEXT_BUDGET_PERCENT"]; v != "" {
+		p, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_PERCENT: %q is not a number", v)
+		}
+		if err := validateBudgetPercent(p); err != nil {
+			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_PERCENT: %w", err)
+		}
+		cfg.Context.BudgetPercent = p
+		applied = append(applied, "OG_CONTEXT_BUDGET_PERCENT")
+	}
 	return applied, nil
+}
+
+// validateBudgetPercent enforces that a budget percentage lands in (0, 100]:
+// zero or negative leaves no usable budget, and over 100 would budget past
+// the context window itself.
+func validateBudgetPercent(p float64) error {
+	if p <= 0 || p > 100 {
+		return fmt.Errorf("context.budget_percent must be in (0, 100], got %v", p)
+	}
+	return nil
 }
 
 func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) {

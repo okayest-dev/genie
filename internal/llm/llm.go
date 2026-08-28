@@ -135,4 +135,27 @@ func (e *ProviderError) Error() string {
 // Model is one entry in a provider's catalog.
 type Model struct {
 	ID string
+	// ContextLength is the provider's authoritative context window in tokens
+	// for this model, when the provider reports it. Zero means unknown.
+	ContextLength int
+}
+
+// ModelInfo is the lazily-resolved per-model metadata a wire client exposes
+// through the optional ModelInfoProvider seam.
+type ModelInfo struct {
+	// ContextLength is the model's authoritative context window in tokens.
+	// Zero means the provider exposes no window for the model.
+	ContextLength int
+}
+
+// ModelInfoProvider is an optional interface a built-in wire client may
+// implement to report authoritative per-model metadata (currently the context
+// window) derived from provider data rather than a curated table. Callers
+// should invoke it lazily, once per model, and cache the result for the
+// process lifetime.
+type ModelInfoProvider interface {
+	// ModelInfo returns authoritative metadata for modelID. It may return a
+	// zero ModelInfo (and a nil error) when the provider exposes no data for
+	// the model.
+	ModelInfo(ctx context.Context, modelID string) (*ModelInfo, error)
 }

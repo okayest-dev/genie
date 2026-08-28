@@ -312,3 +312,97 @@ func TestListModelsPassesThrough(t *testing.T) {
 		t.Errorf("models = %+v, want %+v", models, inner.models)
 	}
 }
+
+// fakeCounter is a scripted tokens.Counter: every character counts as one
+// token, so tests can predict counts exactly.
+type fakeCounter struct {
+	models []string
+}
+
+func (f *fakeCounter) Count(model, text string) int {
+	f.models = append(f.models, model)
+	return len(text)
+}
+
+func TestStreamTracksTokenCount(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	m := New(inner, s, WithCounter(c))
+
+	req := simulateTurn(t, s, "sys", "hello")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// The count covers the outgoing messages: instruction + prompt.
+	want := len("sys") + len("hello")
+	if got := m.Tokens(); got != want {
+		t.Errorf("Tokens = %d, want %d", got, want)
+	}
+	// Counting happens for the active model.
+	for _, model := range c.models {
+		if model != req.Model {
+			t.Errorf("counted under model %q, want %q", model, req.Model)
+		}
+	}
+}
+
+func TestStreamTracksTokenCountAcrossToolLoop(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	m := New(inner, s, WithCounter(&fakeCounter{}))
+
+	simulateTurn(t, s, "sys", "run a tool")
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read", Arguments: `{"path":"f"}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	toolResult := llm.Message{Role: llm.RoleTool, Content: "file contents", ToolCallID: "call_1"}
+	if err := s.Append(toolResult); err != nil {
+		t.Fatal(err)
+	}
+	req := llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: "sys"},
+			{Role: llm.RoleUser, Content: "run a tool"},
+			toolResult,
+		},
+	}
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// The count reflects the full outgoing request including the tool result
+	// and the assistant tool-call arguments from history.
+	want := len("sys") + len("run a tool") + len(`{"path":"f"}`) + len("file contents")
+	if got := m.Tokens(); got != want {
+		t.Errorf("Tokens = %d, want %d", got, want)
+	}
+}
+
+func TestTokensZeroWithoutCounter(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	m := New(inner, s)
+
+	req := simulateTurn(t, s, "sys", "hello")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if got := m.Tokens(); got != 0 {
+		t.Errorf("Tokens = %d, want 0 without a Counter attached", got)
+	}
+}
+
+func TestTokensUntrackedBeforeFirstStream(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	m := New(inner, s, WithCounter(&fakeCounter{}))
+	if got := m.Tokens(); got != 0 {
+		t.Errorf("Tokens = %d, want 0 before any stream", got)
+	}
+}

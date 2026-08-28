@@ -183,6 +183,14 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 	return models, nil
 }
 
+// ModelInfo implements the optional llm.ModelInfoProvider seam. The OpenAI
+// responses wire's model catalog exposes no context window, so it returns a
+// zero ModelInfo (unknown) rather than an invented window; callers fall back
+// to an explicit config override.
+func (c *Client) ModelInfo(_ context.Context, _ string) (*llm.ModelInfo, error) {
+	return &llm.ModelInfo{}, nil
+}
+
 func (c *Client) doRequest(ctx context.Context, method, path string, payload []byte) (*http.Response, error) {
 	var body io.Reader
 	if payload != nil {

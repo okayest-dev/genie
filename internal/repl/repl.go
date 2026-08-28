@@ -40,9 +40,12 @@ type Config struct {
 	AgentReg     *config.AgentReg
 	DefaultAgent *config.ResolvedAgent
 	BashTimeout  time.Duration
-	Stdin        io.Reader
-	Stdout       io.Writer
-	Stderr       io.Writer
+	// CtxOpts are the ContextManager options (turns window, counter,
+	// resolver) applied wherever a context-wrapped client is constructed.
+	CtxOpts []contextmgr.Option
+	Stdin   io.Reader
+	Stdout  io.Writer
+	Stderr  io.Writer
 }
 
 // contextTurns returns the history window from the harness config, defaulting
@@ -52,6 +55,13 @@ func contextTurns(cfg *Config) int {
 		return 0
 	}
 	return cfg.Cfg.Context.Turns
+}
+
+// contextOptions builds the full ContextManager option list: the config's
+// turns window plus any counter/resolver options supplied by main.
+func contextOptions(cfg *Config) []contextmgr.Option {
+	opts := append([]contextmgr.Option{contextmgr.WithTurns(contextTurns(cfg))}, cfg.CtxOpts...)
+	return opts
 }
 
 // replState holds mutable agent state for the duration of a REPL session.
@@ -76,7 +86,7 @@ func Run(ctx context.Context, cfg *Config) error {
 
 	state := &replState{
 		currentAgent: cfg.DefaultAgent,
-		client:       contextmgr.New(cfg.Client, sess, contextmgr.WithTurns(contextTurns(cfg))),
+		client:       contextmgr.New(cfg.Client, sess, contextOptions(cfg)...),
 	}
 	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
@@ -271,7 +281,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 			fmt.Fprintf(cfg.Stderr, "session: %s\n", (*sess).ID)
 			// Rebind the context client to the new session so history
 			// injection follows the current session, not the discarded one.
-			state.client = contextmgr.New(cfg.Client, *sess, contextmgr.WithTurns(contextTurns(cfg)))
+			state.client = contextmgr.New(cfg.Client, *sess, contextOptions(cfg)...)
 		}
 
 	case "/changes":
