@@ -64,6 +64,10 @@ type ContextManager struct {
 	resolver *modelinfo.Resolver
 	// hooks is the optional plugin context seam invoked around each Stream.
 	hooks Hooks
+	// cm is the derived context map over the session transcript. It is rebuilt
+	// from the transcript on each request and supplies the structural layer
+	// boundaries request assembly retains against.
+	cm *ContextMap
 	// onDegrade surfaces a visible degradation message to the terminal when a
 	// context hook fails; the request still proceeds. Nil silences it (slog
 	// always logs).
@@ -107,7 +111,7 @@ func WithOnDegrade(fn func(msg string)) Option {
 
 // New wraps inner so that Stream requests gain the session's prior history.
 func New(inner llm.Client, sess *session.Session, opts ...Option) *ContextManager {
-	m := &ContextManager{inner: inner, sess: sess}
+	m := &ContextManager{inner: inner, sess: sess, cm: NewMap()}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -199,82 +203,123 @@ func (m *ContextManager) ListModels(ctx context.Context) ([]llm.Model, error) {
 	return m.inner.ListModels(ctx)
 }
 
-// injectHistory builds the message list the inner client receives: the current
-// turn's agent instruction, followed by prior turns' messages from the
-// session, followed by the rest of the current turn.
+// injectHistory builds the message list the inner client receives: the fixed
+// cheap spine (agent instruction + current turn) followed by per-layer
+// retention of prior turns, assembled from the context map.
 //
-// The session is the source of truth for the conversation. Every turn appends
-// exactly one agent-instruction (system-role) message as its first message, so
-// the last system-role message in the session history marks the start of the
-// current turn. Everything before it is prior-turn history (its system-role
-// messages dropped); everything from it onward is the current turn, which the
-// agent loop has already appended (its instruction + user before streaming,
-// then assistant and tool results as the tool loop runs). Reconstructing from
-// the session rather than req.Messages keeps the tool loop correct: an
-// assistant tool-call message lives in the session but is never placed on
-// req.Messages, so matching the request tail against history would miscount
-// and duplicate the current turn.
+// The session transcript is the source of truth. Each request rebuilds the map
+// from it and layers every message by role; the last instruction-layer entry
+// marks the current turn's first line, so the turn boundary is structural
+// rather than a scan for the last system message. (Rebuilding per request
+// keeps the derived index in step with appends the manager only sees at Stream
+// time; the map stays read-only over the transcript, and token-level caching
+// lands separately in og-8qu.6.) Prior turns are retained by turn: durable
+// intent (user + assistant) windowed by the turns config, tool-output riding
+// its turn's window until og-8qu.4 gives it a condensation layer rule keyed by
+// tool-call-id. Prior instructions are never shipped; the current instruction
+// appears exactly once. The wire still receives one full ordered message list.
+// Marker lines (compaction summaries) are JSONL metadata, part of no layer,
+// and are never shipped.
+//
+// Reconstructing from the transcript rather than req.Messages keeps the tool
+// loop correct: an assistant tool-call message lives in the session but is
+// never placed on req.Messages, so matching the request tail against history
+// would miscount and duplicate the current turn.
 func (m *ContextManager) injectHistory(req llm.Request) llm.Request {
 	if m.sess == nil {
 		return req
 	}
-	history := m.sess.History()
-
-	start := -1
-	for i, msg := range history {
-		if msg.Role == llm.RoleSystem {
-			start = i
-		}
-	}
-	// No system message yet (fresh session awaiting its first append): pass the
-	// request through untouched.
-	if start < 0 {
+	lines, err := m.sess.Lines()
+	if err != nil {
+		m.degrade("context transcript read: %v", err)
 		return req
 	}
+	// Rebuild the map from the same lines assembly reads so line indices and
+	// the flat list cannot drift.
+	m.cm.rebuild(lines)
 
-	prior := m.windowPrior(history[:start])
+	instr := m.cm.Layer(LayerInstruction)
+	if len(instr) == 0 {
+		// No instruction yet (fresh session awaiting its first append): pass
+		// the request through untouched.
+		return req
+	}
+	currentStart := instr[len(instr)-1].Line
 
-	current := history[start:]
-	messages := make([]llm.Message, 0, len(prior)+len(current))
-	messages = append(messages, current[0:1]...)
-	messages = append(messages, prior...)
-	messages = append(messages, current[1:]...)
+	retained := m.retainPriorTurns(instr, currentStart)
+
+	messages := make([]llm.Message, 0, len(lines))
+	// Spine: the current instruction ships first and once. It is an indexed
+	// instruction-layer entry, so it is always a message.
+	messages = append(messages, lines[currentStart].Message())
+	// Prior per-layer retention in transcript order; prior instructions are
+	// dropped and marker lines never ship.
+	for i, ln := range lines[:currentStart] {
+		if !retained[i] {
+			continue
+		}
+		msg, ok := messageOf(ln)
+		if !ok || msg.Role == llm.RoleSystem {
+			continue
+		}
+		messages = append(messages, msg)
+	}
+	// Rest of the current turn.
+	for _, ln := range lines[currentStart+1:] {
+		if msg, ok := messageOf(ln); ok {
+			messages = append(messages, msg)
+		}
+	}
 
 	req.Messages = messages
 	return req
 }
 
-// windowPrior returns the prior-history region flattened into a message list
-// with the leading system-role instruction messages dropped. A turn always
-// begins with a system-role instruction message, so the region can be split
-// into turns at those boundaries. When m.turns is positive it keeps only the
-// most recent m.turns turns; zero or negative means unlimited.
-func (m *ContextManager) windowPrior(raw []llm.Message) []llm.Message {
-	var turns [][]llm.Message
-	var cur []llm.Message
-	for _, msg := range raw {
-		if msg.Role == llm.RoleSystem {
-			if len(cur) > 0 {
-				turns = append(turns, cur)
-			}
-			cur = nil
-			continue
+// messageOf converts a transcript line to its canonical message. A marker line
+// (compaction metadata, part of no layer) or an unrecognised role yields no
+// message.
+func messageOf(ln session.TranscriptLine) (llm.Message, bool) {
+	if LayerOf(ln.Role) == "" {
+		return llm.Message{}, false
+	}
+	return ln.Message(), true
+}
+
+// retainPriorTurns selects which transcript lines of the prior region are
+// retained under the turns window. Turn boundaries come from the instruction
+// layer: each turn begins at an instruction line, so the entries before
+// currentStart delimit the prior turns and currentStart ends the last one.
+// When m.turns is positive it keeps only the most recent m.turns prior turns;
+// zero or negative means unlimited (every line before the current turn). The
+// caller additionally drops prior instruction lines and marker lines.
+func (m *ContextManager) retainPriorTurns(instr []Entry, currentStart int) []bool {
+	retained := make([]bool, currentStart)
+
+	var boundaries []int
+	for _, e := range instr {
+		if e.Line < currentStart {
+			boundaries = append(boundaries, e.Line)
 		}
-		cur = append(cur, msg)
 	}
-	if len(cur) > 0 {
-		turns = append(turns, cur)
+	priorTurns := len(boundaries)
+	if m.turns <= 0 || priorTurns <= m.turns {
+		for i := range retained {
+			retained[i] = true
+		}
+		return retained
 	}
 
-	if m.turns > 0 && len(turns) > m.turns {
-		turns = turns[len(turns)-m.turns:]
+	startTurn := priorTurns - m.turns
+	for k := startTurn; k < priorTurns; k++ {
+		end := currentStart
+		if k+1 < priorTurns {
+			end = boundaries[k+1]
+		}
+		for i := boundaries[k]; i < end; i++ {
+			retained[i] = true
+		}
 	}
-
-	var out []llm.Message
-	for _, t := range turns {
-		out = append(out, t...)
-	}
-	return out
+	return retained
 }
 
 // recordUsage computes the token count of the outgoing request for the

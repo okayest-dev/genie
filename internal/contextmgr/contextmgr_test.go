@@ -276,6 +276,76 @@ func TestCrossTurnWindowZeroMeansUnlimited(t *testing.T) {
 	}
 }
 
+// TestAssemblySkipsCompactionMarkers verifies a compaction marker line in the
+// transcript is never shipped as a message: it is JSONL metadata, part of no
+// layer. A resumed session (transcript read from disk via LoadInto) has the
+// marker in its in-memory mirror, but request assembly must elide it.
+func TestAssemblySkipsCompactionMarkers(t *testing.T) {
+	s := buildSession(t,
+		[]llm.Message{
+			{Role: llm.RoleSystem, Content: "instr"},
+			{Role: llm.RoleUser, Content: "q1"},
+			{Role: llm.RoleAssistant, Content: "a1"},
+		},
+		`{"role":"`+markerRole+`","content":"[existing summary]"}`,
+	)
+	if err := s.LoadInto(); err != nil {
+		t.Fatalf("LoadInto: %v", err)
+	}
+
+	inner := &mockClient{}
+	m := New(inner, s)
+
+	req := simulateTurn(t, s, "instr", "q2")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	want := []llm.Message{
+		{Role: llm.RoleSystem, Content: "instr"},
+		{Role: llm.RoleUser, Content: "q1"},
+		{Role: llm.RoleAssistant, Content: "a1"},
+		{Role: llm.RoleUser, Content: "q2"},
+	}
+	if !reflect.DeepEqual(inner.gotReq.Messages, want) {
+		t.Errorf("request messages:\n got %+v\nwant %+v", inner.gotReq.Messages, want)
+	}
+}
+
+// TestPriorInstructionsNotShippedCurrentOnce pins the fixed-spine contract:
+// only the current turn's instruction ships, and exactly once; prior turns'
+// instruction (system) messages are never shipped.
+func TestPriorInstructionsNotShippedCurrentOnce(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	m := New(inner, s)
+
+	simulateTurn(t, s, "instr 1", "q1")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "a1"}); err != nil {
+		t.Fatal(err)
+	}
+	simulateTurn(t, s, "instr 2", "q2")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "a2"}); err != nil {
+		t.Fatal(err)
+	}
+	req := simulateTurn(t, s, "instr 3", "q3")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	want := []llm.Message{
+		{Role: llm.RoleSystem, Content: "instr 3"},
+		{Role: llm.RoleUser, Content: "q1"},
+		{Role: llm.RoleAssistant, Content: "a1"},
+		{Role: llm.RoleUser, Content: "q2"},
+		{Role: llm.RoleAssistant, Content: "a2"},
+		{Role: llm.RoleUser, Content: "q3"},
+	}
+	if !reflect.DeepEqual(inner.gotReq.Messages, want) {
+		t.Errorf("request messages:\n got %+v\nwant %+v", inner.gotReq.Messages, want)
+	}
+}
+
 func TestStreamSurfacesEventsUnchanged(t *testing.T) {
 	s := newSession(t)
 	evs := []llm.Event{
