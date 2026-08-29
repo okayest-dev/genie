@@ -1,10 +1,10 @@
-# og Plugin Protocol
+# Genie Plugin Protocol
 
-This document describes the NDJSON-RPC-over-stdio protocol used for communication between the og host and plugin subprocesses.
+This document describes the NDJSON-RPC-over-stdio protocol used for communication between the genie host and plugin subprocesses.
 
 ## Overview
 
-Plugins are external executables that communicate with og over stdin/stdout using newline-delimited JSON-RPC 2.0. Each message is a single JSON object terminated by a newline character (`\n`).
+Plugins are external executables that communicate with genie over stdin/stdout using newline-delimited JSON-RPC 2.0. Each message is a single JSON object terminated by a newline character (`\n`).
 
 - **Transport**: stdio (stdin for requests, stdout for responses)
 - **Encoding**: UTF-8 JSON
@@ -478,7 +478,7 @@ If no manifest is present, the host will probe the plugin with `capabilities/lis
 
 ## Plugin Discovery
 
-Plugins are discovered from a configured directory (default: `~/.config/og/plugins/`). The host scans for executable files:
+Plugins are discovered from a configured directory (default: `~/.config/genie/plugins/`). The host scans for executable files:
 
 - Skips directories
 - Skips hidden files (starting with `.`)
@@ -490,12 +490,12 @@ Configuration options (in `config.toml`):
 
 ```toml
 [plugins]
-dir = "~/.config/og/plugins"    # plugin directory
+dir = "~/.config/genie/plugins"    # plugin directory
 enable = ["my-tool", "my-wire"] # explicit allowlist (empty = all)
 disable = ["broken-plugin"]     # denylist (takes precedence)
 ```
 
-Environment variable override: `OG_PLUGIN_DIR`
+Environment variable override: `GENIE_PLUGIN_DIR`
 
 ## Error Handling
 

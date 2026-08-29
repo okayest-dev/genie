@@ -114,8 +114,8 @@ func allToolNames(t Tools) []string {
 // AgentReg holds discovered agent definitions. Created by scanning
 // agent directories; entries are parsed on first access.
 type AgentReg struct {
-	globalDir string            // ~/.config/og/agents/
-	localDir  string            // .og/agents/ in cwd
+	globalDir string            // ~/.config/genie/agents/
+	localDir  string            // .genie/agents/ in cwd
 	cache     map[string]*AgentDef // name → parsed def
 }
 

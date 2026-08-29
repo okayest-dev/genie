@@ -1,6 +1,6 @@
 # Bedrock Wire Plugin
 
-AWS Bedrock wire plugin for og. Connects to Bedrock via the ConverseStream API with SigV4 signing.
+AWS Bedrock wire plugin for genie. Connects to Bedrock via the ConverseStream API with SigV4 signing.
 
 ## Setup
 
@@ -34,10 +34,10 @@ Env vars take precedence over `config.toml`:
 
 | Variable | Description |
 |----------|-------------|
-| `OG_BEDROCK_REGION` | AWS region |
-| `OG_BEDROCK_PROFILE` | AWS profile name |
-| `OG_BEDROCK_MAX_TOKENS` | Max output tokens |
-| `OG_BEDROCK_ENDPOINT_URL` | Custom endpoint URL |
+| `GENIE_BEDROCK_REGION` | AWS region |
+| `GENIE_BEDROCK_PROFILE` | AWS profile name |
+| `GENIE_BEDROCK_MAX_TOKENS` | Max output tokens |
+| `GENIE_BEDROCK_ENDPOINT_URL` | Custom endpoint URL |
 
 Standard AWS env vars are also supported as a lower-priority fallback:
 
@@ -53,12 +53,12 @@ Standard AWS env vars are also supported as a lower-priority fallback:
 ### Precedence
 
 ```
-env vars (OG_BEDROCK_*) > config.toml > AWS env vars > ~/.aws/config > defaults
+env vars (GENIE_BEDROCK_*) > config.toml > AWS env vars > ~/.aws/config > defaults
 ```
 
 ### 4. VPC Endpoints
 
-For VPC-only access, set `endpoint_url` in config.toml or `OG_BEDROCK_ENDPOINT_URL`:
+For VPC-only access, set `endpoint_url` in config.toml or `GENIE_BEDROCK_ENDPOINT_URL`:
 
 ```toml
 endpoint_url = "https://vpce-xxx.bedrock-runtime.us-east-1.vpce.amazonaws.com"
@@ -66,7 +66,7 @@ endpoint_url = "https://vpce-xxx.bedrock-runtime.us-east-1.vpce.amazonaws.com"
 
 ## Models
 
-Available models (use as the model ID in `og -p`):
+Available models (use as the model ID in `genie -p`):
 
 - `anthropic.claude-sonnet-4-6` — Claude Sonnet 4.6
 - `anthropic.claude-opus-4-7` — Claude Opus 4.7
@@ -86,13 +86,13 @@ Cross-region inference profiles use prefixed IDs (e.g., `us.anthropic.claude-son
 
 ```bash
 # With default profile
-OG_MODEL=anthropic.claude-sonnet-4-6 OG_PROVIDER=bedrock og -p "hello"
+GENIE_MODEL=anthropic.claude-sonnet-4-6 GENIE_PROVIDER=bedrock genie -p "hello"
 
 # With named profile
-AWS_PROFILE=production OG_MODEL=anthropic.claude-sonnet-4-6 OG_PROVIDER=bedrock og -p "hello"
+AWS_PROFILE=production GENIE_MODEL=anthropic.claude-sonnet-4-6 GENIE_PROVIDER=bedrock genie -p "hello"
 
 # With config.toml
-OG_MODEL=anthropic.claude-sonnet-4-6 OG_PROVIDER=bedrock og -p "hello"
+GENIE_MODEL=anthropic.claude-sonnet-4-6 GENIE_PROVIDER=bedrock genie -p "hello"
 ```
 
 ## IAM Permissions

@@ -1,9 +1,9 @@
-module github.com/danjones/og/prototype/go-plugin/plugin
+module github.com/danjones/genie/prototype/go-plugin/plugin
 
 go 1.22
 
 require (
-	github.com/danjones/og/prototype/go-plugin/shared v0.0.0
+	github.com/danjones/genie/prototype/go-plugin/shared v0.0.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.6.3
 )
@@ -23,4 +23,4 @@ require (
 	google.golang.org/protobuf v1.36.1 // indirect
 )
 
-replace github.com/danjones/og/prototype/go-plugin/shared => ../shared
+replace github.com/danjones/genie/prototype/go-plugin/shared => ../shared

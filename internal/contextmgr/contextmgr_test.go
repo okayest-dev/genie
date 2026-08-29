@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/llm"
-	"github.com/okayest-dev/og/internal/session"
+	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/session"
 )
 
 // mockClient records the request it receives and yields scripted events,
@@ -198,7 +198,7 @@ func TestToolLoopDoesNotDuplicateCurrentTurn(t *testing.T) {
 	}
 }
 
-// TestCrossTurnWindowKeepsRecentTurns is the acceptance for og-8qu.5: with a
+// TestCrossTurnWindowKeepsRecentTurns is the acceptance for genie-8qu.5: with a
 // window of N turns, only the most recent N prior turns are injected. After
 // three prior turns with a window of 2, the request carries turns 3 and 2 but
 // not turn 1.

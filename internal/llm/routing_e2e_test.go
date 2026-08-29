@@ -5,7 +5,7 @@ import (
 	"iter"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // testPluginClient is a mock that tracks which models it handled.

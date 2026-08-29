@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 // alwaysAllow is a Confirmer that always accepts.

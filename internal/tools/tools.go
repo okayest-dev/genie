@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // Tool is the interface every tool must implement.

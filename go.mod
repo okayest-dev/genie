@@ -1,4 +1,4 @@
-module github.com/okayest-dev/og
+module github.com/okayest-dev/genie
 
 go 1.24
 

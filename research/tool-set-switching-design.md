@@ -1,6 +1,6 @@
 # Design: Tool-Set Switching — Per-Agent Tool Configuration
 
-**Ticket**: og-4n6
+**Ticket**: genie-4n6
 **Status**: Resolution
 
 ---
@@ -62,7 +62,7 @@ func (r *Registry) Copy() *Registry {
 
 ### Tool names: built-in and plugin
 
-The agent's `tools` list may reference **any registered tool name** — built-in (`read`, `write`, `edit`, `bash`) or plugin-registered. The names are validated at activation time against the live registry, not at parse time (plugins may not be loaded when the TOML is parsed — this was decided in og-7l6).
+The agent's `tools` list may reference **any registered tool name** — built-in (`read`, `write`, `edit`, `bash`) or plugin-registered. The names are validated at activation time against the live registry, not at parse time (plugins may not be loaded when the TOML is parsed — this was decided in genie-7l6).
 
 ### Missing or disabled tools: error at activation
 
@@ -191,7 +191,7 @@ Config toggles gate what exists in the global registry. Agent lists gate what th
 Plugin tools are registered on the global registry during `pluginMgr.LoadPlugins()`. They're available for agent tool lists just like built-in tools:
 
 ```toml
-# ~/.config/og/agents/researcher.toml
+# ~/.config/genie/agents/researcher.toml
 tools = ["read", "bash", "websearch"]
 ```
 
@@ -207,8 +207,8 @@ If the plugin IS loaded, `Subset` wraps the `pluginTool` in a new registry. The 
 |------|--------|---------|
 | `internal/tools/tools.go` | **Modify** | Add `Subset`, `Copy`, `ValidateTools` methods |
 | `internal/tools/tools_test.go` | **Modify** | Tests for Subset, Copy, ValidateTools |
-| `internal/repl/repl.go` | **Modify** | Per-turn registry resolution (depends on og-bvq, og-i1f) |
-| `cmd/og/main.go` | **Modify** | Validate + subset for `-a` flag (depends on og-e0d) |
+| `internal/repl/repl.go` | **Modify** | Per-turn registry resolution (depends on genie-bvq, genie-i1f) |
+| `cmd/genie/main.go` | **Modify** | Validate + subset for `-a` flag (depends on genie-e0d) |
 
 ## Edge cases
 

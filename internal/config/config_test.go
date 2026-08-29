@@ -40,8 +40,8 @@ func TestPureDefaults(t *testing.T) {
 	if cfg.InstructionFile != "" {
 		t.Errorf("InstructionFile = %q, want empty", cfg.InstructionFile)
 	}
-	if cfg.SessionDir != "/home/u/og/sessions" {
-		t.Errorf("SessionDir = %q, want %q", cfg.SessionDir, "/home/u/og/sessions")
+	if cfg.SessionDir != "/home/u/genie/sessions" {
+		t.Errorf("SessionDir = %q, want %q", cfg.SessionDir, "/home/u/genie/sessions")
 	}
 	if cfg.BashTimeout != 120*time.Second {
 		t.Errorf("BashTimeout = %v, want %v", cfg.BashTimeout, 120*time.Second)
@@ -77,7 +77,7 @@ func TestPureDefaults(t *testing.T) {
 // fullConfig is a config file that sets every v1 key.
 const fullConfig = `model = "cfg-model"
 base_url = "https://example.com/v1"
-api_key_env = "OG_MY_KEY"
+api_key_env = "GENIE_MY_KEY"
 instruction_file = "/abs/AGENTS.md"
 session_dir = "/tmp/sessions"
 bash_timeout = 90
@@ -90,7 +90,7 @@ bash = false
 `
 
 func TestFileBeatsDefaults(t *testing.T) {
-	cfg, err := Parse([]byte(fullConfig), "/home/u", env("OG_MY_KEY", "secret-key"))
+	cfg, err := Parse([]byte(fullConfig), "/home/u", env("GENIE_MY_KEY", "secret-key"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -100,8 +100,8 @@ func TestFileBeatsDefaults(t *testing.T) {
 	if cfg.BaseURL != "https://example.com/v1" {
 		t.Errorf("BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/v1")
 	}
-	if cfg.APIKeyEnv != "OG_MY_KEY" {
-		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "OG_MY_KEY")
+	if cfg.APIKeyEnv != "GENIE_MY_KEY" {
+		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "GENIE_MY_KEY")
 	}
 	if cfg.APIKey != "secret-key" {
 		t.Errorf("APIKey = %q, want %q (read from the env var named by api_key_env)", cfg.APIKey, "secret-key")
@@ -130,9 +130,9 @@ func TestEnvBeatsFile(t *testing.T) {
 		check   func(*testing.T, *Config)
 	}{
 		{
-			name:    "OG_MODEL",
+			name:    "GENIE_MODEL",
 			file:    `model = "file-model"`,
-			envVars: env("OG_MODEL", "env-model"),
+			envVars: env("GENIE_MODEL", "env-model"),
 			check: func(t *testing.T, c *Config) {
 				if c.Model != "env-model" {
 					t.Errorf("Model = %q, want %q", c.Model, "env-model")
@@ -140,9 +140,9 @@ func TestEnvBeatsFile(t *testing.T) {
 			},
 		},
 		{
-			name:    "OG_BASE_URL",
+			name:    "GENIE_BASE_URL",
 			file:    `base_url = "https://file.example"`,
-			envVars: env("OG_BASE_URL", "https://env.example"),
+			envVars: env("GENIE_BASE_URL", "https://env.example"),
 			check: func(t *testing.T, c *Config) {
 				if c.BaseURL != "https://env.example" {
 					t.Errorf("BaseURL = %q, want %q", c.BaseURL, "https://env.example")
@@ -150,9 +150,9 @@ func TestEnvBeatsFile(t *testing.T) {
 			},
 		},
 		{
-			name:    "OG_API_KEY_ENV",
+			name:    "GENIE_API_KEY_ENV",
 			file:    `api_key_env = "FILE_KEY"`,
-			envVars: map[string]string{"OG_API_KEY_ENV": "ENV_KEY", "ENV_KEY": "env-secret"},
+			envVars: map[string]string{"GENIE_API_KEY_ENV": "ENV_KEY", "ENV_KEY": "env-secret"},
 			check: func(t *testing.T, c *Config) {
 				if c.APIKey != "env-secret" {
 					t.Errorf("APIKey = %q, want %q", c.APIKey, "env-secret")
@@ -160,9 +160,9 @@ func TestEnvBeatsFile(t *testing.T) {
 			},
 		},
 		{
-			name:    "OG_INSTRUCTION_FILE",
+			name:    "GENIE_INSTRUCTION_FILE",
 			file:    `instruction_file = "/file"`,
-			envVars: env("OG_INSTRUCTION_FILE", "/env"),
+			envVars: env("GENIE_INSTRUCTION_FILE", "/env"),
 			check: func(t *testing.T, c *Config) {
 				if c.InstructionFile != "/env" {
 					t.Errorf("InstructionFile = %q, want %q", c.InstructionFile, "/env")
@@ -170,9 +170,9 @@ func TestEnvBeatsFile(t *testing.T) {
 			},
 		},
 		{
-			name:    "OG_SESSION_DIR",
+			name:    "GENIE_SESSION_DIR",
 			file:    `session_dir = "/file-sessions"`,
-			envVars: env("OG_SESSION_DIR", "/env-sessions"),
+			envVars: env("GENIE_SESSION_DIR", "/env-sessions"),
 			check: func(t *testing.T, c *Config) {
 				if c.SessionDir != "/env-sessions" {
 					t.Errorf("SessionDir = %q, want %q", c.SessionDir, "/env-sessions")
@@ -180,9 +180,9 @@ func TestEnvBeatsFile(t *testing.T) {
 			},
 		},
 		{
-			name:    "OG_BASH_TIMEOUT",
+			name:    "GENIE_BASH_TIMEOUT",
 			file:    `bash_timeout = 60`,
-			envVars: env("OG_BASH_TIMEOUT", "30"),
+			envVars: env("GENIE_BASH_TIMEOUT", "30"),
 			check: func(t *testing.T, c *Config) {
 				if c.BashTimeout != 30*time.Second {
 					t.Errorf("BashTimeout = %v, want %v", c.BashTimeout, 30*time.Second)
@@ -277,9 +277,9 @@ func TestToolsPartialTable(t *testing.T) {
 }
 
 func TestBashTimeoutEnvMustParse(t *testing.T) {
-	_, err := Parse(nil, "/home/u", env("OG_BASH_TIMEOUT", "not-a-number"))
+	_, err := Parse(nil, "/home/u", env("GENIE_BASH_TIMEOUT", "not-a-number"))
 	if err == nil {
-		t.Fatal("Parse accepted a non-numeric OG_BASH_TIMEOUT; want an error")
+		t.Fatal("Parse accepted a non-numeric GENIE_BASH_TIMEOUT; want an error")
 	}
 }
 
@@ -291,8 +291,8 @@ func TestBashTimeoutMustBePositive(t *testing.T) {
 	}{
 		{name: "file zero", file: "bash_timeout = 0", envVars: nil},
 		{name: "file negative", file: "bash_timeout = -5", envVars: nil},
-		{name: "env zero", envVars: env("OG_BASH_TIMEOUT", "0")},
-		{name: "env negative", envVars: env("OG_BASH_TIMEOUT", "-5")},
+		{name: "env zero", envVars: env("GENIE_BASH_TIMEOUT", "0")},
+		{name: "env negative", envVars: env("GENIE_BASH_TIMEOUT", "-5")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
@@ -304,7 +304,7 @@ func TestBashTimeoutMustBePositive(t *testing.T) {
 }
 
 func TestEmptyEnvVarMeansUnset(t *testing.T) {
-	cfg, err := Parse([]byte("model = \"file-model\"\n"), "/home/u", env("OG_MODEL", ""))
+	cfg, err := Parse([]byte("model = \"file-model\"\n"), "/home/u", env("GENIE_MODEL", ""))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestContextTurnsFromFile(t *testing.T) {
 }
 
 func TestContextTurnsEnvOverridesFile(t *testing.T) {
-	cfg, err := Parse([]byte("[context]\nturns = 5\n"), "/home/u", env("OG_CONTEXT_TURNS", "3"))
+	cfg, err := Parse([]byte("[context]\nturns = 5\n"), "/home/u", env("GENIE_CONTEXT_TURNS", "3"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -340,8 +340,8 @@ func TestContextTurnsMustNotBeNegative(t *testing.T) {
 		envVars map[string]string
 	}{
 		{name: "file negative", file: "[context]\nturns = -1", envVars: nil},
-		{name: "env negative", envVars: env("OG_CONTEXT_TURNS", "-1")},
-		{name: "env non-numeric", envVars: env("OG_CONTEXT_TURNS", "lots")},
+		{name: "env negative", envVars: env("GENIE_CONTEXT_TURNS", "-1")},
+		{name: "env non-numeric", envVars: env("GENIE_CONTEXT_TURNS", "lots")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
@@ -435,7 +435,7 @@ func TestContextPluginsUnsetByDefault(t *testing.T) {
 }
 
 func TestBudgetTokensEnvOverridesFile(t *testing.T) {
-	cfg, err := Parse([]byte("[context]\nbudget_tokens = 100000\n"), "/home/u", env("OG_CONTEXT_BUDGET_TOKENS", "300000"))
+	cfg, err := Parse([]byte("[context]\nbudget_tokens = 100000\n"), "/home/u", env("GENIE_CONTEXT_BUDGET_TOKENS", "300000"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestBudgetTokensEnvOverridesFile(t *testing.T) {
 }
 
 func TestBudgetPercentEnvOverridesFile(t *testing.T) {
-	cfg, err := Parse([]byte("[context]\nbudget_percent = 60\n"), "/home/u", env("OG_CONTEXT_BUDGET_PERCENT", "80"))
+	cfg, err := Parse([]byte("[context]\nbudget_percent = 60\n"), "/home/u", env("GENIE_CONTEXT_BUDGET_PERCENT", "80"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -462,8 +462,8 @@ func TestBudgetTokensMustBePositive(t *testing.T) {
 	}{
 		{name: "file zero", file: "[context]\nbudget_tokens = 0", envVars: nil},
 		{name: "file negative", file: "[context]\nbudget_tokens = -5", envVars: nil},
-		{name: "env zero", envVars: env("OG_CONTEXT_BUDGET_TOKENS", "0")},
-		{name: "env non-numeric", envVars: env("OG_CONTEXT_BUDGET_TOKENS", "lots")},
+		{name: "env zero", envVars: env("GENIE_CONTEXT_BUDGET_TOKENS", "0")},
+		{name: "env non-numeric", envVars: env("GENIE_CONTEXT_BUDGET_TOKENS", "lots")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
@@ -483,8 +483,8 @@ func TestBudgetPercentRange(t *testing.T) {
 		{name: "file zero", file: "[context]\nbudget_percent = 0", envVars: nil},
 		{name: "file negative", file: "[context]\nbudget_percent = -10", envVars: nil},
 		{name: "file over 100", file: "[context]\nbudget_percent = 150", envVars: nil},
-		{name: "env zero", envVars: env("OG_CONTEXT_BUDGET_PERCENT", "0")},
-		{name: "env non-numeric", envVars: env("OG_CONTEXT_BUDGET_PERCENT", "half")},
+		{name: "env zero", envVars: env("GENIE_CONTEXT_BUDGET_PERCENT", "0")},
+		{name: "env non-numeric", envVars: env("GENIE_CONTEXT_BUDGET_PERCENT", "half")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
@@ -540,13 +540,13 @@ func TestParseLogsResolvedConfig(t *testing.T) {
 
 func TestParseLogsEnvVarsApplied(t *testing.T) {
 	buf := captureInfo(t)
-	_, err := Parse(nil, "/home/u", env("OG_MODEL", "env-model"))
+	_, err := Parse(nil, "/home/u", env("GENIE_MODEL", "env-model"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "OG_MODEL") {
-		t.Errorf("log output missing env var name OG_MODEL:\n%s", out)
+	if !strings.Contains(out, "GENIE_MODEL") {
+		t.Errorf("log output missing env var name GENIE_MODEL:\n%s", out)
 	}
 	// The env var name appears, but its value must not appear in the
 	// "env overrides applied" line.
@@ -586,29 +586,29 @@ gateway = "https://gateway.example.com"
 
 func TestOGWireEnvBeatsFile(t *testing.T) {
 	cfg, err := Parse([]byte(`wire = "openai"
-`), "/home/u", env("OG_WIRE", "google"))
+`), "/home/u", env("GENIE_WIRE", "google"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	if cfg.Wire != "google" {
-		t.Errorf("Wire = %q, want %q (OG_WIRE env should override file)", cfg.Wire, "google")
+		t.Errorf("Wire = %q, want %q (GENIE_WIRE env should override file)", cfg.Wire, "google")
 	}
 }
 
 func TestOGGatewayEnvBeatsFile(t *testing.T) {
 	cfg, err := Parse([]byte(`gateway = "https://file-gateway.example.com"
-`), "/home/u", env("OG_GATEWAY", "https://env-gateway.example.com"))
+`), "/home/u", env("GENIE_GATEWAY", "https://env-gateway.example.com"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	if cfg.Gateway != "https://env-gateway.example.com" {
-		t.Errorf("Gateway = %q, want %q (OG_GATEWAY env should override file)", cfg.Gateway, "https://env-gateway.example.com")
+		t.Errorf("Gateway = %q, want %q (GENIE_GATEWAY env should override file)", cfg.Gateway, "https://env-gateway.example.com")
 	}
 }
 
 func TestEmptyOGWireEnvDoesNotOverrideFile(t *testing.T) {
 	cfg, err := Parse([]byte(`wire = "anthropic"
-`), "/home/u", env("OG_WIRE", ""))
+`), "/home/u", env("GENIE_WIRE", ""))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestEmptyOGWireEnvDoesNotOverrideFile(t *testing.T) {
 
 func TestEmptyOGGatewayEnvDoesNotOverrideFile(t *testing.T) {
 	cfg, err := Parse([]byte(`gateway = "https://file-gw.example.com"
-`), "/home/u", env("OG_GATEWAY", ""))
+`), "/home/u", env("GENIE_GATEWAY", ""))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -637,7 +637,7 @@ func TestInvalidWireNameFailsFast(t *testing.T) {
 }
 
 func TestInvalidWireNameFromEnvFailsFast(t *testing.T) {
-	_, err := Parse(nil, "/home/u", env("OG_WIRE", "bogus"))
+	_, err := Parse(nil, "/home/u", env("GENIE_WIRE", "bogus"))
 	if err == nil {
 		t.Fatal("Parse accepted unknown wire name from env; want an error")
 	}
@@ -645,32 +645,32 @@ func TestInvalidWireNameFromEnvFailsFast(t *testing.T) {
 
 // TestPluginDirDerivedFromConfigDir verifies that the default plugin directory
 // is derived from the same base directory as the config file. Both should
-// resolve to <configDir>/og/plugins.
+// resolve to <configDir>/genie/plugins.
 func TestPluginDirDerivedFromConfigDir(t *testing.T) {
 	cfg, err := Parse(nil, "/home/u/.config", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	want := "/home/u/.config/og/plugins"
+	want := "/home/u/.config/genie/plugins"
 	if cfg.PluginDir != want {
 		t.Errorf("PluginDir = %q, want %q (should be derived from config dir)", cfg.PluginDir, want)
 	}
 }
 
-// TestConfigDirEnvOverride verifies that OG_CONFIG_DIR overrides the config
+// TestConfigDirEnvOverride verifies that GENIE_CONFIG_DIR overrides the config
 // directory used for deriving default paths (session dir, plugin dir).
 func TestConfigDirEnvOverride(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("OG_CONFIG_DIR", dir)
+	t.Setenv("GENIE_CONFIG_DIR", dir)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	wantPlugins := filepath.Join(dir, "og", "plugins")
+	wantPlugins := filepath.Join(dir, "genie", "plugins")
 	if cfg.PluginDir != wantPlugins {
 		t.Errorf("PluginDir = %q, want %q", cfg.PluginDir, wantPlugins)
 	}
-	wantSessions := filepath.Join(dir, "og", "sessions")
+	wantSessions := filepath.Join(dir, "genie", "sessions")
 	if cfg.SessionDir != wantSessions {
 		t.Errorf("SessionDir = %q, want %q", cfg.SessionDir, wantSessions)
 	}

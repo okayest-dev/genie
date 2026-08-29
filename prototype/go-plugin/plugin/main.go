@@ -7,10 +7,10 @@ import (
 	hclog "github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 
-	"github.com/danjones/og/prototype/go-plugin/shared"
+	"github.com/danjones/genie/prototype/go-plugin/shared"
 )
 
-// greetPlugin implements shared.OGPlugin.
+// greetPlugin implements shared.GeniePlugin.
 type greetPlugin struct{}
 
 func (g *greetPlugin) Capabilities() (shared.Capabilities, error) {
@@ -42,11 +42,11 @@ func main() {
 	goplugin.Serve(&goplugin.ServeConfig{
 		HandshakeConfig: goplugin.HandshakeConfig{
 			ProtocolVersion:  1,
-			MagicCookieKey:   "OG_PLUGIN",
-			MagicCookieValue: "og-agent-harness",
+			MagicCookieKey:   "GENIE_PLUGIN",
+			MagicCookieValue: "genie-agent-harness",
 		},
 		Plugins: map[string]goplugin.Plugin{
-			"og": &shared.OGPluginNetRPC{Impl: &greetPlugin{}},
+			"genie": &shared.GeniePluginNetRPC{Impl: &greetPlugin{}},
 		},
 		Logger: hclog.New(&hclog.LoggerOptions{
 			Output: os.Stderr,

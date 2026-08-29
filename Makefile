@@ -1,12 +1,12 @@
-Binary := og
+Binary := genie
 
 .PHONY: build install test vet clean
 
 build:
-	go build -o $(Binary) ./cmd/og
+	go build -o $(Binary) ./cmd/genie
 
 install:
-	go install ./cmd/og
+	go install ./cmd/genie
 
 test:
 	go test ./...

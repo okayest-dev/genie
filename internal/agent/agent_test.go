@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/llm"
-	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 type mockClient struct {

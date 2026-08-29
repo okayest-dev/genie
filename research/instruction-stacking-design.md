@@ -1,6 +1,6 @@
 # Design: Instruction Stacking with Agent Definitions
 
-**Ticket**: og-bvq
+**Ticket**: genie-bvq
 **Status**: Resolution
 
 ---
@@ -151,7 +151,7 @@ If the agent isn't found: hard error, turn doesn't execute, no state change.
 1. User types: /agent coder
 2. REPL sets currentAgent = AgentReg.GetResolved("coder")
 3. REPL announces: "Switched to coder (model: big-pickle)"
-4. Session log entry recorded (see og-i1f for format)
+4. Session log entry recorded (see genie-i1f for format)
 5. All subsequent turns use the new agent until switched again
 ```
 
@@ -191,7 +191,7 @@ For non-interactive mode (`-a` flag, later ticket): same pattern — resolve age
 | `internal/instruct/instruct.go` | **Modify** | Add `LoadWithAgent`, refactor `Load` to delegate |
 | `internal/instruct/instruct_test.go` | **Modify** | Add tests for `LoadWithAgent` (agent nil, agent with file, inherit_agents_md false) |
 | `internal/repl/repl.go` | **Modify** | Add AgentReg/Cwd/DefaultAgent to Config, per-turn instruction resolution |
-| `cmd/og/main.go` | **Modify** | Wire AgentReg, resolve default agent, pass to REPL |
+| `cmd/genie/main.go` | **Modify** | Wire AgentReg, resolve default agent, pass to REPL |
 
 ## Edge cases
 

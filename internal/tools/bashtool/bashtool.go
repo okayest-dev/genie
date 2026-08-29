@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 const (
@@ -121,7 +121,7 @@ func (t *Tool) Execute(raw json.RawMessage) (string, error) {
 
 // writeSpill writes full output to a temp file and returns its path.
 func (t *Tool) writeSpill(output string) (string, error) {
-	dir := filepath.Join(t.cwd, ".og-spill")
+	dir := filepath.Join(t.cwd, ".genie-spill")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

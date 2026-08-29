@@ -1,6 +1,6 @@
 # Design: REPL Agent Switching — /agent Command and @name Inline
 
-**Ticket**: og-i1f
+**Ticket**: genie-i1f
 **Status**: Resolution
 
 ---
@@ -13,7 +13,7 @@ The REPL (`internal/repl/repl.go`) runs turns with a fixed instruction and regis
 - Re-assemble instruction and re-filter registry per turn
 - Record agent switches in the session transcript
 
-The instruction-stacking (og-bvq) and tool-set-switching (og-4n6) designs already specified *what* changes per turn (instruction, model, registry). This design specifies *how the REPL drives it*.
+The instruction-stacking (genie-bvq) and tool-set-switching (genie-4n6) designs already specified *what* changes per turn (instruction, model, registry). This design specifies *how the REPL drives it*.
 
 ## Design
 
@@ -112,7 +112,7 @@ Current: coder
 ```
 1. Look up agent via AgentReg.GetResolved(name, cfg)
    → Unknown name: hard error, current agent unchanged:
-     "og: no such agent: <name>"
+     "genie: no such agent: <name>"
 2. Validate tools: cfg.Registry.ValidateTools(agent.Tools)
    → Unavailable tool: hard error, current agent unchanged:
      "agent <name>: tool(s) not available: <missing>"
@@ -142,8 +142,8 @@ Parsed at the **start of the line**, before slash command dispatch. Only the fir
 |-------|--------|
 | `@coder review this diff` | One-shot switch to `coder`, prompt = `review this diff` |
 | `@coder-bar do something` | One-shot switch to `coder-bar`, prompt = `do something` |
-| `@coder` (no prompt) | Error: `"og: @name requires a prompt"` |
-| `@nonexistent fix this` | Error: `"og: no such agent: nonexistent"` |
+| `@coder` (no prompt) | Error: `"genie: @name requires a prompt"` |
+| `@nonexistent fix this` | Error: `"genie: no such agent: nonexistent"` |
 | `@coder` tools unavailable | Error: `"agent coder: tool(s) not available: ..."` |
 | `hello @coder world` | No `@` at start → literal text, no agent switch |
 
@@ -315,7 +315,7 @@ func Run(ctx context.Context, cfg *Config) error {
 | `internal/agent/agent_test.go` | **Modify** | Test agent-name option plumbing |
 | `internal/repl/repl.go` | **Modify** | Add `replState`, Config fields, `/agent` command, `@name` parsing, per-turn resolution |
 | `internal/repl/repl_test.go` | **Modify** | Test `/agent` list/switch, `@name` parsing, state revert |
-| `cmd/og/main.go` | **Modify** | Pass new Config fields, resolve default agent |
+| `cmd/genie/main.go` | **Modify** | Pass new Config fields, resolve default agent |
 
 ### Edge cases
 

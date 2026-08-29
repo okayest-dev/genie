@@ -1,6 +1,6 @@
 # Design: Agent Definition Schema and File Discovery
 
-**Ticket**: og-7l6
+**Ticket**: genie-7l6
 **Status**: Resolution
 
 ---
@@ -10,14 +10,14 @@
 An agent definition is a flat TOML file. Every field is optional; omitted fields inherit from the harness config. The filename stem is the agent name.
 
 ```toml
-# ~/.config/og/agents/coder.toml
+# ~/.config/genie/agents/coder.toml
 
 # Model ID to use when this agent is active. Empty = inherit from config.
 model = "big-pickle"
 
 # Path to the instruction file for this agent. Empty = inherit from config.
 # Supports ~ for home directory.
-instruction_file = "~/.config/og/agents/coder-instructions.md"
+instruction_file = "~/.config/genie/agents/coder-instructions.md"
 
 # Tool names this agent may use. Absent or empty = inherit all tools.
 # When set, ONLY these tools are available (replaces the global set).
@@ -145,8 +145,8 @@ The schema is small and flat. A `version` field adds complexity with no benefit 
 
 Two directories, scanned in order:
 
-1. **Global**: `~/.config/og/agents/` (or `$OG_CONFIG_DIR/og/agents/` when `OG_CONFIG_DIR` is set)
-2. **Project-local**: `.og/agents/` in the working directory
+1. **Global**: `~/.config/genie/agents/` (or `$GENIE_CONFIG_DIR/genie/agents/` when `GENIE_CONFIG_DIR` is set)
+2. **Project-local**: `.genie/agents/` in the working directory
 
 Project-local agents override global agents of the same name.
 
@@ -162,13 +162,13 @@ Following the plugin discovery pattern (`internal/plugin/manager.go`):
 4. Parse each `.toml` file with `ParseAgentDef`, deriving the name from the filename stem
 
 ```
-~/.config/og/agents/
+~/.config/genie/agents/
   coder.toml          → agent "coder"
   reviewer.toml       → agent "reviewer"
   .hidden.toml        → skipped (dotfile)
   notes.txt           → skipped (not .toml)
 
-.og/agents/
+.genie/agents/
   coder.toml          → overrides global "coder"
   project-bot.toml    → agent "project-bot" (project-local only)
 ```
@@ -202,8 +202,8 @@ A lightweight in-memory cache populated by scanning:
 // AgentReg holds discovered agent definitions. Created by scanning
 // agent directories; entries are parsed on first access.
 type AgentReg struct {
-    globalDir string // ~/.config/og/agents/
-    localDir  string // .og/agents/ in cwd
+    globalDir string // ~/.config/genie/agents/
+    localDir  string // .genie/agents/ in cwd
     cache     map[string]*AgentDef // name → parsed def
 }
 
@@ -230,7 +230,7 @@ The `config.Config` struct gains one new field:
 ```go
 type Config struct {
     // ... existing fields ...
-    DefaultAgent string // default_agent in TOML, OG_DEFAULT_AGENT env
+    DefaultAgent string // default_agent in TOML, GENIE_DEFAULT_AGENT env
 }
 ```
 
@@ -249,21 +249,21 @@ When set, the harness starts with this agent active instead of the "no named age
 ### Minimal (inherit everything)
 
 ```toml
-# ~/.config/og/agents/coder.toml
+# ~/.config/genie/agents/coder.toml
 # Empty file — agent "coder" inherits all config defaults.
 ```
 
 ### Model-only
 
 ```toml
-# ~/.config/og/agents/fast.toml
+# ~/.config/genie/agents/fast.toml
 model = "gpt-4o-mini"
 ```
 
 ### Restricted tools, no AGENTS.md
 
 ```toml
-# ~/.config/og/agents/reviewer.toml
+# ~/.config/genie/agents/reviewer.toml
 model = "big-pickle"
 tools = ["read", "bash"]
 inherit_agents_md = false
@@ -272,9 +272,9 @@ inherit_agents_md = false
 ### Full definition
 
 ```toml
-# ~/.config/og/agents/dev.toml
+# ~/.config/genie/agents/dev.toml
 model = "big-pickle"
-instruction_file = "~/og-agents/dev-instructions.md"
+instruction_file = "~/genie-agents/dev-instructions.md"
 tools = ["read", "write", "edit", "bash"]
 inherit_agents_md = true
 ```
@@ -290,6 +290,6 @@ inherit_agents_md = true
 | `internal/config/config.go` | **Modify** | Add `DefaultAgent` field to Config struct and fileConfig |
 | `internal/instruct/instruct.go` | **Modify** | Accept ResolvedAgent, adjust stacking (later ticket) |
 | `internal/repl/repl.go` | **Modify** | Add AgentReg to Config, /agent command (later ticket) |
-| `cmd/og/main.go` | **Modify** | Wire AgentReg, resolve default agent (later ticket) |
+| `cmd/genie/main.go` | **Modify** | Wire AgentReg, resolve default agent (later ticket) |
 
 The schema and discovery design is complete. Implementation is blocked on the downstream tickets (instruction stacking, tool-set switching, REPL switching).

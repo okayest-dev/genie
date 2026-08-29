@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/okayest-dev/og/internal/llm"
-	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 const (
@@ -172,7 +172,7 @@ func (m *Manager) loadPlugin(path string) error {
 	}
 
 	cmd := exec.Command(path)
-	cmd.Env = append(os.Environ(), "OG_PLUGIN=1")
+	cmd.Env = append(os.Environ(), "GENIE_PLUGIN=1")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

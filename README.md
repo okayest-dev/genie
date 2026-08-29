@@ -1,4 +1,4 @@
-# og
+# Genie
 
 A minimal, std-lib-first Go terminal agent harness. A REPL that runs an agentic loop against an OpenAI-compatible provider.
 
@@ -7,13 +7,13 @@ A minimal, std-lib-first Go terminal agent harness. A REPL that runs an agentic 
 Requires Go 1.24+.
 
 ```
-go install github.com/okayest-dev/og/cmd/og@latest
+go install github.com/okayest-dev/genie/cmd/genie@latest
 ```
 
 Or build from source:
 
 ```
-git clone https://github.com/okayest-dev/og && cd og
+git clone https://github.com/okayest-dev/genie && cd genie
 make build
 ```
 
@@ -28,25 +28,25 @@ export OPENCODE_API_KEY="sk-..."
 2. Run:
 
 ```
-og
+genie
 ```
 
-You get an interactive `og>` prompt. Type naturally — the model can read, write, edit files, and run shell commands.
+You get an interactive `genie>` prompt. Type naturally — the model can read, write, edit files, and run shell commands.
 
 ## Usage
 
 ### Interactive REPL
 
 ```
-og
+genie
 ```
 
-Starts an interactive session at the `og>` prompt. Each input runs a full agent loop — the model produces text and/or tool calls, the harness executes them, and results are fed back until the model stops calling tools.
+Starts an interactive session at the `genie>` prompt. Each input runs a full agent loop — the model produces text and/or tool calls, the harness executes them, and results are fed back until the model stops calling tools.
 
 ### Non-interactive mode
 
 ```
-og -p "explain this project"
+genie -p "explain this project"
 ```
 
 Runs a single prompt, prints the reply to stdout, and exits. Tool calls requiring confirmation are auto-denied in this mode.
@@ -78,7 +78,7 @@ Tools can be individually disabled in config.
 
 ## Configuration
 
-Config lives at `~/.config/og/config.toml` (XDG-aware). The file is optional — everything has sensible defaults.
+Config lives at `~/.config/genie/config.toml` (XDG-aware). The file is optional — everything has sensible defaults.
 
 Precedence: **defaults < config file < environment variables**.
 
@@ -91,7 +91,7 @@ api_key_env = "OPENCODE_API_KEY"
 # wire = "openai"            # auto-detect from model prefix
 # provider = "copilot"       # route through a wire plugin (e.g. copilot, bedrock)
 # instruction_file = ""      # path to agent instruction file
-# session_dir = ""           # defaults to ~/.config/og/sessions
+# session_dir = ""           # defaults to ~/.config/genie/sessions
 bash_timeout = 120
 
 [tools]
@@ -101,7 +101,7 @@ edit = true
 bash = true
 
 [plugins]
-# dir = "~/.config/og/plugins"
+# dir = "~/.config/genie/plugins"
 # enable = ["my-plugin"]
 # disable = ["broken-plugin"]
 
@@ -113,32 +113,32 @@ bash = true
 
 | Variable | Description |
 |----------|-------------|
-| `OG_MODEL` | Model ID |
-| `OG_BASE_URL` | Provider base URL |
-| `OG_API_KEY_ENV` | Name of env var holding the API key |
-| `OG_WIRE` | Wire protocol override |
-| `OG_PROVIDER` | Route through a wire plugin by name |
-| `OG_GATEWAY` | Gateway URL override |
-| `OG_INSTRUCTION_FILE` | Path to agent instruction file |
-| `OG_SESSION_DIR` | Session storage directory |
-| `OG_BASH_TIMEOUT` | Bash command timeout (seconds) |
-| `OG_PLUGIN_DIR` | Plugin discovery directory |
-| `OG_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
-| `OG_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
+| `GENIE_MODEL` | Model ID |
+| `GENIE_BASE_URL` | Provider base URL |
+| `GENIE_API_KEY_ENV` | Name of env var holding the API key |
+| `GENIE_WIRE` | Wire protocol override |
+| `GENIE_PROVIDER` | Route through a wire plugin by name |
+| `GENIE_GATEWAY` | Gateway URL override |
+| `GENIE_INSTRUCTION_FILE` | Path to agent instruction file |
+| `GENIE_SESSION_DIR` | Session storage directory |
+| `GENIE_BASH_TIMEOUT` | Bash command timeout (seconds) |
+| `GENIE_PLUGIN_DIR` | Plugin discovery directory |
+| `GENIE_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
+| `GENIE_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
 
 ### Debug and verbose modes
 
 ```
-og -v          # verbose: high-level flow to stderr
-og -d          # debug: low-level detail (implies -v)
-OG_DEBUG=1 og  # same as -d, via env var
+genie -v          # verbose: high-level flow to stderr
+genie -d          # debug: low-level detail (implies -v)
+GENIE_DEBUG=1 genie  # same as -d, via env var
 ```
 
 Verbose shows config resolution, instruction assembly, turn lifecycle, and token usage. Debug adds HTTP requests, SSE chunks, and full config values.
 
 ## Wire protocols
 
-Og auto-detects the wire protocol from the model ID prefix:
+Genie auto-detects the wire protocol from the model ID prefix:
 
 | Prefix | Wire |
 |--------|------|
@@ -147,13 +147,13 @@ Og auto-detects the wire protocol from the model ID prefix:
 | `gemini-*` | Google generateContent |
 | everything else | OpenAI chat/completions |
 
-Override with `wire = "openai"` (or `anthropic`, `responses`, `google`) in config or `OG_WIRE` env var.
+Override with `wire = "openai"` (or `anthropic`, `responses`, `google`) in config or `GENIE_WIRE` env var.
 
 If a model doesn't support tool calling, the harness retries without tools — letting free/non-tool models still work.
 
 ## Plugins
 
-Og supports plugins via NDJSON-RPC 2.0 over stdio. Drop an executable into `~/.config/og/plugins/` and it's loaded automatically.
+Genie supports plugins via NDJSON-RPC 2.0 over stdio. Drop an executable into `~/.config/genie/plugins/` and it's loaded automatically.
 
 ### Plugin types
 
@@ -166,7 +166,7 @@ Plugins can be laid out in two ways:
 
 **Directory layout (recommended):**
 ```
-~/.config/og/plugins/
+~/.config/genie/plugins/
   copilot/
     manifest.toml
     config.toml     # optional, plugin-specific
@@ -175,7 +175,7 @@ Plugins can be laid out in two ways:
 
 **Flat layout (backward compatible):**
 ```
-~/.config/og/plugins/
+~/.config/genie/plugins/
   copilot           # binary
   copilot.toml      # manifest
 ```
@@ -197,7 +197,7 @@ capabilities = ["tools", "wires"]
 
 ### Copilot config (GHE support)
 
-For GitHub Enterprise, create `~/.config/og/plugins/copilot/config.toml`:
+For GitHub Enterprise, create `~/.config/genie/plugins/copilot/config.toml`:
 
 ```toml
 domain = "github.example.com"
@@ -209,7 +209,7 @@ The plugin will use `https://api.github.example.com/copilot_internal/v2/token` f
 
 ```toml
 [plugins]
-dir = "~/.config/og/plugins"
+dir = "~/.config/genie/plugins"
 enable = ["bedrock"]    # explicit allowlist (empty = all)
 disable = ["broken"]    # denylist (takes precedence)
 ```
@@ -218,11 +218,11 @@ Max 16 plugins loaded concurrently. Plugins that crash or hang are automatically
 
 ## Agent instructions
 
-Og reads `AGENTS.md` from the working directory (if present) and sends it as the agent instruction on every turn. Set `instruction_file` in config or `OG_INSTRUCTION_FILE` env var to use a different file.
+Genie reads `AGENTS.md` from the working directory (if present) and sends it as the agent instruction on every turn. Set `instruction_file` in config or `GENIE_INSTRUCTION_FILE` env var to use a different file.
 
 ## Session persistence
 
-Sessions are saved as JSONL in `~/.config/og/sessions/`. Each session carries a change ledger — a record of every file change made during that session, grouped into change batches with unified diffs. Use `/new` to start a fresh session.
+Sessions are saved as JSONL in `~/.config/genie/sessions/`. Each session carries a change ledger — a record of every file change made during that session, grouped into change batches with unified diffs. Use `/new` to start a fresh session.
 
 ## License
 

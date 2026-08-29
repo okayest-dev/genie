@@ -129,4 +129,4 @@ Same for Ruby, Python, Node, anything with stdin/stdout and JSON. This is a huge
 
 **Bottom line:** go-plugin gives you a production-grade, battle-tested system at the cost of significant complexity and Go-only plugins. This NDJSON-RPC approach gives you simplicity and language-agnosticism at the cost of reinventing several wheels.
 
-For og, where plugins might be scripts or simple agents, the NDJSON-RPC approach seems like the right tradeoff — especially if you add health checks and timeouts incrementally.
+For genie, where plugins might be scripts or simple agents, the NDJSON-RPC approach seems like the right tradeoff — especially if you add health checks and timeouts incrementally.

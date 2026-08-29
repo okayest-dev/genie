@@ -3,7 +3,7 @@ package responses
 import (
 	"encoding/json"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // sseEvent is one parsed SSE frame: an event type and its JSON data payload.

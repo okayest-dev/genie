@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 const anthropicVersion = "2023-06-01"

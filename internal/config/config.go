@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/okayest-dev/og/internal/modelinfo"
+	"github.com/okayest-dev/genie/internal/modelinfo"
 )
 
 // validWire is the set of wire names accepted by the config. Must stay in
@@ -292,12 +292,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 	return &cfg, nil
 }
 
-// Load reads the config file from os.UserConfigDir()/og/config.toml (missing
+// Load reads the config file from os.UserConfigDir()/genie/config.toml (missing
 // means pure defaults) and resolves the full configuration from the process
-// environment. OG_CONFIG_DIR overrides the config directory used for deriving
+// environment. GENIE_CONFIG_DIR overrides the config directory used for deriving
 // default paths.
 func Load() (*Config, error) {
-	dir := os.Getenv("OG_CONFIG_DIR")
+	dir := os.Getenv("GENIE_CONFIG_DIR")
 	if dir == "" {
 		var err error
 		dir, err = os.UserConfigDir()
@@ -305,7 +305,7 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("config: %w", err)
 		}
 	}
-	path := filepath.Join(dir, "og", configFileName)
+	path := filepath.Join(dir, "genie", configFileName)
 	file, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -325,10 +325,10 @@ func defaults(userConfigDir string) Config {
 		Model:       defaultModel,
 		BaseURL:     defaultBaseURL,
 		APIKeyEnv:   defaultAPIKeyEnv,
-		SessionDir:  filepath.Join(userConfigDir, "og", "sessions"),
+		SessionDir:  filepath.Join(userConfigDir, "genie", "sessions"),
 		BashTimeout: defaultBashTimeout,
 		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true},
-		PluginDir:   filepath.Join(userConfigDir, "og", "plugins"),
+		PluginDir:   filepath.Join(userConfigDir, "genie", "plugins"),
 		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
 	}
 }
@@ -353,89 +353,89 @@ func applyTools(dst *Tools, src toolsFile) {
 // of env vars that were applied.
 func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	var applied []string
-	if v := env["OG_MODEL"]; v != "" {
+	if v := env["GENIE_MODEL"]; v != "" {
 		cfg.Model = v
-		applied = append(applied, "OG_MODEL")
+		applied = append(applied, "GENIE_MODEL")
 	}
-	if v := env["OG_BASE_URL"]; v != "" {
+	if v := env["GENIE_BASE_URL"]; v != "" {
 		cfg.BaseURL = v
-		applied = append(applied, "OG_BASE_URL")
+		applied = append(applied, "GENIE_BASE_URL")
 	}
-	if v := env["OG_API_KEY_ENV"]; v != "" {
+	if v := env["GENIE_API_KEY_ENV"]; v != "" {
 		cfg.APIKeyEnv = v
-		applied = append(applied, "OG_API_KEY_ENV")
+		applied = append(applied, "GENIE_API_KEY_ENV")
 	}
-	if v := env["OG_WIRE"]; v != "" {
+	if v := env["GENIE_WIRE"]; v != "" {
 		cfg.Wire = v
-		applied = append(applied, "OG_WIRE")
+		applied = append(applied, "GENIE_WIRE")
 	}
-	if v := env["OG_PROVIDER"]; v != "" {
+	if v := env["GENIE_PROVIDER"]; v != "" {
 		cfg.Provider = v
-		applied = append(applied, "OG_PROVIDER")
+		applied = append(applied, "GENIE_PROVIDER")
 	}
-	if v := env["OG_GATEWAY"]; v != "" {
+	if v := env["GENIE_GATEWAY"]; v != "" {
 		cfg.Gateway = v
-		applied = append(applied, "OG_GATEWAY")
+		applied = append(applied, "GENIE_GATEWAY")
 	}
-	if v := env["OG_INSTRUCTION_FILE"]; v != "" {
+	if v := env["GENIE_INSTRUCTION_FILE"]; v != "" {
 		cfg.InstructionFile = v
-		applied = append(applied, "OG_INSTRUCTION_FILE")
+		applied = append(applied, "GENIE_INSTRUCTION_FILE")
 	}
-	if v := env["OG_SESSION_DIR"]; v != "" {
+	if v := env["GENIE_SESSION_DIR"]; v != "" {
 		cfg.SessionDir = v
-		applied = append(applied, "OG_SESSION_DIR")
+		applied = append(applied, "GENIE_SESSION_DIR")
 	}
-	if v := env["OG_BASH_TIMEOUT"]; v != "" {
+	if v := env["GENIE_BASH_TIMEOUT"]; v != "" {
 		secs, err := strconv.Atoi(v)
 		if err != nil {
-			return nil, fmt.Errorf("config: OG_BASH_TIMEOUT: %q is not a number of seconds", v)
+			return nil, fmt.Errorf("config: GENIE_BASH_TIMEOUT: %q is not a number of seconds", v)
 		}
 		if secs <= 0 {
-			return nil, fmt.Errorf("config: OG_BASH_TIMEOUT must be a positive number of seconds, got %d", secs)
+			return nil, fmt.Errorf("config: GENIE_BASH_TIMEOUT must be a positive number of seconds, got %d", secs)
 		}
 		cfg.BashTimeout = time.Duration(secs) * time.Second
-		applied = append(applied, "OG_BASH_TIMEOUT")
+		applied = append(applied, "GENIE_BASH_TIMEOUT")
 	}
-	if v := env["OG_PLUGIN_DIR"]; v != "" {
+	if v := env["GENIE_PLUGIN_DIR"]; v != "" {
 		cfg.PluginDir = v
-		applied = append(applied, "OG_PLUGIN_DIR")
+		applied = append(applied, "GENIE_PLUGIN_DIR")
 	}
-	if v := env["OG_DEFAULT_AGENT"]; v != "" {
+	if v := env["GENIE_DEFAULT_AGENT"]; v != "" {
 		cfg.DefaultAgent = v
-		applied = append(applied, "OG_DEFAULT_AGENT")
+		applied = append(applied, "GENIE_DEFAULT_AGENT")
 	}
-	if v := env["OG_CONTEXT_TURNS"]; v != "" {
+	if v := env["GENIE_CONTEXT_TURNS"]; v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return nil, fmt.Errorf("config: OG_CONTEXT_TURNS: %q is not a number", v)
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_TURNS: %q is not a number", v)
 		}
 		if n < 0 {
-			return nil, fmt.Errorf("config: OG_CONTEXT_TURNS must be non-negative, got %d", n)
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_TURNS must be non-negative, got %d", n)
 		}
 		cfg.Context.Turns = n
-		applied = append(applied, "OG_CONTEXT_TURNS")
+		applied = append(applied, "GENIE_CONTEXT_TURNS")
 	}
-	if v := env["OG_CONTEXT_BUDGET_TOKENS"]; v != "" {
+	if v := env["GENIE_CONTEXT_BUDGET_TOKENS"]; v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_TOKENS: %q is not a number", v)
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_BUDGET_TOKENS: %q is not a number", v)
 		}
 		if n <= 0 {
-			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_TOKENS must be a positive number of tokens, got %d", n)
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_BUDGET_TOKENS must be a positive number of tokens, got %d", n)
 		}
 		cfg.Context.BudgetTokens = n
-		applied = append(applied, "OG_CONTEXT_BUDGET_TOKENS")
+		applied = append(applied, "GENIE_CONTEXT_BUDGET_TOKENS")
 	}
-	if v := env["OG_CONTEXT_BUDGET_PERCENT"]; v != "" {
+	if v := env["GENIE_CONTEXT_BUDGET_PERCENT"]; v != "" {
 		p, err := strconv.ParseFloat(v, 64)
 		if err != nil {
-			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_PERCENT: %q is not a number", v)
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_BUDGET_PERCENT: %q is not a number", v)
 		}
 		if err := validateBudgetPercent(p); err != nil {
-			return nil, fmt.Errorf("config: OG_CONTEXT_BUDGET_PERCENT: %w", err)
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_BUDGET_PERCENT: %w", err)
 		}
 		cfg.Context.BudgetPercent = p
-		applied = append(applied, "OG_CONTEXT_BUDGET_PERCENT")
+		applied = append(applied, "GENIE_CONTEXT_BUDGET_PERCENT")
 	}
 	return applied, nil
 }
@@ -454,7 +454,7 @@ func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) {
 	if src.Dir != "" {
 		cfg.PluginDir = expandPath(src.Dir, userConfigDir)
 	} else {
-		cfg.PluginDir = filepath.Join(userConfigDir, "og", "plugins")
+		cfg.PluginDir = filepath.Join(userConfigDir, "genie", "plugins")
 	}
 	cfg.PluginEnable = src.Enable
 	cfg.PluginDisable = src.Disable

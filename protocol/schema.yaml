@@ -1,4 +1,4 @@
-# og wire plugin protocol schema
+# genie wire plugin protocol schema
 # This is the source of truth for generating standalone Go plugin packages.
 # Each plugin vendors the generated output as internal/wireplugin/.
 

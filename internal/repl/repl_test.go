@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/ledger"
+	"github.com/okayest-dev/genie/internal/ledger"
 )
 
 func TestSlashHelp(t *testing.T) {

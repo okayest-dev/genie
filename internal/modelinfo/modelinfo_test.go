@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // fakeSource is a scripted llm.ModelInfoProvider recording how many times

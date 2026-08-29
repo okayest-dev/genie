@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 func TestParseManifest(t *testing.T) {

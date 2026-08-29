@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/config"
+	"github.com/okayest-dev/genie/internal/config"
 )
 
 func TestDefaultPromptAlwaysPresent(t *testing.T) {

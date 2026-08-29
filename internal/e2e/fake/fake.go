@@ -1,7 +1,7 @@
 // Package fake provides in-process, scripted fake providers for E2E testing.
 // It supports OpenAI chat/completions, Anthropic Messages, OpenAI Responses-API,
-// and Google generateContent wire formats. Tests drive the compiled og binary
-// against these servers and assert only observable behavior.
+// and Google generateContent wire formats. Tests drive the compiled genie
+// binary against these servers and assert only observable behavior.
 package fake
 
 import (

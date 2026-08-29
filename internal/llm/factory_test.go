@@ -3,11 +3,11 @@ package llm_test
 import (
 	"testing"
 
-	"github.com/okayest-dev/og/internal/llm"
-	_ "github.com/okayest-dev/og/internal/llm/anthropic"
-	_ "github.com/okayest-dev/og/internal/llm/google"
-	_ "github.com/okayest-dev/og/internal/llm/openai"
-	_ "github.com/okayest-dev/og/internal/llm/responses"
+	"github.com/okayest-dev/genie/internal/llm"
+	_ "github.com/okayest-dev/genie/internal/llm/anthropic"
+	_ "github.com/okayest-dev/genie/internal/llm/google"
+	_ "github.com/okayest-dev/genie/internal/llm/openai"
+	_ "github.com/okayest-dev/genie/internal/llm/responses"
 )
 
 func TestNewClientOpenAI(t *testing.T) {

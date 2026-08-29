@@ -1,13 +1,13 @@
 # Design: Non-Interactive Agent Switching — -a Flag
 
-**Ticket**: og-e0d
+**Ticket**: genie-e0d
 **Status**: Resolution
 
 ---
 
 ## Problem
 
-The `-a` flag lets users specify a named agent from the command line, either for a one-shot prompt (`og -a coder -p "review this"`) or to pre-load an agent into interactive mode (`og -a coder`). The agent definition provides model, instruction, and tool set — overriding config defaults for the duration of the run.
+The `-a` flag lets users specify a named agent from the command line, either for a one-shot prompt (`genie -a coder -p "review this"`) or to pre-load an agent into interactive mode (`genie -a coder`). The agent definition provides model, instruction, and tool set — overriding config defaults for the duration of the run.
 
 ## Design
 
@@ -15,18 +15,18 @@ The `-a` flag lets users specify a named agent from the command line, either for
 
 | Command | Behaviour |
 |---------|-----------|
-| `og -a coder -p "prompt"` | One-shot with agent "coder". Uses agent's model, instruction, tools. |
-| `og -a coder -p` (no value) | Reads prompt from stdin, runs with agent "coder". |
-| `og -a coder` | Interactive REPL with agent "coder" pre-loaded as default. |
-| `og -a nonexistent -p "prompt"` | Hard error, exit code 3. |
-| `og -a coder -p "prompt" @other "do stuff"` | Error: `-a` and `@name` are both agent selectors; `-a` wins for the session, `@name` is for REPL-only. Reject the combination. |
+| `genie -a coder -p "prompt"` | One-shot with agent "coder". Uses agent's model, instruction, tools. |
+| `genie -a coder -p` (no value) | Reads prompt from stdin, runs with agent "coder". |
+| `genie -a coder` | Interactive REPL with agent "coder" pre-loaded as default. |
+| `genie -a nonexistent -p "prompt"` | Hard error, exit code 3. |
+| `genie -a coder -p "prompt" @other "do stuff"` | Error: `-a` and `@name` are both agent selectors; `-a` wins for the session, `@name` is for REPL-only. Reject the combination. |
 
 ### Precedence
 
 The `-a` flag is the **most specific** agent source. Precedence for agent selection:
 
 1. `-a <name>` command-line flag (highest)
-2. `default_agent` in config.toml / `OG_DEFAULT_AGENT` env
+2. `default_agent` in config.toml / `GENIE_DEFAULT_AGENT` env
 3. No agent (current behaviour)
 
 When `-a` is used, it replaces any `default_agent` from config for this run.
@@ -39,7 +39,7 @@ The `-a` flag is a string flag, parsed alongside `-p`, `-v`, `-d`:
 agentFlag := fs.String("a", "", "agent definition to load for this run")
 ```
 
-`-a` requires a value. `og -a` with no agent name prints usage and exits with code 3 (same as `-p` with no value). `og -a` at end of args → error.
+`-a` requires a value. `genie -a` with no agent name prints usage and exits with code 3 (same as `-p` with no value). `genie -a` at end of args → error.
 
 ### Wiring in main.go
 
@@ -159,16 +159,16 @@ The `previousAgent` in `replState` is set to the `-a` agent, so revert goes back
 
 ### Flag rejection: -a with @name on same line
 
-`og -a coder -p "@other do stuff"` — the `@other` is in the prompt text, not parsed as a REPL command. This is fine — it's literal text in a one-shot prompt. Only the REPL parses `@name` at line start.
+`genie -a coder -p "@other do stuff"` — the `@other` is in the prompt text, not parsed as a REPL command. This is fine — it's literal text in a one-shot prompt. Only the REPL parses `@name` at line start.
 
 No special rejection needed. The `-a` flag sets the agent for the run; `@other` in the prompt text is just text.
 
 ### Usage string update
 
 ```
-usage: og [-v] [-d] [-a agent] [-p prompt]
+usage: genie [-v] [-d] [-a agent] [-p prompt]
 
-og is a minimal terminal agent harness.
+genie is a minimal terminal agent harness.
 
 Flags:
   -a agent   load a named agent definition for this run
@@ -177,27 +177,27 @@ Flags:
   -d         debug output: low-level detail to stderr (implies -v)
 
 Environment:
-  OG_DEBUG    enable debug mode (true/1/yes)
+  GENIE_DEBUG    enable debug mode (true/1/yes)
 
-Without -p, og starts an interactive REPL.
+Without -p, genie starts an interactive REPL.
 ```
 
 ### Error cases
 
 | Case | Behaviour |
 |------|-----------|
-| `og -a nonexistent -p "prompt"` | `"Error: agent "nonexistent": not found"` → exit 3 |
-| `og -a coder -p "prompt"` (tool unavailable) | `"Error: agent "coder": tool(s) not available: write"` → exit 3 |
-| `og -a` (no value) | Prints usage → exit 3 |
-| `og -a coder` (agent dir doesn't exist) | Silent — no agents found, `"Error: agent "coder": not found"` → exit 3 |
+| `genie -a nonexistent -p "prompt"` | `"Error: agent "nonexistent": not found"` → exit 3 |
+| `genie -a coder -p "prompt"` (tool unavailable) | `"Error: agent "coder": tool(s) not available: write"` → exit 3 |
+| `genie -a` (no value) | Prints usage → exit 3 |
+| `genie -a coder` (agent dir doesn't exist) | Silent — no agents found, `"Error: agent "coder": not found"` → exit 3 |
 | Config has `default_agent = "coder"` + `-a reviewer` | `-a reviewer` wins. Agent "reviewer" is loaded. |
 
 ### Files to modify
 
 | File | Action | Purpose |
 |------|--------|---------|
-| `cmd/og/main.go` | **Modify** | Add `-a` flag, agent resolution, apply overrides, update usage |
-| `cmd/og/main_test.go` | **Modify** | Test -a flag parsing, agent resolution, error cases |
+| `cmd/genie/main.go` | **Modify** | Add `-a` flag, agent resolution, apply overrides, update usage |
+| `cmd/genie/main_test.go` | **Modify** | Test -a flag parsing, agent resolution, error cases |
 
 ### Interaction with /model
 

@@ -1,4 +1,4 @@
-// Bedrock wire plugin for og.
+// Bedrock wire plugin for genie.
 // Reads AWS credentials from ~/.aws/credentials, implements SigV4 signing,
 // streams via ConverseStream API.
 //
@@ -11,10 +11,10 @@
 //
 // Environment variable overrides (take precedence over config.toml):
 //
-//	OG_BEDROCK_REGION       - AWS region
-//	OG_BEDROCK_PROFILE      - AWS profile name
-//	OG_BEDROCK_MAX_TOKENS   - Max output tokens
-//	OG_BEDROCK_ENDPOINT_URL - Custom endpoint URL
+//	GENIE_BEDROCK_REGION       - AWS region
+//	GENIE_BEDROCK_PROFILE      - AWS profile name
+//	GENIE_BEDROCK_MAX_TOKENS   - Max output tokens
+//	GENIE_BEDROCK_ENDPOINT_URL - Custom endpoint URL
 package main
 
 import (
@@ -37,7 +37,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/okayest-dev/og/plugins/shared"
+	"github.com/okayest-dev/genie/plugins/shared"
 )
 
 type bedrockConfig struct {
@@ -134,7 +134,7 @@ func loadCredentials(cfg bedrockConfig) (AWSCredentials, error) {
 	}
 
 	// Profile: env > config.toml > default
-	profile := os.Getenv("OG_BEDROCK_PROFILE")
+	profile := os.Getenv("GENIE_BEDROCK_PROFILE")
 	if profile == "" {
 		profile = os.Getenv("AWS_PROFILE")
 	}
@@ -147,7 +147,7 @@ func loadCredentials(cfg bedrockConfig) (AWSCredentials, error) {
 
 	// Region: env > config.toml > ~/.aws/config > default
 	creds := AWSCredentials{
-		Region: os.Getenv("OG_BEDROCK_REGION"),
+		Region: os.Getenv("GENIE_BEDROCK_REGION"),
 	}
 	if creds.Region == "" {
 		creds.Region = os.Getenv("AWS_REGION")
@@ -202,11 +202,11 @@ func loadCredentials(cfg bedrockConfig) (AWSCredentials, error) {
 
 // loadMaxTokens resolves the max_tokens from env > config > default.
 func loadMaxTokens(cfg bedrockConfig) int {
-	if v := os.Getenv("OG_BEDROCK_MAX_TOKENS"); v != "" {
+	if v := os.Getenv("GENIE_BEDROCK_MAX_TOKENS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}
-		slog.Warn("invalid OG_BEDROCK_MAX_TOKENS, using default", "value", v)
+		slog.Warn("invalid GENIE_BEDROCK_MAX_TOKENS, using default", "value", v)
 	}
 	if cfg.MaxTokens > 0 {
 		return cfg.MaxTokens
@@ -216,7 +216,7 @@ func loadMaxTokens(cfg bedrockConfig) int {
 
 // loadEndpointURL resolves the endpoint URL from env > config > empty.
 func loadEndpointURL(cfg bedrockConfig) string {
-	if v := os.Getenv("OG_BEDROCK_ENDPOINT_URL"); v != "" {
+	if v := os.Getenv("GENIE_BEDROCK_ENDPOINT_URL"); v != "" {
 		return v
 	}
 	return cfg.EndpointURL
