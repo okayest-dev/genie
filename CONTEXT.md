@@ -76,6 +76,26 @@ _Avoid_: max tokens, model size
 The portion of the context window a conversation may consume before the harness intervenes — an absolute `budget_tokens` or a percentage of the window (`budget_percent`, default 75%), keeping headroom so a request cannot silently blow the window.
 _Avoid_: limit, quota
 
+**Context layer**:
+A bucket within a conversation that context management retains, evicts, or condenses independently — `instruction` (never evicted), `durable-intent` (user + assistant turns; windowed, compactable), or `tool-output` (condensable, net-drop opt-in). Layers are assigned by message role, not by token sensitivity.
+_Avoid_: context bucket, history slice
+
+**Context map**:
+The derived, layered index over a session's JSONL — messages keyed by session-line index with a secondary tool-call-id lookup, carrying each message's cached token count. Rebuilt from the transcript on load; not the canonical store. Distinct from the session, which remains the append-only source of truth.
+_Avoid_: context store, message index
+
+**Spine**:
+The fixed cheap prefix of every request — the agent instruction plus the current turn's messages — unconditionally present; prior turns are added by per-layer retention rather than shipped wholesale.
+_Avoid_: header, front matter
+
+**Condensation**:
+The request-time shrinking of tool-output layer messages (e.g. abbreviated large results) before they reach the provider. A projection: the full result stays in the transcript; the condensed form is per-request, keyed by tool-call-id. Distinct from compaction.
+_Avoid_: truncation, shortening
+
+**Compaction**:
+The synchronous eviction of the oldest durable-intent turns into a persisted summary entry when the budget is hit — a JSONL metadata marker, not a transcript rewrite. Distinct from condensation.
+_Avoid_: summarisation (alone), compression
+
 **Agent**:
 A named configuration the harness can run a loop with — an `AgentDef` from an `agents/*.toml` file, resolved to a model, instruction, and tool set. The default agent or a named one (`orchestrator`, `feature-speccing`). Distinct from the "harness".
 _Avoid_: (bare) tool
