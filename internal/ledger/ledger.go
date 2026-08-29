@@ -16,7 +16,7 @@ import (
 const (
 	maxDiffLines = 2000
 	maxDiffBytes = 50 << 10 // 50 KB
-	spillDirName = ".og-changes"
+	spillDirName = ".genie-changes"
 )
 
 // Op represents the type of file operation.

@@ -1,6 +1,6 @@
-# go-plugin Prototype — OG Agent Harness
+# go-plugin Prototype — Genie Agent Harness
 
-**Question being answered:** Does Hashicorp go-plugin feel right for the og plugin protocol?
+**Question being answered:** Does Hashicorp go-plugin feel right for the genie plugin protocol?
 
 ## Running
 
@@ -88,11 +88,11 @@ With a hand-rolled NDJSON-RPC protocol, you'd need to build:
 
 go-plugin is excellent infrastructure for **Go-to-Go plugin systems** where you control both sides. The process management, crash handling, and handshake are genuinely useful and would take real effort to get right yourself.
 
-But it's **not suitable for og** because:
-1. og needs polyglot plugins (Python, eventually Rust/JS) — go-plugin is Go-only
+But it's **not suitable for genie** because:
+1. genie needs polyglot plugins (Python, eventually Rust/JS) — go-plugin is Go-only
 2. 18MB per binary is heavy for a plugin that might just wrap an API call
 3. The gob encoding constraints on complex data structures are limiting
 4. You'd be locked into Go's ecosystem for all plugins
 
 **For a Go-only agent harness where plugins are Go modules:** strong yes.
-**For og's polyglot vision:** no. Build your own protocol (NDJSON-RPC or raw gRPC with generated stubs).
+**For genie’s polyglot vision:** no. Build your own protocol (NDJSON-RPC or raw gRPC with generated stubs).

@@ -1,4 +1,4 @@
-// Copilot wire plugin for og.
+// Copilot wire plugin for genie.
 // Reads GitHub OAuth token from ~/.config/github-copilot/hosts.json,
 // exchanges for short-lived Copilot JWT, streams via OpenAI-compatible API.
 package main
@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/okayest-dev/og/plugins/shared"
+	"github.com/okayest-dev/genie/plugins/shared"
 )
 
 type copilotConfig struct {
@@ -224,10 +224,10 @@ func (c *CopilotClient) streamCompletion(request json.RawMessage) (json.RawMessa
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.copilotToken)
-	httpReq.Header.Set("Editor-Version", "og/0.1.0")
-	httpReq.Header.Set("Editor-Plugin-Version", "og-copilot/0.1.0")
+	httpReq.Header.Set("Editor-Version", "genie/0.1.0")
+	httpReq.Header.Set("Editor-Plugin-Version", "genie-copilot/0.1.0")
 	httpReq.Header.Set("Copilot-Integration-Id", "vscode-chat")
-	httpReq.Header.Set("User-Agent", "GithubCopilot/og-0.1.0")
+	httpReq.Header.Set("User-Agent", "GithubCopilot/genie-0.1.0")
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

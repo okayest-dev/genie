@@ -1,6 +1,6 @@
 Status: ready-for-agent
 
-# og — Agent Harness
+# genie — Agent Harness
 
 ## Problem Statement
 
@@ -8,17 +8,17 @@ Running a coding agent in a terminal means juggling a heavyweight toolchain: a f
 
 ## Solution
 
-`og` is a minimal, std-lib-first Go terminal agent harness in the pi mould. It runs an agent loop against an OpenAI-compatible provider (OpenCode Zen free models first) with four tools — `read`, `write`, `edit`, `bash` — behind a REPL with a five-command slash surface (`/changes`, `/new`, `/model`, `/help`, `/quit`), a scriptable `-p` non-interactive mode, a per-session change ledger rendered by `/changes`, and resumable JSONL sessions. v1 is deliberately small: canonical-mode line input, no screen management, confirms on `write`/`bash` as the whole trust story, one config file with env overrides, and a provider seam that later native wires slot into without loop rework.
+`genie` is a minimal, std-lib-first Go terminal agent harness in the pi mould. It runs an agent loop against an OpenAI-compatible provider (OpenCode Zen free models first) with four tools — `read`, `write`, `edit`, `bash` — behind a REPL with a five-command slash surface (`/changes`, `/new`, `/model`, `/help`, `/quit`), a scriptable `-p` non-interactive mode, a per-session change ledger rendered by `/changes`, and resumable JSONL sessions. v1 is deliberately small: canonical-mode line input, no screen management, confirms on `write`/`bash` as the whole trust story, one config file with env overrides, and a provider seam that later native wires slot into without loop rework.
 
 ## User Stories
 
-1. As a user, I want to run `og` and get a `og>` prompt in my terminal, so that I can start an agentic session in the same terminal I already work in.
-2. As a user, I want to type a line at the `og>` prompt and get a complete agent turn back, so that I can delegate work to the agent without leaving the shell.
+1. As a user, I want to run `genie` and get a `genie>` prompt in my terminal, so that I can start an agentic session in the same terminal I already work in.
+2. As a user, I want to type a line at the `genie>` prompt and get a complete agent turn back, so that I can delegate work to the agent without leaving the shell.
 3. As a user, I want the agent's reply text to print live as it streams, so that I can see the turn progressing and interrupt early if it's going the wrong way.
 4. As a user, I want to see nothing printed for the model's reasoning/inner-monologue tokens, so that the display stays clean and focused on output.
 5. As a user, I want to press Ctrl+C while the agent is mid-turn to cancel the turn and return to the prompt, so that a runaway loop costs me nothing and leaves no partial garbage in the conversation.
 6. As a user, I want to press Ctrl+C at the idle prompt to quit, so that leaving the REPL is a single instinctive gesture.
-7. As a user, I want a line-editor-free canonical-mode REPL that uses the terminal's native line editing, so that I can paste and edit input without og imposing its own editing machinery.
+7. As a user, I want a line-editor-free canonical-mode REPL that uses the terminal's native line editing, so that I can paste and edit input without genie imposing its own editing machinery.
 8. As a user, I want the agent to be able to read files from the working directory, so that it can answer questions about code.
 9. As a user, I want `read` to return a bounded head of long files (2000 lines / 50KB) with a pointer to continue, so that a huge file never floods the model context.
 10. As a user, I want `read` on a directory to list its immediate children (dirs marked with a trailing `/`), so that I can discover a directory's shape without a separate `ls` tool.
@@ -51,12 +51,12 @@ Running a coding agent in a terminal means juggling a heavyweight toolchain: a f
 37. As a user, I want `bash` mutations to be absent from the ledger, so that the ledger reflects only the agent's deliberate file tools (and bash already ran past my confirm).
 38. As a user, I want `/model` with no argument to list the full model catalog, so that I can see what's available on the provider.
 39. As a user, I want `/model <id>` to switch the session's model, so that I can change models mid-session.
-40. As a user, I want `/model <unknown>` to fail with `og: no such model 'x'` and leave the current model untouched, so that a typo can't silently change my session.
+40. As a user, I want `/model <unknown>` to fail with `genie: no such model 'x'` and leave the current model untouched, so that a typo can't silently change my session.
 41. As a user, I want `/help` to show the slash surface, so that I can recall commands without leaving the REPL.
 42. As a user, I want `/quit` to exit, so that leaving is explicit when I prefer it over Ctrl+C.
-43. As a user, I want an unknown command to print `og: unknown command 'x' — try /help`, so that I'm told the surface rather than left guessing.
+43. As a user, I want an unknown command to print `genie: unknown command 'x' — try /help`, so that I'm told the surface rather than left guessing.
 44. As a user, I want blank input at the prompt to silently re-prompt, so that accidental Enter presses don't no-op the model.
-45. As a user, I want confirm prompts in the `og: overwrite <path>? [y/N]` / `og: run: <command>? [y/N]` shape, so that I know exactly what a `y` agrees to.
+45. As a user, I want confirm prompts in the `genie: overwrite <path>? [y/N]` / `genie: run: <command>? [y/N]` shape, so that I know exactly what a `y` agrees to.
 46. As a user, I want only `y`/`yes` to accept a confirm and anything else to decline, so that the safe default is always to refuse.
 47. As a user, I want a declined confirm to feed `Error: <tool> denied by user` back to the model, so that the agent keeps going and adapts instead of aborting.
 48. As a user, I want to run a headless prompt with `-p "prompt"`, so that I can drive the agent from scripts, cron, and CI.
@@ -69,14 +69,14 @@ Running a coding agent in a terminal means juggling a heavyweight toolchain: a f
 55. As a user, I want `-p` to print the session id to stderr on completion, so that I know where the headless run's record lives.
 56. As a user, I want `-p` to exit `0` on success, `1` on a failed run, `2` when interrupted, and `3` on usage errors, so that my scripts can branch on the outcome.
 57. As a user, I want `-p` to cancel on Ctrl+C the same way the REPL cancels a turn, so that an interrupt is never misreported as a run failure.
-58. As a user, I want `-p` to take its model from config or `OG_MODEL` only, so that the headless surface stays minimal.
+58. As a user, I want `-p` to take its model from config or `GENIE_MODEL` only, so that the headless surface stays minimal.
 59. As a user, I want the agent instruction to always include a built-in default prompt, so that the harness has an identity even with no config at all.
 60. As a user, I want an explicit `instruction_file` config path to load as instruction, so that I can set my own standing rules for the agent.
 61. As a user, I want the `AGENTS.md` in the working directory to be read automatically as instruction, so that per-project agent rules work out of the box.
 62. As a user, I want instruction sources to append (default + config file + `AGENTS.md`) rather than replace, so that no source silently drops another.
 63. As a user, I want `AGENTS.md` discovery to be cwd-only, so that parent-directory layering stays out of v1.
-64. As a user, I want config in `~/.config/og/config.toml` (XDG-aware), so that my settings live in one canonical place.
-65. As a user, I want env vars (`OG_MODEL`, `OG_BASE_URL`, `OG_API_KEY_ENV`, `OG_INSTRUCTION_FILE`, `OG_SESSION_DIR`, `OG_BASH_TIMEOUT`) to beat the config file, so that I can override per-invocation without editing files.
+64. As a user, I want config in `~/.config/genie/config.toml` (XDG-aware), so that my settings live in one canonical place.
+65. As a user, I want env vars (`GENIE_MODEL`, `GENIE_BASE_URL`, `GENIE_API_KEY_ENV`, `GENIE_INSTRUCTION_FILE`, `GENIE_SESSION_DIR`, `GENIE_BASH_TIMEOUT`) to beat the config file, so that I can override per-invocation without editing files.
 66. As a user, I want the API key to live only in an env var (named by `api_key_env`, default `OPENCODE_API_KEY`), so that my key never ends up in a config file.
 67. As a user, I want malformed TOML and unknown config keys to fail fast at startup, so that a typo like `bas_url` is caught rather than silently ignored.
 68. As a user, I want to disable a tool via the `[tools]` table, so that I can narrow the agent's capabilities.
@@ -116,7 +116,7 @@ The single architectural seam (ticket 06). The agent loop depends on one small i
 
 v1 targets OpenCode Zen over OpenAI chat/completions: `POST https://opencode.ai/zen/v1/chat/completions`, Bearer auth, key from `OPENCODE_API_KEY`. Model catalog at `GET https://opencode.ai/zen/v1/models` (unauthenticated, OpenAI `ListModels` shape). SSE: `data:` chunk lines + `data: [DONE]`; text via concatenating `delta.content`; tool-call args via index-keyed concatenation of `delta.tool_calls[i].function.arguments`; `finish_reason` on the final chunk; usage only when `stream_options.include_usage: true` is honored — treat as best-effort.
 
-Two resilience requirements from the research's open risks: a **no-tools fallback** (free model rejects `tools` with `invalid_request` → retry the turn without tools) and tolerance of missing usage. Any OpenAI-compatible base URL is a valid provider (`OG_BASE_URL`).
+Two resilience requirements from the research's open risks: a **no-tools fallback** (free model rejects `tools` with `invalid_request` → retry the turn without tools) and tolerance of missing usage. Any OpenAI-compatible base URL is a valid provider (`GENIE_BASE_URL`).
 
 ### Agent instruction sources (ticket 02)
 
@@ -141,11 +141,11 @@ Storage: append-only `<session-dir>/<session-id>.changes.jsonl`, one JSON batch 
 
 ### REPL (ticket 05)
 
-Plain canonical-mode line reader over stdin — no raw mode, no multiline, no line editor (those belong to the full TUI). Text deltas print live (only `delta.content`); reasoning ignored. Ctrl+C: idle prompt → exit; in-flight turn → cancel (abort stream, print `(interrupted)`, drop the partial turn, return to prompt); during a confirm → decline. Slash surface exactly `/changes`, `/new`, `/model`, `/help`, `/quit`; unknown → `og: unknown command 'x' — try /help`. `/new` = fresh session, no confirm. `/model` mirrors `/changes` — no arg lists the catalog, arg validated against it, no-switch on failure. Confirms: `og: overwrite <path>? [y/N]` / `og: run: <command>? [y/N]`, only `y`/`yes` accepts, default no; declined → `Error: <tool> denied by user` fed back, loop continues. Tool runs framed by `── <tool> <args> ──` header + result truncated at the shared caps. Prompt glyph `og> `; no startup banner beyond at most one line (model id + cwd); blank → silent re-prompt; no per-turn usage line.
+Plain canonical-mode line reader over stdin — no raw mode, no multiline, no line editor (those belong to the full TUI). Text deltas print live (only `delta.content`); reasoning ignored. Ctrl+C: idle prompt → exit; in-flight turn → cancel (abort stream, print `(interrupted)`, drop the partial turn, return to prompt); during a confirm → decline. Slash surface exactly `/changes`, `/new`, `/model`, `/help`, `/quit`; unknown → `genie: unknown command 'x' — try /help`. `/new` = fresh session, no confirm. `/model` mirrors `/changes` — no arg lists the catalog, arg validated against it, no-switch on failure. Confirms: `genie: overwrite <path>? [y/N]` / `genie: run: <command>? [y/N]`, only `y`/`yes` accepts, default no; declined → `Error: <tool> denied by user` fed back, loop continues. Tool runs framed by `── <tool> <args> ──` header + result truncated at the shared caps. Prompt glyph `genie> `; no startup banner beyond at most one line (model id + cwd); blank → silent re-prompt; no per-turn usage line.
 
 ### Config (ticket 07)
 
-TOML at `os.UserConfigDir()/og/config.toml`, no `--config` flag; missing file = pure defaults. Precedence **defaults < file < env** with six env overrides (`OG_MODEL`, `OG_BASE_URL`, `OG_API_KEY_ENV`, `OG_INSTRUCTION_FILE`, `OG_SESSION_DIR`, `OG_BASH_TIMEOUT`). API key never in the file — always read from the env var named by `api_key_env` (default `OPENCODE_API_KEY`). Session dir default `<UserConfigDir>/og/sessions` (hosts transcript + ledger as siblings). Six scalars — `model`=`big-pickle`, `base_url`=`https://opencode.ai/zen/v1`, `api_key_env`=`OPENCODE_API_KEY`, `instruction_file` (unset), `session_dir`, `bash_timeout`=`120` — plus `[tools]` four booleans (default true; disabled = omitted from `tools`, stale call → `Error: tool 'x' is disabled`). Malformed TOML + unknown keys → fail fast (`DisallowUnknownFields`). `/model` never writes the file.
+TOML at `os.UserConfigDir()/genie/config.toml`, no `--config` flag; missing file = pure defaults. Precedence **defaults < file < env** with six env overrides (`GENIE_MODEL`, `GENIE_BASE_URL`, `GENIE_API_KEY_ENV`, `GENIE_INSTRUCTION_FILE`, `GENIE_SESSION_DIR`, `GENIE_BASH_TIMEOUT`). API key never in the file — always read from the env var named by `api_key_env` (default `OPENCODE_API_KEY`). Session dir default `<UserConfigDir>/genie/sessions` (hosts transcript + ledger as siblings). Six scalars — `model`=`big-pickle`, `base_url`=`https://opencode.ai/zen/v1`, `api_key_env`=`OPENCODE_API_KEY`, `instruction_file` (unset), `session_dir`, `bash_timeout`=`120` — plus `[tools]` four booleans (default true; disabled = omitted from `tools`, stale call → `Error: tool 'x' is disabled`). Malformed TOML + unknown keys → fail fast (`DisallowUnknownFields`). `/model` never writes the file.
 
 ### Non-interactive mode (ticket 08)
 
@@ -157,7 +157,7 @@ TOML at `os.UserConfigDir()/og/config.toml`, no `--config` flag; missing file = 
 
 Two seams, by design:
 
-1. **Primary — black-box binary seam**: tests drive the **compiled `og` binary as a subprocess** (`exec.Command`) against an **in-process fake OpenAI-compatible provider** (Go `httptest` server on a loopback `base_url`, emitting scripted SSE chunk sequences — text deltas, index-keyed tool-call fragments, finish reasons, the `include_usage` chunk). The fake provider is the one place the wire is fabricated; everything else is the real harness. Assert on observable behavior only: stdout, stderr, exit codes, files written, session transcripts, and the `.changes.jsonl` ledger. This single seam covers REPL and `-p` behavior (05, 08), confirm auto-deny and deny-flow (03, 08), ledger capture and `/changes` output (04), config/env precedence and fail-fast validation (07), instruction-source concatenation (02), the no-tools fallback and usage tolerance (01, 06), and the wire shape itself. It also gives the freebie that every test exercises the real config, instruction, and session machinery. Ctrl+C semantics are tested at this seam by sending SIGINT to the subprocess.
+1. **Primary — black-box binary seam**: tests drive the **compiled `genie` binary as a subprocess** (`exec.Command`) against an **in-process fake OpenAI-compatible provider** (Go `httptest` server on a loopback `base_url`, emitting scripted SSE chunk sequences — text deltas, index-keyed tool-call fragments, finish reasons, the `include_usage` chunk). The fake provider is the one place the wire is fabricated; everything else is the real harness. Assert on observable behavior only: stdout, stderr, exit codes, files written, session transcripts, and the `.changes.jsonl` ledger. This single seam covers REPL and `-p` behavior (05, 08), confirm auto-deny and deny-flow (03, 08), ledger capture and `/changes` output (04), config/env precedence and fail-fast validation (07), instruction-source concatenation (02), the no-tools fallback and usage tolerance (01, 06), and the wire shape itself. It also gives the freebie that every test exercises the real config, instruction, and session machinery. Ctrl+C semantics are tested at this seam by sending SIGINT to the subprocess.
 
 2. **Secondary — unit tests for pure helpers**: direct tests for internal functions that are hard to reach through the binary boundary and have no side effects worth faking: unified-diff text generation, the 2000-line/50KB truncation logic and spill behavior, `edit`'s exact-match/ambiguity rules, config parsing and env-override resolution, and the SSE accumulation state machine (index-keyed tool-call assembly, usage-chunk detection). These are tests of behavior, not implementation — each helper is tested through its public signature.
 
@@ -174,7 +174,7 @@ There is no existing test code in the repo (planning-only so far). The patterns 
 - **The full TUI**: raw-mode line editor, multiline composition, alt-screen layout, and whether it absorbs the REPL. v1 is canonical-mode; the TUI is a later phase with its own presentation decisions.
 - **Changes-view presentation**: where the stored-diff drill-down surfaces beyond the inline `/changes <id>` output (alt-screen list, `$EDITOR`). The diff source is settled in v1; only the presentation seat is open.
 - **Multi-provider beyond the seam**: native wires for OpenAI responses, Anthropic messages, Google generateContent, model routing, cycling. Only the seam (06) is in v1.
-- **`-m`/`--model` flag, `--config` flag, `--yes` flag**: v1 deliberately has none; model comes from config/`OG_MODEL`, config lives in one canonical location, and headless confirms are auto-deny.
+- **`-m`/`--model` flag, `--config` flag, `--yes` flag**: v1 deliberately has none; model comes from config/`GENIE_MODEL`, config lives in one canonical location, and headless confirms are auto-deny.
 - **Hard sandbox**: bash containment + file jailing via a CLI flag. Needs chroot/bwrap/sandbox-exec/job-objects (not std-lib, platform-specific); a partial jail leaks through bash. v1 trust is confirms only. Considered and deferred in ticket 03.
 - **MCP support**: pi deliberately omits it; not requested.
 - **Sub-agents / plan mode / to-do lists**: opencode-style features; pi omits them.
@@ -187,7 +187,7 @@ There is no existing test code in the repo (planning-only so far). The patterns 
 ## Further Notes
 
 - **Vocabulary**: this spec's terms are the glossary in `CONTEXT.md` — harness, agent loop, turn, tool, session, REPL, agent instruction, instruction file, change ledger, change batch, changes view, provider, wire protocol. Use those, not "system prompt", "function", "thread", "diffset".
-- **Reference shape**: pi (earendil-works/pi) is the minimality reference; og deliberately diverges on raw-mode TUI (canonical mode in v1), confirms (write/bash), and instruction sources (no parent walk, no global file).
+- **Reference shape**: pi (earendil-works/pi) is the minimality reference; genie deliberately diverges on raw-mode TUI (canonical mode in v1), confirms (write/bash), and instruction sources (no parent walk, no global file).
 - **Provider risks carried into the spec**: Zen streaming fidelity unverified live (no key exercised), undocumented rate limits (429s, backoff headers unknown), and free-model tool-call support unverified — hence the no-tools fallback and best-effort usage. The fake-provider test seam doubles as the harness's resilience proof against these.
 - **Free models are temporary**: OpenCode Zen's `*-free` models are "available for a limited time"; `big-pickle` is the current default and a free "stealth" model. The config default is a per-install scalar, not a promise.
-- **Decision record**: all eight decision tickets live at `.scratch/og-harness/issues/01..08` with the research at `.scratch/og-harness/research/01-provider-wire.md`. The map at `.scratch/og-harness/map.md` indexes them. This spec is the hands-off handoff.
+- **Decision record**: all eight decision tickets live at `.scratch/genie-harness/issues/01..08` with the research at `.scratch/genie-harness/research/01-provider-wire.md`. The map at `.scratch/genie-harness/map.md` indexes them. This spec is the hands-off handoff.

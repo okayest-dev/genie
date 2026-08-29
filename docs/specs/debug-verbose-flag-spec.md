@@ -8,15 +8,15 @@ Og is completely silent unless it encounters an error or produces a successful r
 
 ## Solution
 
-Add two CLI flags — `-v` (verbose) and `-d` (debug) — plus one env var (`OG_DEBUG`) that control structured diagnostic output via `log/slog` to stderr. Verbose mode (`-v`) shows high-level flow: config resolution, instruction assembly, agent turn lifecycle, and token usage. Debug mode (`-d` or `OG_DEBUG=true`) adds low-level detail: full config values, instruction content, HTTP request/response details, and SSE chunk parsing. Debug implies verbose — enabling debug automatically enables verbose output. Neither flag affects stdout, exit codes, or the model's reply.
+Add two CLI flags — `-v` (verbose) and `-d` (debug) — plus one env var (`GENIE_DEBUG`) that control structured diagnostic output via `log/slog` to stderr. Verbose mode (`-v`) shows high-level flow: config resolution, instruction assembly, agent turn lifecycle, and token usage. Debug mode (`-d` or `GENIE_DEBUG=true`) adds low-level detail: full config values, instruction content, HTTP request/response details, and SSE chunk parsing. Debug implies verbose — enabling debug automatically enables verbose output. Neither flag affects stdout, exit codes, or the model's reply.
 
 ## User Stories
 
 1. As a user, I want to pass `-v` to see high-level flow information (config loaded, model chosen, turn started, tokens used), so that I can confirm the harness is doing what I expect without wading into low-level detail.
 2. As a user, I want to pass `-d` to see full diagnostic detail (config values, HTTP payloads, SSE chunks), so that I can diagnose provider issues, configuration mistakes, or harness bugs.
 3. As a user, I want `-d` to automatically include verbose output, so that I don't have to remember to pass both flags when debugging.
-4. As a user, I want `OG_DEBUG=true` (or `1`, or `yes`) to enable debug mode without a CLI flag, so that I can set persistent debug output in my shell profile or CI environment.
-5. As a user, I want `-d` to take precedence over `OG_DEBUG` — if either is active, debug is on, so that I can always override a stale env var with the flag.
+4. As a user, I want `GENIE_DEBUG=true` (or `1`, or `yes`) to enable debug mode without a CLI flag, so that I can set persistent debug output in my shell profile or CI environment.
+5. As a user, I want `-d` to take precedence over `GENIE_DEBUG` — if either is active, debug is on, so that I can always override a stale env var with the flag.
 6. As a user, I want debug/verbose output to go to stderr, so that stdout stays clean for piping and capturing the model's reply.
 7. As a user, I want debug output to appear on stderr regardless of whether stdout is a TTY, so that `og -d -p "hello" | jq` still shows debug on my terminal.
 8. As a user, I want my API key to never appear in debug output, so that I can share debug logs or paste them into issues without leaking credentials.
@@ -47,9 +47,9 @@ Slog is configured once in `main.go`, early — before config loading, instructi
 - No flags, no env: `slog.LevelWarn` (silent — neither info nor debug messages appear)
 - `-v` only: `slog.LevelInfo` (verbose messages appear, debug suppressed)
 - `-d` (with or without `-v`): `slog.LevelDebug` (both info and debug messages appear)
-- `OG_DEBUG=true` (with or without `-v`): same as `-d`
+- `GENIE_DEBUG=true` (with or without `-v`): same as `-d`
 
-The env var `OG_DEBUG` is parsed in `main.go` before `config.Load()`, using truthy string comparison (`"true"`, `"1"`, `"yes"`). The `-d` flag overrides a false `OG_DEBUG` — either one being active enables debug.
+The env var `GENIE_DEBUG` is parsed in `main.go` before `config.Load()`, using truthy string comparison (`"true"`, `"1"`, `"yes"`). The `-d` flag overrides a false `GENIE_DEBUG` — either one being active enables debug.
 
 ### Two output layers
 
@@ -82,7 +82,7 @@ Added to the existing `flag.NewFlagSet` in `main.go`:
 - `-v` (bool): enable verbose output
 - `-d` (bool): enable debug output (implies `-v`)
 
-Usage string updated to document both flags and the `OG_DEBUG` env var.
+Usage string updated to document both flags and the `GENIE_DEBUG` env var.
 
 ### Security
 
@@ -109,8 +109,8 @@ Tests assert on observable behaviour only: stderr contains expected substrings w
 
 ### Modules tested
 
-- **`cmd/og` (e2e)**: binary tests that pass `-v`, `-d`, `OG_DEBUG=true`, and combinations; assert on stderr content and stdout emptiness. Verify the banner appears, verbose messages appear with `-v`, debug messages appear with `-d`, and nothing appears without flags.
-- **`internal/llm/openai` (e2e)**: verify that debug output includes HTTP details with the API key redacted. Verify that the full API key never appears in stderr even when `OG_DEBUG=1` is set.
+- **`cmd/genie` (e2e)**: binary tests that pass `-v`, `-d`, `GENIE_DEBUG=true`, and combinations; assert on stderr content and stdout emptiness. Verify the banner appears, verbose messages appear with `-v`, debug messages appear with `-d`, and nothing appears without flags.
+- **`internal/llm/openai` (e2e)**: verify that debug output includes HTTP details with the API key redacted. Verify that the full API key never appears in stderr even when `GENIE_DEBUG=1` is set.
 - **`internal/config` (unit)**: verify that config loading produces expected verbose/debug slog output when the global slog level is set to `LevelInfo` or `LevelDebug`.
 
 ### Prior art
@@ -121,15 +121,15 @@ The existing e2e test suite (`internal/e2e/e2e_test.go`) compiles the binary in 
 
 - **Log levels beyond info/debug**: no warn-level or error-level debug output; errors go through the existing `fmt.Fprintf(stderr, "Error: ...")` path.
 - **Timestamps in debug output**: stripped by default; can be added later if latency analysis becomes important.
-- **Debug output to a file**: stderr only in v1; a `OG_DEBUG_LOG` file destination is a future option.
+- **Debug output to a file**: stderr only in v1; a `GENIE_DEBUG_LOG` file destination is a future option.
 - **Per-package debug control**: all packages share the same slog level; no way to debug config loading without also debugging HTTP.
-- **`OG_VERBOSE` env var**: verbose is CLI-only (`-v` flag); if users want persistent verbose output they can alias `og` to `og -v`.
+- **`GENIE_VERBOSE` env var**: verbose is CLI-only (`-v` flag); if users want persistent verbose output they can alias `og` to `og -v`.
 - **Structured JSON debug output**: text handler only; JSON handler is a future option.
 - **Interactive mode debug integration**: the REPL (ticket 09) may need special handling for debug output interleaving with prompts; that lands when the REPL is built.
 
 ## Further Notes
 
-- This feature is not in the original harness spec (`og-harness/spec.md`). It was identified during implementation as a diagnostic need.
+- This feature is not in the original harness spec (`genie-harness/spec.md`). It was identified during implementation as a diagnostic need.
 - The design follows the unix convention of `curl -v` / `curl --debug` — stderr for diagnostics, stdout for data.
 - `log/slog` is stdlib-only (Go 1.21+), consistent with Og's std-lib-first philosophy. No new dependencies.
 - The two-layer design (verbose = high-level, debug = low-level) is extensible — future layers (trace, per-tool) can be added as new slog levels or custom levels without breaking the existing interface.

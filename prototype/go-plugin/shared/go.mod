@@ -1,4 +1,4 @@
-module github.com/danjones/og/prototype/go-plugin/shared
+module github.com/danjones/genie/prototype/go-plugin/shared
 
 go 1.22
 

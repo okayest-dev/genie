@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 const maxContentBytes = 1 << 20 // 1 MB

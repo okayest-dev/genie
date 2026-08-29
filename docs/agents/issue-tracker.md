@@ -1,12 +1,12 @@
 # Issue tracker: Beads (bd)
 
-Issues live in the bd (beads) database at `.beads/`. The issue prefix is `og`, so issues are named `og-<hash>` (e.g. `og-rtt`).
+Issues live in the bd (beads) database at `.beads/`. The issue prefix is `genie`, so issues are named `genie-<hash>` (e.g. `genie-rtt`).
 
 ## Conventions
 
 - Issues are created with `bd create "Title" -t <type>` and linked with `bd dep add <child> <parent>`
 - Triage state is tracked via issue status (`open` / `in_progress` / `closed`) and labels
-- Feature areas use labels: `feature:og-harness`, `feature:og-v1`, `feature:debug-verbose-flag`
+- Feature areas use labels: `feature:genie-harness`, `feature:genie-v1`, `feature:debug-verbose-flag`
 - Wayfinder tickets use type labels: `type:research`, `type:grilling`, `type:prototype`, `type:task`
 - Wayfinder maps use the `wayfinder:map` label
 

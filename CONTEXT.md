@@ -1,11 +1,11 @@
-# og — Agent Harness
+# Genie — Agent Harness
 
-The `og` project: a minimal, std-lib-first Go terminal agent harness in the pi mould — a REPL that runs an agentic loop against an OpenAI-compatible provider.
+The `genie` project: a minimal, std-lib-first Go terminal agent harness in the pi mould — a REPL that runs an agentic loop against an OpenAI-compatible provider.
 
 ## Language
 
 **Harness**:
-The `og` CLI application itself — the shell that runs the agent loop and presents it in the terminal.
+The `genie` CLI application itself — the shell that runs the agent loop and presents it in the terminal.
 _Avoid_: agent (alone), tool
 
 **Agent loop**:
@@ -25,7 +25,7 @@ One conversation thread, persisted as JSONL, resumable.
 _Avoid_: thread, chat
 
 **REPL**:
-The interactive loop that reads a user line at the `og>` prompt, runs a turn (or a slash command), and repeats — the canonical-mode, std-lib front end of v1, distinct from the `-p` non-interactive mode.
+The interactive loop that reads a user line at the `genie>` prompt, runs a turn (or a slash command), and repeats — the canonical-mode, std-lib front end of v1, distinct from the `-p` non-interactive mode.
 _Avoid_: shell, TUI
 
 **Agent instruction**:

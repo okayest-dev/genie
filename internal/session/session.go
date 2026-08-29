@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // Session represents a persisted conversation session.

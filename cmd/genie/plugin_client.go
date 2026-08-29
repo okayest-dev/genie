@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"iter"
 
-	"github.com/okayest-dev/og/internal/llm"
-	"github.com/okayest-dev/og/internal/plugin"
+	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/plugin"
 )
 
 // pluginWireClient adapts a plugin.Plugin's StreamWire method into an

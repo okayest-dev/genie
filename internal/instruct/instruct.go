@@ -9,11 +9,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/okayest-dev/og/internal/config"
+	"github.com/okayest-dev/genie/internal/config"
 )
 
 // DefaultPrompt is the built-in system instruction always prepended.
-const DefaultPrompt = "You are og, a helpful terminal agent."
+const DefaultPrompt = "You are genie, a helpful terminal agent."
 
 // Load assembles the instruction from three sources in order:
 //  1. The built-in default prompt (always present).

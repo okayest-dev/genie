@@ -1,4 +1,4 @@
-// Package repl implements the interactive REPL (Read-Eval-Print Loop) for og.
+// Package repl implements the interactive REPL (Read-Eval-Print Loop) for genie.
 // It provides a canonical-mode line reader with live streaming, Ctrl+C handling
 // across three zones, slash commands, and interactive confirm prompts.
 package repl
@@ -16,17 +16,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/okayest-dev/og/internal/agent"
-	"github.com/okayest-dev/og/internal/config"
-	"github.com/okayest-dev/og/internal/contextmgr"
-	"github.com/okayest-dev/og/internal/instruct"
-	"github.com/okayest-dev/og/internal/ledger"
-	"github.com/okayest-dev/og/internal/llm"
-	"github.com/okayest-dev/og/internal/session"
-	"github.com/okayest-dev/og/internal/tools"
+	"github.com/okayest-dev/genie/internal/agent"
+	"github.com/okayest-dev/genie/internal/config"
+	"github.com/okayest-dev/genie/internal/contextmgr"
+	"github.com/okayest-dev/genie/internal/instruct"
+	"github.com/okayest-dev/genie/internal/ledger"
+	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/session"
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
-const prompt = "og> "
+const prompt = "genie> "
 
 // Config holds the dependencies for running the REPL.
 type Config struct {
@@ -185,20 +185,20 @@ func parseInlineAgent(line string) (agentName, prompt string, ok bool) {
 // handleInlineAgent runs a one-shot agent turn, then reverts state.
 func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Config, state *replState, sess *session.Session, sigCh <-chan os.Signal) {
 	if prompt == "" {
-		fmt.Fprintf(cfg.Stderr, "og: @%s requires a prompt\n", agentName)
+		fmt.Fprintf(cfg.Stderr, "genie: @%s requires a prompt\n", agentName)
 		return
 	}
 
 	// Look up the agent.
 	resolved, err := cfg.AgentReg.GetResolved(agentName, cfg.Cfg)
 	if err != nil {
-		fmt.Fprintf(cfg.Stderr, "og: %v\n", err)
+		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 		return
 	}
 
 	// Validate tools.
 	if err := cfg.Registry.ValidateTools(resolved.Tools); err != nil {
-		fmt.Fprintf(cfg.Stderr, "og: agent %q: %v\n", agentName, err)
+		fmt.Fprintf(cfg.Stderr, "genie: agent %q: %v\n", agentName, err)
 		return
 	}
 
@@ -324,7 +324,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 				}
 			}
 			if !found {
-				fmt.Fprintf(cfg.Stdout, "og: no such model: %s\n", target)
+				fmt.Fprintf(cfg.Stdout, "genie: no such model: %s\n", target)
 				return false
 			}
 			cfg.Model = target
@@ -372,11 +372,11 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		target := strings.TrimSpace(parts[1])
 		resolved, err := cfg.AgentReg.GetResolved(target, cfg.Cfg)
 		if err != nil {
-			fmt.Fprintf(cfg.Stderr, "og: %v\n", err)
+			fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 			return false
 		}
 		if err := cfg.Registry.ValidateTools(resolved.Tools); err != nil {
-			fmt.Fprintf(cfg.Stderr, "og: agent %q: %v\n", target, err)
+			fmt.Fprintf(cfg.Stderr, "genie: agent %q: %v\n", target, err)
 			return false
 		}
 		state.currentAgent = resolved
@@ -429,7 +429,7 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 
 	id, err := strconv.Atoi(args)
 	if err != nil {
-		fmt.Fprintf(out, "og: invalid change id: %s\n", args)
+		fmt.Fprintf(out, "genie: invalid change id: %s\n", args)
 		return
 	}
 	batch, err := ledger.LoadBatchByID(cfg.SessionDir, sessionID, id)
@@ -438,7 +438,7 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 		return
 	}
 	if batch == nil {
-		fmt.Fprintf(out, "og: no such change id: %d\n", id)
+		fmt.Fprintf(out, "genie: no such change id: %d\n", id)
 		return
 	}
 	for _, f := range batch.Files {

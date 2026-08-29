@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 const (

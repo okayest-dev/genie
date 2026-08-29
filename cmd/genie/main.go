@@ -13,31 +13,31 @@ import (
 	"strings"
 	"time"
 
-	"github.com/okayest-dev/og/internal/agent"
-	"github.com/okayest-dev/og/internal/config"
-	"github.com/okayest-dev/og/internal/contextmgr"
-	"github.com/okayest-dev/og/internal/instruct"
-	"github.com/okayest-dev/og/internal/ledger"
-	"github.com/okayest-dev/og/internal/llm"
-	_ "github.com/okayest-dev/og/internal/llm/anthropic"
-	_ "github.com/okayest-dev/og/internal/llm/google"
-	_ "github.com/okayest-dev/og/internal/llm/openai"
-	_ "github.com/okayest-dev/og/internal/llm/responses"
-	"github.com/okayest-dev/og/internal/modelinfo"
-	"github.com/okayest-dev/og/internal/plugin"
-	"github.com/okayest-dev/og/internal/repl"
-	"github.com/okayest-dev/og/internal/session"
-	"github.com/okayest-dev/og/internal/tokens"
-	"github.com/okayest-dev/og/internal/tools"
-	"github.com/okayest-dev/og/internal/tools/bashtool"
-	"github.com/okayest-dev/og/internal/tools/edittool"
-	"github.com/okayest-dev/og/internal/tools/readtool"
-	"github.com/okayest-dev/og/internal/tools/writetool"
+	"github.com/okayest-dev/genie/internal/agent"
+	"github.com/okayest-dev/genie/internal/config"
+	"github.com/okayest-dev/genie/internal/contextmgr"
+	"github.com/okayest-dev/genie/internal/instruct"
+	"github.com/okayest-dev/genie/internal/ledger"
+	"github.com/okayest-dev/genie/internal/llm"
+	_ "github.com/okayest-dev/genie/internal/llm/anthropic"
+	_ "github.com/okayest-dev/genie/internal/llm/google"
+	_ "github.com/okayest-dev/genie/internal/llm/openai"
+	_ "github.com/okayest-dev/genie/internal/llm/responses"
+	"github.com/okayest-dev/genie/internal/modelinfo"
+	"github.com/okayest-dev/genie/internal/plugin"
+	"github.com/okayest-dev/genie/internal/repl"
+	"github.com/okayest-dev/genie/internal/session"
+	"github.com/okayest-dev/genie/internal/tokens"
+	"github.com/okayest-dev/genie/internal/tools"
+	"github.com/okayest-dev/genie/internal/tools/bashtool"
+	"github.com/okayest-dev/genie/internal/tools/edittool"
+	"github.com/okayest-dev/genie/internal/tools/readtool"
+	"github.com/okayest-dev/genie/internal/tools/writetool"
 )
 
-const usage = `usage: og [-v] [-d] [-a agent] [-p prompt]
+const usage = `usage: genie [-v] [-d] [-a agent] [-p prompt]
 
-og is a minimal terminal agent harness.
+genie is a minimal terminal agent harness.
 
 Flags:
   -a agent   load a named agent definition for this run
@@ -46,9 +46,9 @@ Flags:
   -d         debug output: low-level detail to stderr (implies -v)
 
 Environment:
-  OG_DEBUG    enable debug mode (true/1/yes)
+  GENIE_DEBUG    enable debug mode (true/1/yes)
 
-Without -p, og starts an interactive REPL.
+Without -p, genie starts an interactive REPL.
 `
 
 func main() {
@@ -56,7 +56,7 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	// Pre-scan for -p without a value (e.g. "og -p" or "og -p -").
+	// Pre-scan for -p without a value (e.g. "genie -p" or "genie -p -").
 	// Go's flag package requires a value after -p, so we detect the
 	// stdin-reading cases before handing off to flag.Parse.
 	pFlag := ""
@@ -97,7 +97,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	fs := flag.NewFlagSet("og", flag.ContinueOnError)
+	fs := flag.NewFlagSet("genie", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
 	prompt := fs.String("p", "", "run a single prompt")
@@ -113,7 +113,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		*prompt = stdinPrompt
 	}
 
-	debugEnv := isTruthy(os.Getenv("OG_DEBUG"))
+	debugEnv := isTruthy(os.Getenv("GENIE_DEBUG"))
 	debug = boolPtr(*debug || debugEnv)
 	verbose = boolPtr(*verbose || *debug)
 
@@ -344,13 +344,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 // resolveAgentReg creates an AgentReg from the standard directories.
 func resolveAgentReg(cwd string) *config.AgentReg {
-	globalDir := filepath.Join(os.Getenv("OG_CONFIG_DIR"), "og", "agents")
-	if os.Getenv("OG_CONFIG_DIR") == "" {
+	globalDir := filepath.Join(os.Getenv("GENIE_CONFIG_DIR"), "genie", "agents")
+	if os.Getenv("GENIE_CONFIG_DIR") == "" {
 		if dir, err := os.UserConfigDir(); err == nil {
-			globalDir = filepath.Join(dir, "og", "agents")
+			globalDir = filepath.Join(dir, "genie", "agents")
 		}
 	}
-	localDir := filepath.Join(cwd, ".og", "agents")
+	localDir := filepath.Join(cwd, ".genie", "agents")
 	return config.NewAgentReg(globalDir, localDir)
 }
 

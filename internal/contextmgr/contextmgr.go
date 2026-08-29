@@ -15,10 +15,10 @@ import (
 	"iter"
 	"log/slog"
 
-	"github.com/okayest-dev/og/internal/llm"
-	"github.com/okayest-dev/og/internal/modelinfo"
-	"github.com/okayest-dev/og/internal/session"
-	"github.com/okayest-dev/og/internal/tokens"
+	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/modelinfo"
+	"github.com/okayest-dev/genie/internal/session"
+	"github.com/okayest-dev/genie/internal/tokens"
 )
 
 // Hooks is the plugin context seam: external plugins hook into context

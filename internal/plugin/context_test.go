@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 func mkPlugin(name string, caps Capabilities) *Plugin {

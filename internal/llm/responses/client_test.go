@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 func TestListModels(t *testing.T) {

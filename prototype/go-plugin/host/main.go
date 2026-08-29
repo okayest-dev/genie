@@ -10,7 +10,7 @@ import (
 	hclog "github.com/hashicorp/go-hclog"
 	goplugin "github.com/hashicorp/go-plugin"
 
-	"github.com/danjones/og/prototype/go-plugin/shared"
+	"github.com/danjones/genie/prototype/go-plugin/shared"
 )
 
 func main() {
@@ -19,11 +19,11 @@ func main() {
 	client := goplugin.NewClient(&goplugin.ClientConfig{
 		HandshakeConfig: goplugin.HandshakeConfig{
 			ProtocolVersion:  1,
-			MagicCookieKey:   "OG_PLUGIN",
-			MagicCookieValue: "og-agent-harness",
+			MagicCookieKey:   "GENIE_PLUGIN",
+			MagicCookieValue: "genie-agent-harness",
 		},
 		Plugins: map[string]goplugin.Plugin{
-			"og": &shared.OGPluginNetRPC{},
+			"genie": &shared.GeniePluginNetRPC{},
 		},
 		Cmd:              exec.Command(pluginBin),
 		AllowedProtocols: []goplugin.Protocol{goplugin.ProtocolNetRPC},
@@ -39,11 +39,11 @@ func main() {
 		log.Fatalf("failed to create RPC client: %v", err)
 	}
 
-	raw, err := rpcClient.Dispense("og")
+	raw, err := rpcClient.Dispense("genie")
 	if err != nil {
 		log.Fatalf("failed to dispense plugin: %v", err)
 	}
-	plugin := raw.(shared.OGPlugin)
+	plugin := raw.(shared.GeniePlugin)
 
 	// --- Exercise the interface ---
 

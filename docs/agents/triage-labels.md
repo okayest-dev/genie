@@ -26,8 +26,8 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 | Feature area          | Label                    |
 | --------------------- | ------------------------ |
-| og harness (wayfinder)| `feature:og-harness`     |
-| og v1 implementation  | `feature:og-v1`          |
+| genie harness (wayfinder)| `feature:genie-harness`     |
+| genie v1 implementation  | `feature:genie-v1`          |
 | debug/verbose flags   | `feature:debug-verbose-flag` |
 
 ## Wayfinder type labels

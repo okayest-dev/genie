@@ -3,7 +3,7 @@ package google
 import (
 	"encoding/json"
 
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // parseChunk converts one Google generateContent wire chunk into normalized

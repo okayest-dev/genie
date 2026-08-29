@@ -12,7 +12,7 @@
 - Three-layer: `defaults() → file → env`
 - `fileConfig` struct mirrors `Config` with pointer types for optionals
 - `Parse()` applies each layer with `if field != nil` / `if field != ""` guards
-- Env overrides: 9 `OG_*` vars checked one-by-one (lines 261–310)
+- Env overrides: 9 `GENIE_*` vars checked one-by-one (lines 261–310)
 - Unknown keys → hard failure (line 128–134)
 
 ## Plugin Manifest Pattern (`internal/plugin/manifest.go`)
@@ -55,7 +55,7 @@ type Config struct {
 - Instruction is a plain string, assembled once in main.go
 - REPL does not know about config parsing — receives resolved dependencies
 
-## main.go Wiring (`cmd/og/main.go`)
+## main.go Wiring (`cmd/genie/main.go`)
 
 Startup sequence (line 53, `run()`):
 1. Pre-scan args for `-p` flag (lines 57–93)
@@ -76,7 +76,7 @@ Startup sequence (line 53, `run()`):
 ## Patterns for Agent Definitions
 
 1. **TOML parsing**: Follow `config.go` pattern — `fileAgent` struct with pointer types, strict key checking
-2. **File discovery**: Follow `manifest.go` two-pass pattern — dir-first, flat-fallback in `~/.config/og/agents/`
+2. **File discovery**: Follow `manifest.go` two-pass pattern — dir-first, flat-fallback in `~/.config/genie/agents/`
 3. **Config overlay**: Follow `defaults() → file → env` three-layer precedence
 4. **Instruction hook**: Modify `instruct.Load()` to accept agent parameter, insert agent instruction at right stacking position
 5. **Validation**: Unknown keys cause hard failure — new schema must be exhaustive

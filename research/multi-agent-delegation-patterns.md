@@ -1,6 +1,6 @@
 # Research: Multi-Agent Delegation and Foreground Handoff Patterns
 
-**Task**: Research-only. What other agent harnesses do for (a) subagent delegation and (b) foreground/primary-agent handoff, and what og should borrow or avoid.
+**Task**: Research-only. What other agent harnesses do for (a) subagent delegation and (b) foreground/primary-agent handoff, and what genie should borrow or avoid.
 
 **Scope**: opencode, Claude Code / Anthropic, Codex CLI / OpenAI Agents SDK, plus cross-cutting delegation observations. Sources cited per claim.
 
@@ -27,7 +27,7 @@ Sources: codex-rs tool handlers `multi_agents_v2/spawn.rs` via https://deepwiki.
 **Anthropic research system** — subagents are given explicit task boundaries in the prompt (objective, output format, tools/sources, boundaries) to stop duplicated/overlapping work across parallel workers.
 Source: https://www.anthropic.com/engineering/multi-agent-research-system ("Teach the orchestrator how to delegate").
 
-> **Implication for og**: the `delegate` tool should take the purpose-derived task label as a required parameter (og's *delegated task name*, e.g. `spec-auth-flow`), and the harness should use that label for the child session title and the parent transcript record — exactly what opencode's `description` and Codex's `task_name` do. The *agent type* (which subagent definition runs) stays a separate parameter (`subagent_type` in both opencode and Claude Code).
+> **Implication for genie**: the `delegate` tool should take the purpose-derived task label as a required parameter (genie's *delegated task name*, e.g. `spec-auth-flow`), and the harness should use that label for the child session title and the parent transcript record — exactly what opencode's `description` and Codex's `task_name` do. The *agent type* (which subagent definition runs) stays a separate parameter (`subagent_type` in both opencode and Claude Code).
 
 ### 1.2 Fresh vs inherited context
 
@@ -76,7 +76,7 @@ Parallelism is permissive but bounded by hard depth + concurrency (and sometimes
 - **Anthropic research system**: parallel subagents with a lead that synthesizes; subagents run *asynchronously* (the lead doesn't block on each one), and the lead may re-spawn or refine on partial results.
   Source: https://www.anthropic.com/engineering/multi-agent-research-system.
 
-> **Implication for og**: fan-out should let one turn delegate several named tasks; join = each `delegate` result folds back in the same loop. Bounds (max concurrent, max depth, default non-nested) matter because they are what every shipped harness converged on.
+> **Implication for genie**: fan-out should let one turn delegate several named tasks; join = each `delegate` result folds back in the same loop. Bounds (max concurrent, max depth, default non-nested) matter because they are what every shipped harness converged on.
 
 ### 1.5 Live streaming of subagent output
 
@@ -122,17 +122,17 @@ OpenAI's orchestration guide is the sharpest statement:
 | Agents as tools | A manager should stay in control and call specialists as bounded capabilities | The manager keeps ownership of the reply |
 
 - "Handoffs are better modeled as **routing** (the model decides where a conversation should live). Subagents are better modeled as **delegation** (the orchestrator breaks a task into pieces and merges results). Many real-world workflows need both."
-- Both names coexist in one "Agent" abstraction in these SDKs: a tool-agent (`as_tool()`) returns its result to the caller; a handoff transfers ownership. og's terms already encode this: *delegation stays behind the scenes; handoff puts the target in the foreground*.
+- Both names coexist in one "Agent" abstraction in these SDKs: a tool-agent (`as_tool()`) returns its result to the caller; a handoff transfers ownership. genie's terms already encode this: *delegation stays behind the scenes; handoff puts the target in the foreground*.
 Sources: https://developers.openai.com/api/docs/guides/agents/orchestration and https://www.developersdigest.tech/blog/openai-agents-sdk-vs-claude-agent-sdk
 
 ### 2.4 Return-to-origin
 
 - **OpenAI**: not automatic — you register reverse handoffs or let the receiving agent decide.
 - **Semantic Kernel**: explicit reverse edges with per-edge captions the source model reads.
-- **opencode** (session-hierarchy model): the "return" is *navigation*, not a tool: a child session has a parent link; keybinds `session_parent` (Up) return to the parent session, `session_child_first`/`session_child_cycle` descend or cycle siblings, and `s`/a dialog shows the whole session tree. This is the closest analogue to og's *"a stack remembers the return path"* — the return path is structural (parent link), not a message the model must re-send.
+- **opencode** (session-hierarchy model): the "return" is *navigation*, not a tool: a child session has a parent link; keybinds `session_parent` (Up) return to the parent session, `session_child_first`/`session_child_cycle` descend or cycle siblings, and `s`/a dialog shows the whole session tree. This is the closest analogue to genie's *"a stack remembers the return path"* — the return path is structural (parent link), not a message the model must re-send.
   Source: https://opencode.ai/docs/agents/ (Navigation between sessions) and https://github.com/anomalyco/opencode/pull/7756 (session tree dialog, breadcrumb header).
 
-> **Implication for og**: og's tool-driven foreground handoff with a remembered return stack is *not matched* by any of these harnesses directly — they either make the human switch (opencode Tab, Codex `/agent`) or make the model re-register a reverse edge (OpenAI/Semantic Kernel). og's stack-based return is the clean version of the reverse-edge pattern. The handoff tool should be named in the `transfer_to_X` convention and take an optional short reason/summary payload (`input_type` analogue).
+> **Implication for genie**: genie's tool-driven foreground handoff with a remembered return stack is *not matched* by any of these harnesses directly — they either make the human switch (opencode Tab, Codex `/agent`) or make the model re-register a reverse edge (OpenAI/Semantic Kernel). genie's stack-based return is the clean version of the reverse-edge pattern. The handoff tool should be named in the `transfer_to_X` convention and take an optional short reason/summary payload (`input_type` analogue).
 
 ---
 
@@ -153,26 +153,26 @@ Sources: https://developers.openai.com/api/docs/guides/agents/orchestration and 
 ## 4. Borrow vs avoid
 
 ### Borrow
-1. **Purpose-derived task label as the instance name.** Task description → child session title + transcript record (opencode); `task_name` param (Codex v2). og's `delegate` tool should take `spec-auth-flow`-style labels directly and use them for session title and transcript metadata — never `subagent-1`.
+1. **Purpose-derived task label as the instance name.** Task description → child session title + transcript record (opencode); `task_name` param (Codex v2). genie's `delegate` tool should take `spec-auth-flow`-style labels directly and use them for session title and transcript metadata — never `subagent-1`.
 2. **Wrapped result fold-back with a resumption handle.** `<task_result>/<task_error>` plus `task_id` (opencode), `agentId:` trailer (Claude Code). A small structured block the parent reads as normal tool output, carrying a handle to continue the same child session later.
 3. **Fresh context + explicit whitelist.** Subagent gets its own instruction + the delegation prompt + project AGENTS.md (Claude Code) — never the parent transcript or parent system prompt. Fork/background variants are separate opt-ins.
 4. **Foreground/background split on the delegation tool.** Default = block + stream (foreground); opt-in `background: true` completes asynchronously and the parent is *informed via an injected message on a later turn* — and the model is told not to poll (opencode/Claude Code).
-5. **Hard bounds on the tree.** Depth defaults of 1 (Codex, opencode) to 3 (Claude Code); concurrency caps (6–20); optional spend cap. Default og should be depth-1 (no nesting) with a small concurrency cap, matching what shipped harnesses made the default.
-6. **Permission-gate the delegation seam.** opencode `permission.task` glob patterns; a `deny` removes that subagent from the tool description so the model doesn't even try. Claude Code gates spawning via `Agent(agent_type)` allowlists on the parent's tool list. og's `delegate` should take a subagent *type* permissioned per-agent.
+5. **Hard bounds on the tree.** Depth defaults of 1 (Codex, opencode) to 3 (Claude Code); concurrency caps (6–20); optional spend cap. Default genie should be depth-1 (no nesting) with a small concurrency cap, matching what shipped harnesses made the default.
+6. **Permission-gate the delegation seam.** opencode `permission.task` glob patterns; a `deny` removes that subagent from the tool description so the model doesn't even try. Claude Code gates spawning via `Agent(agent_type)` allowlists on the parent's tool list. genie's `delegate` should take a subagent *type* permissioned per-agent.
 7. **Scan subagent results for prompt-injection shapes** (control-tag imitation, permission-config mentions, turn markers) before folding back (Claude Code v2.1.210).
 8. **Handoff tool naming + routing hints.** `transfer_to_<agent>` (OpenAI) is the de facto naming; a short per-target description the choosing model reads. Semantic Kernel's captioned edges ("Transfer to this agent if…") is the same idea in graph form.
 9. **Send structured metadata on the transfer** (`input_type` — reason/summary), validated by the harness and passed to an `on_handoff` hook, separate from the conversation payload.
-10. **Return path as a stack / parent link.** opencode proves the *structural* parent-link return works well; og's stack-based return is that idea made explicit for foreground handoffs in a single transcript.
+10. **Return path as a stack / parent link.** opencode proves the *structural* parent-link return works well; genie's stack-based return is that idea made explicit for foreground handoffs in a single transcript.
 
 ### Avoid
-1. **Positional instance names.** No harness uses `subagent-1` for display — it's always task-derived. (Confirms the og requirement; nothing to copy from a counter.)
+1. **Positional instance names.** No harness uses `subagent-1` for display — it's always task-derived. (Confirms the genie requirement; nothing to copy from a counter.)
 2. **Unbounded nesting as the default.** Every harness gates nesting behind config and warns (Claude Code depth-3 default, Codex depth-1, opencode `subagent_depth` default 1); Claude Code and Codex explicitly warn about token multiplication and approval-chain complexity for deep trees.
-3. **Foreground handoff that silently keeps the old agent "primary" or resets the transcript.** opencode stores one agent per session and resets nothing; OpenAI handoffs flow the *whole conversation history* (with an optional filter). og's "same session/transcript, stack remembers the return" is coherent with both — just be explicit that a handoff does *not* create a child session.
+3. **Foreground handoff that silently keeps the old agent "primary" or resets the transcript.** opencode stores one agent per session and resets nothing; OpenAI handoffs flow the *whole conversation history* (with an optional filter). genie's "same session/transcript, stack remembers the return" is coherent with both — just be explicit that a handoff does *not* create a child session.
 4. **Automatic thread cleanup losing recoverable work.** Claude Code keeps failed/stopped rows visible for ~30s with `/tasks` access and protects partial output on API errors; Codex marks `report_agent_job_result`-missing workers as errors rather than dropping rows. Don't destroy a subagent's transcript on failure.
 5. **Model polling for background results.** opencode/Claude Code explicitly forbid polling and inject notifications instead; that's the pattern to copy, not busy-polling.
-6. **Full parent transcript spliced into the child.** Not done anywhere (fork is the explicit opt-in); keeps og's fold-back = summary, not transcript merge.
-7. **A handoff primitive with no way back** as the *only* handoff shape (raw OpenAI Handoff). og's remembered-return stack is the improvement; don't regress to "register a reverse handoff by hand."
-8. **Massive agent descriptions eating the model's context.** Claude Code warns at >15k tokens of combined subagent descriptions; keep `description`s short and push detail into the per-subagent instruction file (loaded only during delegation) — matches og's two-file agent model.
+6. **Full parent transcript spliced into the child.** Not done anywhere (fork is the explicit opt-in); keeps genie's fold-back = summary, not transcript merge.
+7. **A handoff primitive with no way back** as the *only* handoff shape (raw OpenAI Handoff). genie's remembered-return stack is the improvement; don't regress to "register a reverse handoff by hand."
+8. **Massive agent descriptions eating the model's context.** Claude Code warns at >15k tokens of combined subagent descriptions; keep `description`s short and push detail into the per-subagent instruction file (loaded only during delegation) — matches genie's two-file agent model.
 
 ---
 

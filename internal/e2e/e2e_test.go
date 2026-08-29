@@ -1,4 +1,4 @@
-// Package e2e drives the compiled og binary as a subprocess against the
+// Package e2e drives the compiled genie binary as a subprocess against the
 // scripted fake provider. The binary seam is the primary test seam: tests
 // assert only observable behavior — stdout, stderr, and exit codes.
 package e2e
@@ -18,21 +18,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/okayest-dev/og/internal/e2e/fake"
+	"github.com/okayest-dev/genie/internal/e2e/fake"
 )
 
 var binPath string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "og-e2e-*")
+	dir, err := os.MkdirTemp("", "genie-e2e-*")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "make temp dir:", err)
 		os.Exit(1)
 	}
-	binPath = filepath.Join(dir, "og")
-	build := exec.Command("go", "build", "-o", binPath, "github.com/okayest-dev/og/cmd/og")
+	binPath = filepath.Join(dir, "genie")
+	build := exec.Command("go", "build", "-o", binPath, "github.com/okayest-dev/genie/cmd/genie")
 	if out, err := build.CombinedOutput(); err != nil {
-		fmt.Fprintf(os.Stderr, "build og: %v\n%s", err, out)
+		fmt.Fprintf(os.Stderr, "build genie: %v\n%s", err, out)
 		os.Exit(1)
 	}
 	code := m.Run()
@@ -118,8 +118,8 @@ func TestEmptyPromptUsageError(t *testing.T) {
 // providerEnv points the binary at a fake provider with a fixed model and key.
 func providerEnv(p *fake.Provider) []string {
 	return []string{
-		"OG_BASE_URL=" + p.URL,
-		"OG_MODEL=test-model",
+		"GENIE_BASE_URL=" + p.URL,
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}
 }
@@ -219,17 +219,17 @@ func assertSystemMessage(t *testing.T, p *fake.Provider, wantContent string) {
 	}
 }
 
-// configDir creates a fresh XDG_CONFIG_HOME with og/config.toml holding the
+// configDir creates a fresh XDG_CONFIG_HOME with genie/config.toml holding the
 // given content; content "" leaves the config file absent.
 func configDir(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
-	ogDir := filepath.Join(dir, "og")
-	if err := os.MkdirAll(ogDir, 0o755); err != nil {
+	genieDir := filepath.Join(dir, "genie")
+	if err := os.MkdirAll(genieDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if content != "" {
-		if err := os.WriteFile(filepath.Join(ogDir, "config.toml"), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(genieDir, "config.toml"), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -283,7 +283,7 @@ func TestStreamsReply(t *testing.T) {
 	if body.Model != "test-model" {
 		t.Errorf("request model = %q, want %q", body.Model, "test-model")
 	}
-	assertSystemMessage(t, p, "You are og, a helpful terminal agent.")
+	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.")
 	if len(body.Messages) != 2 {
 		t.Fatalf("request messages = %+v, want 2 messages (system + user)", body.Messages)
 	}
@@ -372,7 +372,7 @@ func TestNetworkDownReportsError(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL
 	srv.Close()
-	stdout, stderr, code := run(t, []string{"OG_BASE_URL=" + url}, "-p", "hi")
+	stdout, stderr, code := run(t, []string{"GENIE_BASE_URL=" + url}, "-p", "hi")
 	assertCleanFailure(t, stdout, stderr, code, "Error: ")
 }
 
@@ -401,7 +401,7 @@ func TestEnvOverridesConfigFile(t *testing.T) {
 	dir := configDir(t, fmt.Sprintf("base_url = %q\nmodel = \"file-model\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"OG_MODEL=env-model",
+		"GENIE_MODEL=env-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -420,7 +420,7 @@ func TestMissingConfigFileUsesDefaults(t *testing.T) {
 	dir := configDir(t, "")
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"OG_BASE_URL=" + p.URL,
+		"GENIE_BASE_URL=" + p.URL,
 		"OPENCODE_API_KEY=",
 	}, "-p", "hi")
 	if code != 0 {
@@ -448,10 +448,10 @@ func TestAPIKeyReadsFromConfiguredEnvVar(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	dir := configDir(t, fmt.Sprintf("base_url = %q\napi_key_env = \"OG_MY_KEY\"\n", p.URL))
+	dir := configDir(t, fmt.Sprintf("base_url = %q\napi_key_env = \"GENIE_MY_KEY\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"OG_MY_KEY=test-key",
+		"GENIE_MY_KEY=test-key",
 		"OPENCODE_API_KEY=",
 	}, "-p", "hi")
 	if code != 0 {
@@ -474,7 +474,7 @@ func TestDefaultPromptAlwaysInRequest(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	assertSystemMessage(t, p, "You are og, a helpful terminal agent.")
+	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.")
 }
 
 func TestInstructionFileInRequest(t *testing.T) {
@@ -489,7 +489,7 @@ func TestInstructionFileInRequest(t *testing.T) {
 	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = %q\n", p.URL, instFile))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"OG_MODEL=test-model",
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 		// Work from an empty dir so no AGENTS.md interference
 		"HOME=" + dir,
@@ -500,7 +500,7 @@ func TestInstructionFileInRequest(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	want := "You are og, a helpful terminal agent.\ncustom agent rules"
+	want := "You are genie, a helpful terminal agent.\ncustom agent rules"
 	assertSystemMessage(t, p, want)
 }
 
@@ -516,7 +516,7 @@ func TestAGENTSMDInRequest(t *testing.T) {
 	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\n", p.URL))
 	stdout, stderr, code := runInDir(t, workDir, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"OG_MODEL=test-model",
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -525,7 +525,7 @@ func TestAGENTSMDInRequest(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	want := "You are og, a helpful terminal agent.\nproject rules"
+	want := "You are genie, a helpful terminal agent.\nproject rules"
 	assertSystemMessage(t, p, want)
 }
 
@@ -536,7 +536,7 @@ func TestMissingInstructionFileFailsAtStartup(t *testing.T) {
 	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = \"/nonexistent/instructions.md\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"OG_MODEL=test-model",
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	assertCleanFailure(t, stdout, stderr, code, "instruction file")
@@ -562,7 +562,7 @@ func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
 	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = %q\n", p.URL, instFile))
 	stdout, stderr, code := runInDir(t, workDir, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"OG_MODEL=test-model",
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -571,7 +571,7 @@ func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	want := "You are og, a helpful terminal agent.\n---config---\n---agents---"
+	want := "You are genie, a helpful terminal agent.\n---config---\n---agents---"
 	assertSystemMessage(t, p, want)
 }
 
@@ -676,7 +676,7 @@ func TestOGDebugEnvEnablesDebug(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_DEBUG=true"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_DEBUG=true"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -684,7 +684,7 @@ func TestOGDebugEnvEnablesDebug(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	if !strings.Contains(stderr, "debug mode enabled") {
-		t.Errorf("stderr = %q, want it to contain the debug banner with OG_DEBUG=true", stderr)
+		t.Errorf("stderr = %q, want it to contain the debug banner with GENIE_DEBUG=true", stderr)
 	}
 }
 
@@ -692,7 +692,7 @@ func TestDebugOutputIncludesHTTPDetails(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_DEBUG=1"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_DEBUG=1"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -711,7 +711,7 @@ func TestAPIKeyNeverAppearsInDebugOutput(t *testing.T) {
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
 	apiKey := "super-secret-api-key-abcdef"
-	stdout, stderr, code := run(t, append(providerEnv(p), "OPENCODE_API_KEY="+apiKey, "OG_DEBUG=1"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "OPENCODE_API_KEY="+apiKey, "GENIE_DEBUG=1"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -727,7 +727,7 @@ func TestDebugFlagOverridesFalseOGDebug(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_DEBUG=false"), "-d", "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_DEBUG=false"), "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -735,7 +735,7 @@ func TestDebugFlagOverridesFalseOGDebug(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	if !strings.Contains(stderr, "debug mode enabled") {
-		t.Errorf("stderr = %q, want debug banner even with OG_DEBUG=false when -d is set", stderr)
+		t.Errorf("stderr = %q, want debug banner even with GENIE_DEBUG=false when -d is set", stderr)
 	}
 }
 
@@ -794,7 +794,7 @@ func TestSessionPersistence(t *testing.T) {
 		Chunks: []string{fake.TextDelta("hello"), fake.Finish("stop"), fake.Done},
 	})
 	sessionDir := t.TempDir()
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_SESSION_DIR="+sessionDir), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_SESSION_DIR="+sessionDir), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -830,7 +830,7 @@ func TestSessionPersistence(t *testing.T) {
 	if !strings.Contains(transcript, `"role":"system"`) {
 		t.Errorf("transcript missing system message")
 	}
-	if !strings.Contains(transcript, `"content":"You are og, a helpful terminal agent."`) {
+	if !strings.Contains(transcript, `"content":"You are genie, a helpful terminal agent."`) {
 		t.Errorf("transcript missing system prompt content")
 	}
 
@@ -924,14 +924,14 @@ func TestREPLCrossTurnHistory(t *testing.T) {
 }
 
 // TestREPLContextTurnsWindow verifies the configurable context_turns window is
-// honoured end-to-end: with OG_CONTEXT_TURNS=1, the third turn's request to
+// honoured end-to-end: with GENIE_CONTEXT_TURNS=1, the third turn's request to
 // the provider carries only the immediately preceding turn, not the first.
 func TestREPLContextTurnsWindow(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("turn reply"), fake.Finish("stop"), fake.Done},
 	})
 
-	env := append(providerEnv(p), "OG_CONTEXT_TURNS=1")
+	env := append(providerEnv(p), "GENIE_CONTEXT_TURNS=1")
 	_, stderr, code := runWithStdin(t, "first question\nsecond question\nthird question\n/quit\n", env)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -1078,8 +1078,8 @@ func TestToolCallExecutedAndResultFedBack(t *testing.T) {
 	defer srv.Close()
 
 	stdout, stderr, code := run(t, []string{
-		"OG_BASE_URL=" + srv.URL,
-		"OG_MODEL=test-model",
+		"GENIE_BASE_URL=" + srv.URL,
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "read test.txt")
 	if code != 0 {
@@ -1134,7 +1134,7 @@ func TestToolCallResultPersistsToTranscript(t *testing.T) {
 		},
 	})
 	sessionDir := t.TempDir()
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_SESSION_DIR="+sessionDir), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_SESSION_DIR="+sessionDir), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1199,8 +1199,8 @@ func TestToolCallDisabledToolError(t *testing.T) {
 
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"OG_BASE_URL=" + srv.URL,
-		"OG_MODEL=test-model",
+		"GENIE_BASE_URL=" + srv.URL,
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "read x")
 	if code != 0 {
@@ -1222,7 +1222,7 @@ func TestAnthropicWire(t *testing.T) {
 			fake.Done,
 		},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_WIRE=anthropic"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_WIRE=anthropic"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1246,7 +1246,7 @@ func TestResponsesAPIWire(t *testing.T) {
 			fake.Done,
 		},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_WIRE=responses"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_WIRE=responses"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1271,7 +1271,7 @@ func TestGoogleWire(t *testing.T) {
 		},
 		ContextWindow: 1_000_000,
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_WIRE=google", "OG_MODEL=gemini-test"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_WIRE=google", "GENIE_MODEL=gemini-test"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1303,8 +1303,8 @@ func TestWireAutoDetectionClaudeToAnthropic(t *testing.T) {
 		},
 	})
 	stdout, stderr, code := run(t, []string{
-		"OG_BASE_URL=" + p.URL,
-		"OG_MODEL=claude-3-sonnet",
+		"GENIE_BASE_URL=" + p.URL,
+		"GENIE_MODEL=claude-3-sonnet",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1332,8 +1332,8 @@ func TestWireAutoDetectionGeminiToGoogle(t *testing.T) {
 		ContextWindow: 1_000_000,
 	})
 	stdout, stderr, code := run(t, []string{
-		"OG_BASE_URL=" + p.URL,
-		"OG_MODEL=gemini-flash",
+		"GENIE_BASE_URL=" + p.URL,
+		"GENIE_MODEL=gemini-flash",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1369,7 +1369,7 @@ func TestExplicitWireOverrideInConfig(t *testing.T) {
 	dir := configDir(t, fmt.Sprintf("base_url = %q\nwire = \"anthropic\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"OG_MODEL=test-model",
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1392,8 +1392,8 @@ func TestUnknownModelFallsBackToOpenAI(t *testing.T) {
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
 	stdout, stderr, code := run(t, []string{
-		"OG_BASE_URL=" + p.URL,
-		"OG_MODEL=unknown-model",
+		"GENIE_BASE_URL=" + p.URL,
+		"GENIE_MODEL=unknown-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1420,13 +1420,13 @@ func TestOGProviderEnvRoutesThroughPlugin(t *testing.T) {
 			fake.Done,
 		},
 	})
-	// OG_PROVIDER would normally name a loaded plugin, but with no plugins
+	// GENIE_PROVIDER would normally name a loaded plugin, but with no plugins
 	// installed it should error.
-	stdout, stderr, code := run(t, append(providerEnv(p), "OG_PROVIDER=copilot"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_PROVIDER=copilot"), "-p", "hi")
 	assertCleanFailure(t, stdout, stderr, code, "provider")
 }
 
-// --- Non-interactive completion (og-dea) ---
+// --- Non-interactive completion (genie-dea) ---
 
 func TestStdinPipingReadsPrompt(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
@@ -1541,8 +1541,8 @@ func TestStdinPipingAnswerToStdoutToolFramingToStderr(t *testing.T) {
 	defer srv.Close()
 
 	stdout, stderr, code := runWithStdin(t, "read test.txt", []string{
-		"OG_BASE_URL=" + srv.URL,
-		"OG_MODEL=test-model",
+		"GENIE_BASE_URL=" + srv.URL,
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p")
 	if code != 0 {
@@ -1594,10 +1594,10 @@ func TestLedgerPersistedInHeadlessMode(t *testing.T) {
 	sessionDir := t.TempDir()
 	workDir := t.TempDir()
 	stdout, stderr, code := runInDir(t, workDir, []string{
-		"OG_BASE_URL=" + srv.URL,
-		"OG_MODEL=test-model",
+		"GENIE_BASE_URL=" + srv.URL,
+		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
-		"OG_SESSION_DIR=" + sessionDir,
+		"GENIE_SESSION_DIR=" + sessionDir,
 	}, "-p", "write output.txt")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -1690,7 +1690,7 @@ func TestStdinPipingEmptyDashExits3(t *testing.T) {
 	}
 }
 
-// TestContextUsageLoggedAgainstBudget is the og-br8 acceptance at the binary
+// TestContextUsageLoggedAgainstBudget is the genie-br8 acceptance at the binary
 // seam: with a per-model context-window override, the debug log reports the
 // outgoing request's token count against the authoritative window and the
 // default 75% budget.
@@ -1703,7 +1703,7 @@ func TestContextUsageLoggedAgainstBudget(t *testing.T) {
 "test-model" = 1000
 `
 	dir := configDir(t, cfg)
-	env := append(providerEnv(p), "OG_CONFIG_DIR="+dir)
+	env := append(providerEnv(p), "GENIE_CONFIG_DIR="+dir)
 	stdout, stderr, code := run(t, env, "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -1732,7 +1732,7 @@ func TestContextUsageLoggedAgainstBudget(t *testing.T) {
 	}
 }
 
-// TestContextBudgetTokensOverrideWins is the og-br8 acceptance that an
+// TestContextBudgetTokensOverrideWins is the genie-br8 acceptance that an
 // absolute budget_tokens config wins over the percent-of-window derivation.
 func TestContextBudgetTokensOverrideWins(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
@@ -1746,7 +1746,7 @@ budget_tokens = 123
 "test-model" = 1000
 `
 	dir := configDir(t, cfg)
-	env := append(providerEnv(p), "OG_CONFIG_DIR="+dir)
+	env := append(providerEnv(p), "GENIE_CONFIG_DIR="+dir)
 	_, stderr, code := run(t, env, "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)

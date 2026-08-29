@@ -14,8 +14,8 @@ type Capabilities struct {
 	Providers bool `json:"providers"`
 }
 
-// OGPlugin is the contract between host and plugin.
-type OGPlugin interface {
+// GeniePlugin is the contract between host and plugin.
+type GeniePlugin interface {
 	Capabilities() (Capabilities, error)
 	ListTools() ([]ToolInfo, error)
 	CallTool(name string, args map[string]any) (string, error)

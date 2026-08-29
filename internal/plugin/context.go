@@ -13,13 +13,13 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/okayest-dev/og/internal/contextmgr"
-	"github.com/okayest-dev/og/internal/llm"
+	"github.com/okayest-dev/genie/internal/contextmgr"
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // BuiltinName is the name of the built-in compactor/condenser registrant.
 // Selecting it as active_compact/active_condense explicitly chooses the
-// harness's own implementation; a later ticket (og-8qu.7) supplies its body.
+// harness's own implementation; a later ticket (genie-8qu.7) supplies its body.
 const BuiltinName = "builtin"
 
 // ContextConfig is the resolved [context.plugins] selection passed to the seam
@@ -103,7 +103,7 @@ func orderedPlugins(byName map[string]*Plugin, plugins []*Plugin, order []string
 //
 //   - explicit choice wins (errors if the named plugin is absent / lacks the seam,
 //     or the choice is the built-in);
-//   - zero declarants defaults to the built-in (inert until og-8qu.7);
+//   - zero declarants defaults to the built-in (inert until genie-8qu.7);
 //   - one declarant defaults to it;
 //   - several declarants without an explicit choice is a hard startup error.
 func resolveSingleActive(byName map[string]*Plugin, plugins []*Plugin, active, seam string, pred func(*Plugin) bool) (*Plugin, error) {
