@@ -49,6 +49,26 @@ type transcriptToolCall struct {
 	Arguments string `json:"arguments"`
 }
 
+// Message converts a message transcript line into the canonical llm.Message.
+// It is only meaningful for message lines (role in system/user/assistant/tool);
+// calling it on a marker line yields a message with a non-standard role.
+func (t TranscriptLine) Message() llm.Message {
+	msg := llm.Message{Role: t.Role, Content: t.Content}
+
+	if len(t.ToolCalls) > 0 {
+		msg.ToolCalls = make([]llm.ToolCall, len(t.ToolCalls))
+		for i, tc := range t.ToolCalls {
+			msg.ToolCalls[i] = llm.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: tc.Arguments}
+		}
+	}
+
+	if t.ToolCallID != "" {
+		msg.ToolCallID = t.ToolCallID
+	}
+
+	return msg
+}
+
 // New creates a new session in the given directory. It creates the directory
 // if it doesn't exist and generates a unique session id. The transcript file
 // is created on the first append.
@@ -128,6 +148,28 @@ func (s *Session) AppendWithMeta(msg llm.Message, meta map[string]string) error 
 // Load reconstructs the canonical conversation from the transcript file.
 // Messages are returned in order, including tool call metadata.
 func (s *Session) Load() ([]llm.Message, error) {
+	lines, err := s.readLines()
+	if err != nil {
+		return nil, err
+	}
+	var messages []llm.Message
+	for _, ln := range lines {
+		messages = append(messages, ln.Message())
+	}
+	return messages, nil
+}
+
+// Lines returns the raw decoded transcript lines in order. Each line's slice
+// index IS its stable session-line index, so callers can key by position
+// across resume. Unlike Load, Lines exposes the full metadata surface and any
+// marker lines, not just canonical messages.
+func (s *Session) Lines() ([]TranscriptLine, error) {
+	return s.readLines()
+}
+
+// readLines decodes every line of the transcript file in order. A missing or
+// empty file yields a nil slice.
+func (s *Session) readLines() ([]TranscriptLine, error) {
 	data, err := os.ReadFile(s.TranscriptPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -136,34 +178,17 @@ func (s *Session) Load() ([]llm.Message, error) {
 		return nil, fmt.Errorf("session: read transcript: %w", err)
 	}
 
-	var messages []llm.Message
+	var lines []TranscriptLine
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	for decoder.More() {
 		var line TranscriptLine
 		if err := decoder.Decode(&line); err != nil {
 			return nil, fmt.Errorf("session: decode transcript line: %w", err)
 		}
-		msg := llm.Message{
-			Role:    line.Role,
-			Content: line.Content,
-		}
-		if len(line.ToolCalls) > 0 {
-			msg.ToolCalls = make([]llm.ToolCall, len(line.ToolCalls))
-			for i, tc := range line.ToolCalls {
-				msg.ToolCalls[i] = llm.ToolCall{
-					ID:        tc.ID,
-					Name:      tc.Name,
-					Arguments: tc.Arguments,
-				}
-			}
-		}
-		if line.ToolCallID != "" {
-			msg.ToolCallID = line.ToolCallID
-		}
-		messages = append(messages, msg)
+		lines = append(lines, line)
 	}
 
-	return messages, nil
+	return lines, nil
 }
 
 // History returns the in-memory message mirror. This is the ordered list of
