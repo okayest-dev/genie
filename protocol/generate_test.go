@@ -39,7 +39,7 @@ func TestGenerateProducesValidGo(t *testing.T) {
 	}
 
 	// Must define protocol version
-	if !strings.Contains(src, "ProtocolVersion = 2") {
+	if !strings.Contains(src, "ProtocolVersion = 1") {
 		t.Error("missing ProtocolVersion constant")
 	}
 }
@@ -103,6 +103,10 @@ func TestGenerateTypes(t *testing.T) {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing type: %s", want)
 		}
+	}
+
+	if !strings.Contains(src, "ContextWindow int `json:\"context_window,omitempty\"`") {
+		t.Error("missing ModelDef.ContextWindow field")
 	}
 }
 

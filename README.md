@@ -155,6 +155,8 @@ If a model doesn't support tool calling, the harness retries without tools — l
 
 Genie supports plugins via NDJSON-RPC 2.0 over stdio. Drop an executable into `~/.config/genie/plugins/` and it's loaded automatically.
 
+Wire plugins speak the genie wire plugin protocol (version 1; the schema in `protocol/schema.yaml` is the single source of truth for the generated `wireplugin` package and the `plugins/shared` helpers). A wire plugin reports the models it exposes via `wire/list_models`; each `ModelDef` may carry an optional `context_window` (tokens) so the harness can budget the conversation without guessing.
+
 ### Plugin types
 
 - **Tool plugins** — add new tools to the harness

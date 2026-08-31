@@ -3,7 +3,7 @@
 # Each plugin vendors the generated output as internal/wireplugin/.
 
 protocol:
-  version: 2
+  version: 1
   package: wireplugin
   transport: stdio
   encoding: ndjson-rpc-2.0
@@ -130,6 +130,10 @@ types:
       - name: Name
         json: name
         type: string
+        omitempty: true
+      - name: ContextWindow
+        json: context_window
+        type: int
         omitempty: true
 
   - name: WireListModelsResult

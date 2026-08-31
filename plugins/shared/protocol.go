@@ -10,6 +10,8 @@ import (
 
 const (
 	MethodCapabilitiesList     = "capabilities/list"
+	MethodToolsList            = "tools/list"
+	MethodToolsCall            = "tools/call"
 	MethodWireInit             = "wire/init"
 	MethodWireStream           = "wire/stream"
 	MethodWireListModels       = "wire/list_models"
@@ -21,9 +23,17 @@ const (
 	MethodShutdown             = "shutdown"
 )
 
-// ProtocolVersion is the wire plugin protocol version (v2 adds granular
-// context-hook capabilities).
-const ProtocolVersion = 2
+// ProtocolVersion is the wire plugin protocol version.
+const ProtocolVersion = 1
+
+// Error codes.
+const (
+	ParseError     = -32700
+	InvalidRequest = -32600
+	MethodNotFound = -32601
+	InvalidParams  = -32602
+	InternalError  = -32603
+)
 
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -48,7 +58,6 @@ type Capabilities struct {
 	Tools     bool `json:"tools"`
 	Wires     bool `json:"wires"`
 	Providers bool `json:"providers"`
-	// Granular context-hook capabilities (protocol v2).
 	BeforeRequest bool `json:"context_before"`
 	AfterResponse bool `json:"context_after"`
 	CompactHook   bool `json:"context_compact"`
@@ -77,7 +86,7 @@ type WireListModelsResult struct {
 	Models []ModelDef `json:"models"`
 }
 
-// Context types for the context/* hook family (protocol v2).
+// Context types for the context/* hook family.
 type ContextMessage struct {
 	Role       string            `json:"role"`
 	Content    string            `json:"content"`
@@ -188,7 +197,7 @@ func (h *Handler) Run() error {
 
 		var req Request
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
-			h.writeError(req.ID, -32700, "parse error")
+			h.writeError(req.ID, ParseError, "parse error")
 			continue
 		}
 
@@ -204,7 +213,7 @@ func (h *Handler) handleRequest(req *Request) {
 	case MethodWireInit:
 		if h.onInit != nil {
 			if err := h.onInit(); err != nil {
-				h.writeError(req.ID, -32603, err.Error())
+				h.writeError(req.ID, InternalError, err.Error())
 				return
 			}
 		}
@@ -213,76 +222,76 @@ func (h *Handler) handleRequest(req *Request) {
 		h.writeResult(req.ID, WireListModelsResult{Models: h.models})
 	case MethodWireStream:
 		if h.onStream == nil {
-			h.writeError(req.ID, -32601, "wire/stream not implemented")
+			h.writeError(req.ID, MethodNotFound, "wire/stream not implemented")
 			return
 		}
 		result, err := h.onStream(req.Params)
 		if err != nil {
-			h.writeError(req.ID, -32603, err.Error())
+			h.writeError(req.ID, InternalError, err.Error())
 			return
 		}
 		h.writeRawResult(req.ID, result)
 	case MethodContextBeforeRequest:
 		if h.onBeforeRequest == nil {
-			h.writeError(req.ID, -32601, "context/before_request not implemented")
+			h.writeError(req.ID, MethodNotFound, "context/before_request not implemented")
 			return
 		}
 		params, err := ParseParams[ContextRequest](req.Params)
 		if err != nil {
-			h.writeError(req.ID, -32602, err.Error())
+			h.writeError(req.ID, InvalidParams, err.Error())
 			return
 		}
 		out, err := h.onBeforeRequest(params)
 		if err != nil {
-			h.writeError(req.ID, -32603, err.Error())
+			h.writeError(req.ID, InternalError, err.Error())
 			return
 		}
 		h.writeResult(req.ID, ContextBeforeRequestResult{Request: out})
 	case MethodContextAfterResponse:
 		if h.onAfterResponse == nil {
-			h.writeError(req.ID, -32601, "context/after_response not implemented")
+			h.writeError(req.ID, MethodNotFound, "context/after_response not implemented")
 			return
 		}
 		params, err := ParseParams[ContextAfterResponseParams](req.Params)
 		if err != nil {
-			h.writeError(req.ID, -32602, err.Error())
+			h.writeError(req.ID, InvalidParams, err.Error())
 			return
 		}
 		out, err := h.onAfterResponse(params.Request, params.Usage)
 		if err != nil {
-			h.writeError(req.ID, -32603, err.Error())
+			h.writeError(req.ID, InternalError, err.Error())
 			return
 		}
 		h.writeResult(req.ID, ContextAfterResponseResult{Usage: out})
 	case MethodContextCompact:
 		if h.onCompact == nil {
-			h.writeError(req.ID, -32601, "context/compact not implemented")
+			h.writeError(req.ID, MethodNotFound, "context/compact not implemented")
 			return
 		}
 		params, err := ParseParams[ContextRequest](req.Params)
 		if err != nil {
-			h.writeError(req.ID, -32602, err.Error())
+			h.writeError(req.ID, InvalidParams, err.Error())
 			return
 		}
 		out, err := h.onCompact(params)
 		if err != nil {
-			h.writeError(req.ID, -32603, err.Error())
+			h.writeError(req.ID, InternalError, err.Error())
 			return
 		}
 		h.writeResult(req.ID, ContextCompactResult{Request: out})
 	case MethodContextCondense:
 		if h.onCondense == nil {
-			h.writeError(req.ID, -32601, "context/condense not implemented")
+			h.writeError(req.ID, MethodNotFound, "context/condense not implemented")
 			return
 		}
 		params, err := ParseParams[ContextRequest](req.Params)
 		if err != nil {
-			h.writeError(req.ID, -32602, err.Error())
+			h.writeError(req.ID, InvalidParams, err.Error())
 			return
 		}
 		out, err := h.onCondense(params)
 		if err != nil {
-			h.writeError(req.ID, -32603, err.Error())
+			h.writeError(req.ID, InternalError, err.Error())
 			return
 		}
 		h.writeResult(req.ID, ContextCondenseResult{Request: out})
@@ -292,7 +301,7 @@ func (h *Handler) handleRequest(req *Request) {
 		h.writeResult(req.ID, map[string]bool{"ok": true})
 		os.Exit(0)
 	default:
-		h.writeError(req.ID, -32601, "method not found")
+		h.writeError(req.ID, MethodNotFound, "method not found")
 	}
 }
 
