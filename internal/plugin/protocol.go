@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	ProtocolVersion = 2
+	ProtocolVersion = 1
 
 	MethodCapabilitiesList     = "capabilities/list"
 	MethodToolsList            = "tools/list"

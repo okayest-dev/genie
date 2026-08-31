@@ -112,7 +112,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":true,"wires":false,"providers":false,"version":2},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"wires":false,"providers":false,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             echo '{"jsonrpc":"2.0","result":{"tools":[{"name":"test-tool","description":"A test tool","parameters":{"type":"object","properties":{}}}]},"id":'"$id"'}'
@@ -257,7 +257,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":true,"providers":false,"version":2},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":true,"providers":false,"version":1},"id":'"$id"'}'
             ;;
         "wire/init")
             echo '{"jsonrpc":"2.0","result":{"ok":true},"id":'"$id"'}'
@@ -331,7 +331,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":true,"wires":false,"providers":false,"version":2},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"wires":false,"providers":false,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             echo '{"jsonrpc":"2.0","result":{"tools":[{"name":"dir-tool","description":"A directory plugin tool","parameters":{"type":"object","properties":{}}}]},"id":'"$id"'}'

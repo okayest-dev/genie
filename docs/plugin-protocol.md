@@ -107,7 +107,7 @@ Standard JSON-RPC error codes:
 - `context_after` (boolean): Plugin declares a `context/after_response` hook
 - `context_compact` (boolean): Plugin declares a `context/compact` hook (single-active)
 - `context_condense` (boolean): Plugin declares a `context/condense` hook (single-active)
-- `version` (integer): Protocol version (must be 2)
+- `version` (integer): Protocol version (must be 1)
 
 ### tools/list
 
