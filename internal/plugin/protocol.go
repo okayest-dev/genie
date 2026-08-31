@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/okayest-dev/genie/internal/llm"
 )
@@ -264,7 +265,7 @@ func ValidateRequest(req *Request) error {
 
 func (c *Capabilities) Validate() error {
 	if c.Version != ProtocolVersion {
-		return ErrProtocolVersion
+		return fmt.Errorf("%w %d (genie supports protocol version %d; install a matching plugin release from the plugin repo's releases page)", ErrProtocolVersion, c.Version, ProtocolVersion)
 	}
 	if !c.HasAny() {
 		return ErrCapabilitiesMismatch

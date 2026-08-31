@@ -2,8 +2,11 @@ package plugin
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -220,8 +223,12 @@ func TestCapabilitiesValidation(t *testing.T) {
 	}
 
 	caps.Version = 999
-	if err := caps.Validate(); err != ErrProtocolVersion {
+	err := caps.Validate()
+	if !errors.Is(err, ErrProtocolVersion) {
 		t.Errorf("expected ErrProtocolVersion, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "999") || !strings.Contains(err.Error(), strconv.Itoa(ProtocolVersion)) {
+		t.Errorf("message should name the reported and supported versions, got %q", err)
 	}
 
 	caps.Version = ProtocolVersion
