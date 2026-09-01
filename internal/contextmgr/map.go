@@ -24,7 +24,7 @@ const (
 // markerRole is the reserved JSONL role marking a durable-intent compaction
 // marker line — a persisted summary, not a message and part of no layer. See
 // ADR-0001.
-const markerRole = "compaction"
+const markerRole = session.RoleCompaction
 
 // Entry is one message indexed in the map, carrying its stable line index and,
 // for tool-output entries, its tool-call id.
@@ -36,9 +36,21 @@ type Entry struct {
 
 // Compaction is a durable-intent compaction marker read from the transcript
 // during the index build: the persisted summary of the oldest evicted turns.
+// From/To bound the transcript lines the marker summarised (present when built
+// by the harness compactor); a marker line without a usable range stays inert
+// for request assembly.
 type Compaction struct {
 	Line    int
 	Summary string
+	From    int
+	To      int
+}
+
+// RangeValid reports whether the marker names a compacted line range the
+// assembler can substitute its summary for: the compactor always writes one,
+// and an older marker without it keeps its summary inert (never shipped).
+func (c Compaction) RangeValid() bool {
+	return c.To > 0 && c.To >= c.From
 }
 
 // ContextMap is a derived, layered index over a session's JSONL. It is keyed
@@ -100,7 +112,12 @@ func (m *ContextMap) rebuild(lines []session.TranscriptLine) {
 
 	for idx, ln := range lines {
 		if ln.Role == markerRole {
-			m.compactions = append(m.compactions, Compaction{Line: idx, Summary: ln.Content})
+			m.compactions = append(m.compactions, Compaction{
+				Line:    idx,
+				Summary: ln.Content,
+				From:    ln.CompactionFrom,
+				To:      ln.CompactionTo,
+			})
 			continue
 		}
 		layer := LayerOf(ln.Role)
