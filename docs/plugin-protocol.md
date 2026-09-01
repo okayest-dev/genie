@@ -578,6 +578,3 @@ if __name__ == "__main__":
     main()
 ```
 
-## Example Plugin (Go)
-
-See `prototype/ndjson-rpc/plugin/main.go` for a reference Go implementation.
