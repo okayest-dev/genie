@@ -262,6 +262,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		contextmgr.WithResolver(resolver),
 		contextmgr.WithHooks(ctxSeam),
 		contextmgr.WithOnDegrade(func(msg string) { fmt.Fprintf(stderr, "context degraded: %s\n", msg) }),
+		contextmgr.WithCondenseSize(cfg.Context.CondenseSize),
+		contextmgr.WithNetDrop(cfg.Context.NetDrop),
 	}
 
 	// No -p flag: start the interactive REPL.

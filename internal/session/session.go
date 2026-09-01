@@ -16,6 +16,11 @@ import (
 	"github.com/okayest-dev/genie/internal/llm"
 )
 
+// RoleCompaction marks a JSONL metadata line that records a durable-intent
+// compaction: the line is not a message (it belongs to no context layer) and
+// reconstructs the summary of the evicted turns on resume.
+const RoleCompaction = "compaction"
+
 // Session represents a persisted conversation session.
 type Session struct {
 	// ID is the unique session identifier.
@@ -38,6 +43,13 @@ type TranscriptLine struct {
 	ToolCalls []transcriptToolCall `json:"tool_calls,omitempty"`
 	// ToolCallID links a tool result message back to its call.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// CompactionFrom bounds the start (inclusive) of the transcript lines a
+	// compaction marker (RoleCompaction) summarised. Set on marker lines only;
+	// message lines leave it zero.
+	CompactionFrom int `json:"compacted_from,omitempty"`
+	// CompactionTo bounds the end (inclusive) of the compacted line range. A
+	// marker with To <= 0 carries no usable range and stays inert for assembly.
+	CompactionTo int `json:"compacted_to,omitempty"`
 	// Metadata carries optional key-value pairs (e.g. agent name on user turns).
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
@@ -142,6 +154,38 @@ func (s *Session) AppendWithMeta(msg llm.Message, meta map[string]string) error 
 	s.msgs = append(s.msgs, msg)
 
 	slog.Debug("message appended to transcript", "session", s.ID, "role", msg.Role)
+	return nil
+}
+
+// AppendCompaction persists a durable-intent compaction marker to the
+// transcript: a JSONL metadata line (not a message) recording that the
+// transcript lines [from, to] were compacted into the given summary. The
+// transcript stays append-only — the compacted lines themselves are never
+// rewritten — so a resumed session recognises an already-compacted intent
+// layer by reading this marker during the context-map build.
+func (s *Session) AppendCompaction(summary string, from, to int) error {
+	line := TranscriptLine{
+		Role:            RoleCompaction,
+		Content:         summary,
+		CompactionFrom:  from,
+		CompactionTo:    to,
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		return fmt.Errorf("session: marshal compaction marker: %w", err)
+	}
+	data = append(data, '\n')
+
+	f, err := os.OpenFile(s.TranscriptPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("session: open transcript: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("session: write compaction marker: %w", err)
+	}
+
+	slog.Debug("compaction marker appended to transcript", "session", s.ID, "from", from, "to", to)
 	return nil
 }
 

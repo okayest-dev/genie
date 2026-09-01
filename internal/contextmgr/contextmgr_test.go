@@ -3,12 +3,14 @@ package contextmgr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/modelinfo"
 	"github.com/okayest-dev/genie/internal/session"
 )
 
@@ -627,5 +629,373 @@ func TestCompactAndCondenseInvoked(t *testing.T) {
 	want := []string{"compact", "condense"}
 	if !reflect.DeepEqual(order, want) {
 		t.Errorf("hook order %v, want %v", order, want)
+	}
+}
+
+// TestBuiltinCompactActiveByDefault verifies that with no Hooks attached, the
+// built-in compactor/condenser are the active registrants: the built-in runs
+// when budget is exceeded.
+func TestBuiltinCompactActiveByDefault(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// Small budget to force compaction
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 30})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Build prior turns that exceed budget (each turn ~ sys+q+a = ~7 tokens)
+	for i := 1; i <= 6; i++ {
+		simulateTurn(t, s, "sys", fmt.Sprintf("question %d", i))
+		if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("answer %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := simulateTurn(t, s, "sys", "current question")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// A compaction marker should be written
+	lines, err := s.Lines()
+	if err != nil {
+		t.Fatalf("Lines: %v", err)
+	}
+	hasMarker := false
+	for _, ln := range lines {
+		if ln.Role == session.RoleCompaction {
+			hasMarker = true
+			break
+		}
+	}
+	if !hasMarker {
+		t.Errorf("built-in compactor did not run (no marker)")
+	}
+}
+
+// TestTokenCacheReusedAcrossRequests verifies per-message token counts are
+// cached by line index and reused on subsequent streams when the message
+// hasn't changed (same fingerprint).
+func TestTokenCacheReusedAcrossRequests(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	m := New(inner, s, WithCounter(c))
+
+	// Set up a session with some prior history.
+	// Turn 1: instruction + user
+	simulateTurn(t, s, "sys", "hello")
+	// Turn 2: instruction + user (assistant reply would be added by agent loop)
+	simulateTurn(t, s, "sys", "hello again")
+	// Manually add assistant reply to complete turn 2
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "reply"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now Stream 1: current turn with new prompt
+	// This simulates the agent loop calling RunTurn which adds instruction + prompt
+	req1 := simulateTurn(t, s, "sys", "current question")
+	if _, err := m.Stream(context.Background(), req1); err != nil {
+		t.Fatalf("Stream 1: %v", err)
+	}
+	models1 := len(c.models)
+	firstTokens := m.Tokens()
+
+	// Stream 2: another turn with SAME prompt, no new history added
+	// (simulating a retry or follow-up without new user input)
+	// The session transcript is unchanged, so line indices are the same
+	req2 := llm.Request{Model: "m", Messages: []llm.Message{
+		{Role: llm.RoleSystem, Content: "sys"},
+		{Role: llm.RoleUser, Content: "current question"},
+	}}
+	if _, err := m.Stream(context.Background(), req2); err != nil {
+		t.Fatalf("Stream 2: %v", err)
+	}
+	models2 := len(c.models)
+	secondTokens := m.Tokens()
+
+	// Second stream should not re-count any history because:
+	// - The session transcript is unchanged (same line indices, same fingerprints)
+	// - The request messages are the same content at the same line indices
+	// Each message counted = one append to models slice in fakeCounter.
+	// First stream counts all messages in the assembled request.
+	// Second stream should reuse ALL cached counts (0 new counts).
+	if models2 != models1 {
+		t.Errorf("counter called %d times on second stream (expected %d with full cache reuse)", models2, models1)
+	}
+	// Token count should be identical
+	if secondTokens != firstTokens {
+		t.Errorf("Tokens = %d, want %d (same as first stream)", secondTokens, firstTokens)
+	}
+}
+
+// TestBuiltinCondenseNarrowsPriorTurnToolResult verifies the built-in condenser
+// narrows a prior-turn tool result exceeding the threshold, while the current
+// turn's tool result stays verbatim.
+func TestBuiltinCondenseNarrowsPriorTurnToolResult(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// threshold: 20 tokens (len of "big tool result" = 15, make it larger)
+	m := New(inner, s, WithCounter(c), WithCondenseSize(10))
+
+	// Turn 1: user asks, assistant calls tool, tool returns large result
+	simulateTurn(t, s, "sys", "run tool")
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read", Arguments: `{}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bigResult := "this is a very large tool result"
+	if err := s.Append(llm.Message{Role: llm.RoleTool, Content: bigResult, ToolCallID: "call_1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 2: current turn - should NOT be condensed
+	req := simulateTurn(t, s, "sys", "next question")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// The prior turn's tool result (line 3) should be condensed in the request
+	// Find the tool result in the forwarded request
+	var priorToolResult string
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "call_1" {
+			priorToolResult = msg.Content
+			break
+		}
+	}
+	if priorToolResult == "" {
+		t.Fatal("prior tool result not found in forwarded request")
+	}
+	// Should be condensed (contains the condensation suffix)
+	if !strings.Contains(priorToolResult, "[result condensed:") {
+		t.Errorf("prior tool result not condensed: %q", priorToolResult)
+	}
+	// Current turn has no tool result yet (just user prompt), so nothing to check
+}
+
+// TestBuiltinNetDropDropsPriorTurnToolResult verifies netDrop drops the prior
+// turn's tool result entirely while keeping the assistant tool-call message.
+func TestBuiltinNetDropDropsPriorTurnToolResult(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// Threshold 5: "big result" (10) exceeds it
+	m := New(inner, s, WithCounter(c), WithCondenseSize(5), WithNetDrop(true))
+
+	// Turn 1
+	simulateTurn(t, s, "sys", "run tool")
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read", Arguments: `{}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleTool, Content: "big result", ToolCallID: "call_1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Turn 2
+	req := simulateTurn(t, s, "sys", "next")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// The prior tool result should be dropped entirely (no RoleTool message with call_1)
+	foundTool := false
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "call_1" {
+			foundTool = true
+			break
+		}
+	}
+	if foundTool {
+		t.Errorf("prior tool result should be dropped with netDrop, but was present")
+	}
+	// But the assistant tool-call should remain
+	foundCall := false
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleAssistant && len(msg.ToolCalls) > 0 && msg.ToolCalls[0].ID == "call_1" {
+			foundCall = true
+			break
+		}
+	}
+	if !foundCall {
+		t.Errorf("assistant tool-call should remain with netDrop")
+	}
+}
+
+// TestCurrentTurnToolResultNotCondensed verifies the in-flight current turn's
+// tool result is never condensed (the tool loop must observe its fresh result).
+func TestCurrentTurnToolResultNotCondensed(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	m := New(inner, s, WithCounter(c), WithCondenseSize(10))
+
+	// Start turn 1
+	simulateTurn(t, s, "sys", "run tool")
+	// Assistant calls tool
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "read", Arguments: `{}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Tool runs, result appended - this is the CURRENT turn's tool loop result
+	currentResult := "fresh tool output"
+	if err := s.Append(llm.Message{Role: llm.RoleTool, Content: currentResult, ToolCallID: "call_1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Agent streams again with the current result (simulating tool loop iteration)
+	req := llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: "sys"},
+			{Role: llm.RoleUser, Content: "run tool"},
+			{Role: llm.RoleTool, Content: currentResult, ToolCallID: "call_1"},
+		},
+	}
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// The tool result in the forwarded request should be verbatim (not condensed)
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "call_1" {
+			if msg.Content != currentResult {
+				t.Errorf("current turn tool result was condensed: got %q, want %q", msg.Content, currentResult)
+			}
+			return
+		}
+	}
+	t.Fatal("current turn tool result not found in forwarded request")
+}
+
+// TestBuiltinCompactEvictsOldestDurableIntent verifies the built-in compactor
+// evicts the oldest prior durable-intent turns into a summary when budget is
+// exceeded, and persists the marker.
+func TestBuiltinCompactEvictsOldestDurableIntent(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// Resolver with small budget override
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 50})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Build several prior turns (each turn adds ~10-15 tokens)
+	for i := 1; i <= 4; i++ {
+		simulateTurn(t, s, "sys", fmt.Sprintf("question %d", i))
+		if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("answer %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Current turn
+	req := simulateTurn(t, s, "sys", "current question")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Verify a compaction marker was written (the session transcript has it)
+	lines, err := s.Lines()
+	if err != nil {
+		t.Fatalf("Lines: %v", err)
+	}
+	hasMarker := false
+	for _, ln := range lines {
+		if ln.Role == session.RoleCompaction {
+			hasMarker = true
+			if ln.CompactionFrom < 0 || ln.CompactionTo <= ln.CompactionFrom {
+				t.Errorf("marker range invalid: From=%d To=%d", ln.CompactionFrom, ln.CompactionTo)
+			}
+			if !strings.Contains(ln.Content, "[compacted earlier turns]") {
+				t.Errorf("marker summary unexpected: %q", ln.Content)
+			}
+			break
+		}
+	}
+	if !hasMarker {
+		t.Errorf("no compaction marker written to transcript")
+	}
+}
+
+// TestCompactionSummarySurvivesNextRequest verifies a persisted compaction
+// marker's summary is shipped in subsequent requests (the evicted lines are
+// replaced by the summary).
+func TestCompactionSummarySurvivesNextRequest(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// Small budget to force compaction
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 30})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Build several prior turns
+	for i := 1; i <= 5; i++ {
+		simulateTurn(t, s, "sys", fmt.Sprintf("q %d", i))
+		if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("a %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// First request triggers compaction
+	req := simulateTurn(t, s, "sys", "current 1")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream 1: %v", err)
+	}
+
+	// Second request - the summary should appear in the injected history
+	req = simulateTurn(t, s, "sys", "current 2")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream 2: %v", err)
+	}
+
+	// Check the forwarded request contains the compaction summary
+	foundSummary := false
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "[compacted earlier turns]") {
+			foundSummary = true
+			break
+		}
+	}
+	if !foundSummary {
+		t.Errorf("compaction summary not found in second request's history")
+	}
+}
+
+// TestHooksWithoutSeamMarkerAreExternal verifies a Hooks implementation that
+// does not implement the singleActiveSeam marker interface is treated as
+// supplying its own compact/condense implementations (the built-in does not
+// run). This preserves backward compatibility with fakeHooks in existing tests.
+func TestHooksWithoutSeamMarkerAreExternal(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	var compactCalled, condenseCalled bool
+	hooks := &fakeHooks{
+		compact: func(req llm.Request) (llm.Request, error) {
+			compactCalled = true
+			return req, nil
+		},
+		condense: func(req llm.Request) (llm.Request, error) {
+			condenseCalled = true
+			return req, nil
+		},
+	}
+	m := New(inner, s, WithHooks(hooks))
+
+	req := simulateTurn(t, s, "sys", "hi")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if !compactCalled {
+		t.Errorf("external hook's Compact should be called")
+	}
+	if !condenseCalled {
+		t.Errorf("external hook's Condense should be called")
 	}
 }

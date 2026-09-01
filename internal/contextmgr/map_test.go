@@ -329,3 +329,60 @@ func TestRebuildFromSessionNilForMissingFile(t *testing.T) {
 		t.Errorf("Len = %d, want 0", m.Len())
 	}
 }
+
+// TestCompactionMarkerRangeValid verifies compaction markers carry the line
+// range they summarised and RangeValid reports it correctly.
+func TestCompactionMarkerRangeValid(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleSystem, Content: "instr"},
+		{Role: llm.RoleUser, Content: "q1"},
+		{Role: llm.RoleAssistant, Content: "a1"},
+	}
+	// Marker with range [1, 2] (the prior user+assistant lines)
+	marker := `{"role":"` + markerRole + `","content":"[summary]","compacted_from":1,"compacted_to":2}`
+	s := buildSession(t, messages, marker)
+	m := NewMap()
+	if err := m.RebuildFromSession(s); err != nil {
+		t.Fatalf("RebuildFromSession: %v", err)
+	}
+
+	compactions := m.Compactions()
+	if len(compactions) != 1 {
+		t.Fatalf("Compactions = %d, want 1", len(compactions))
+	}
+	c := compactions[0]
+	if c.From != 1 || c.To != 2 {
+		t.Errorf("marker range From=%d To=%d, want 1, 2", c.From, c.To)
+	}
+	if !c.RangeValid() {
+		t.Errorf("RangeValid = false, want true for valid range")
+	}
+}
+
+// TestCompactionMarkerWithoutRangeIsInert verifies a marker without a usable
+// range (To <= 0) reports RangeValid false.
+func TestCompactionMarkerWithoutRangeIsInert(t *testing.T) {
+	messages := []llm.Message{
+		{Role: llm.RoleSystem, Content: "instr"},
+		{Role: llm.RoleUser, Content: "q1"},
+	}
+	// Marker with no range
+	marker := `{"role":"` + markerRole + `","content":"[old summary]"}`
+	s := buildSession(t, messages, marker)
+	m := NewMap()
+	if err := m.RebuildFromSession(s); err != nil {
+		t.Fatalf("RebuildFromSession: %v", err)
+	}
+
+	compactions := m.Compactions()
+	if len(compactions) != 1 {
+		t.Fatalf("Compactions = %d, want 1", len(compactions))
+	}
+	c := compactions[0]
+	if c.From != 0 || c.To != 0 {
+		t.Errorf("marker range From=%d To=%d, want 0, 0 for absent", c.From, c.To)
+	}
+	if c.RangeValid() {
+		t.Errorf("RangeValid = true, want false for marker without range")
+	}
+}

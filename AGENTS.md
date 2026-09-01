@@ -19,4 +19,20 @@ ready-for-agent / ready-for-human / wontfix. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the root plus `docs/adr/`. See `docs/agents/domain.md`.
+Single-context: `CONTEXT.md` at the root plus `docs/adr/`. See `docs/agents/domain.
+
+### Build and Test
+
+Build and test commands should be handled by the Makefile. Repeatable build actions should be added to the makefile and used.
+
+```
+```
+```
+```
+### Completion Criteria
+
+**MUST DO**: These things must be true before a coding task can be declared Completion
+- Code coverage of new code **MUST** be above 80%.
+- API changes **MUST** be documented in README.md.
+- All temp docs **MUST** be cleaned up.
+

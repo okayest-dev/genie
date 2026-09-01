@@ -69,11 +69,19 @@ type Context struct {
 	// (before_request/after_response). A plugin not listed is appended in
 	// registration order. Empty means registration order for all.
 	PluginsOrder []string
-	// ActiveCompact and ActiveCondense name the single-active compact/condense
-	// implementation. "builtin" selects the harness's own (the default); empty
-	// auto-resolves and errors when ambiguous.
+// ActiveCompact and ActiveCondense name the single-active compact/condense
+// implementation. "builtin" selects the harness's own (the default); empty
+// auto-resolves and errors when ambiguous.
 	ActiveCompact  string
 	ActiveCondense string
+	// CondenseSize is the per-call token threshold above which a prior-turn
+	// tool result is condensed (or, with net-drop, dropped) before a request is
+	// forwarded. Zero disables condensation.
+	CondenseSize int
+	// NetDrop drops oversized prior-turn tool results from requests entirely
+	// (their assistant tool-call stays), so the model sees the call was
+	// invoked. Off by default.
+	NetDrop bool
 }
 
 // Config is the resolved harness configuration.
@@ -157,6 +165,8 @@ type contextFile struct {
 	BudgetPercent *float64           `toml:"budget_percent"`
 	Windows       map[string]int     `toml:"windows"`
 	Plugins       contextPluginsFile `toml:"plugins"`
+	CondenseSize  *int               `toml:"condense_size"`
+	NetDrop       *bool              `toml:"net_drop"`
 }
 
 type contextPluginsFile struct {
@@ -249,6 +259,15 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		}
 		if fc.Context.Plugins.ActiveCondense != "" {
 			cfg.Context.ActiveCondense = fc.Context.Plugins.ActiveCondense
+		}
+		if fc.Context.CondenseSize != nil {
+			if *fc.Context.CondenseSize < 0 {
+				return nil, fmt.Errorf("config: context.condense_size must be non-negative, got %d", *fc.Context.CondenseSize)
+			}
+			cfg.Context.CondenseSize = *fc.Context.CondenseSize
+		}
+		if fc.Context.NetDrop != nil {
+			cfg.Context.NetDrop = *fc.Context.NetDrop
 		}
 		if fc.DefaultAgent != "" {
 			cfg.DefaultAgent = fc.DefaultAgent
@@ -436,6 +455,25 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 		}
 		cfg.Context.BudgetPercent = p
 		applied = append(applied, "GENIE_CONTEXT_BUDGET_PERCENT")
+	}
+	if v := env["GENIE_CONTEXT_CONDENSE_SIZE"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_CONDENSE_SIZE: %q is not a number", v)
+		}
+		if n < 0 {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_CONDENSE_SIZE must be non-negative, got %d", n)
+		}
+		cfg.Context.CondenseSize = n
+		applied = append(applied, "GENIE_CONTEXT_CONDENSE_SIZE")
+	}
+	if v := env["GENIE_CONTEXT_NET_DROP"]; v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_NET_DROP: %q is not a boolean", v)
+		}
+		cfg.Context.NetDrop = b
+		applied = append(applied, "GENIE_CONTEXT_NET_DROP")
 	}
 	return applied, nil
 }

@@ -19,7 +19,7 @@ import (
 
 // BuiltinName is the name of the built-in compactor/condenser registrant.
 // Selecting it as active_compact/active_condense explicitly chooses the
-// harness's own implementation; a later ticket (genie-8qu.7) supplies its body.
+// harness's own implementation.
 const BuiltinName = "builtin"
 
 // ContextConfig is the resolved [context.plugins] selection passed to the seam
@@ -103,7 +103,7 @@ func orderedPlugins(byName map[string]*Plugin, plugins []*Plugin, order []string
 //
 //   - explicit choice wins (errors if the named plugin is absent / lacks the seam,
 //     or the choice is the built-in);
-//   - zero declarants defaults to the built-in (inert until genie-8qu.7);
+//   - zero declarants defaults to the built-in;
 //   - one declarant defaults to it;
 //   - several declarants without an explicit choice is a hard startup error.
 func resolveSingleActive(byName map[string]*Plugin, plugins []*Plugin, active, seam string, pred func(*Plugin) bool) (*Plugin, error) {
@@ -133,7 +133,7 @@ func resolveSingleActive(byName map[string]*Plugin, plugins []*Plugin, active, s
 
 	switch len(declarants) {
 	case 0:
-		// Built-in default; inert until the compactor/condenser lands.
+		// Built-in default.
 		return nil, nil
 	case 1:
 		return declarants[0], nil
@@ -178,8 +178,18 @@ func (s *ContextSeam) AfterResponse(ctx context.Context, req llm.Request, usage 
 	return nil
 }
 
+// CompactBuiltin reports whether the harness's built-in compactor is the
+// active single-active implementation (no plugin selected): the ContextManager
+// then runs its own compactor instead of calling this seam. An external Hooks
+// implementation without this marker is treated as supplying its own.
+func (s *ContextSeam) CompactBuiltin() bool { return s.compact == nil }
+
+// CondenseBuiltin mirrors CompactBuiltin for the condense seam.
+func (s *ContextSeam) CondenseBuiltin() bool { return s.condense == nil }
+
 // Compact invokes the single-active compact implementation, or returns the
-// request unchanged when the built-in (inert) default is active.
+// request unchanged when the built-in default is active (the ContextManager
+// then runs the built-in).
 func (s *ContextSeam) Compact(ctx context.Context, req llm.Request) (llm.Request, error) {
 	if s.compact == nil {
 		return req, nil
@@ -188,7 +198,7 @@ func (s *ContextSeam) Compact(ctx context.Context, req llm.Request) (llm.Request
 }
 
 // Condense invokes the single-active condense implementation, or returns the
-// request unchanged when the built-in (inert) default is active.
+// request unchanged when the built-in default is active.
 func (s *ContextSeam) Condense(ctx context.Context, req llm.Request) (llm.Request, error) {
 	if s.condense == nil {
 		return req, nil

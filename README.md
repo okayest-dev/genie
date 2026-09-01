@@ -192,20 +192,18 @@ version = "1.0.0"
 capabilities = ["tools", "wires"]
 ```
 
-### Included plugins
+### External provider plugins
 
-- **bedrock** — AWS Bedrock wire (SigV4 signing, ConverseStream API)
-- **copilot** — GitHub Copilot wire (OAuth token exchange, OpenAI-compatible API)
+Genie's built-in providers cover OpenAI, Anthropic, and Google. For other providers, use external wire plugins:
 
-### Copilot config (GHE support)
+| Plugin | Provider | Install |
+|--------|----------|---------|
+| **bedrock** | AWS Bedrock (SigV4, ConverseStream) | `curl -fsSL https://github.com/okayest-dev/genie-bedrock/releases/latest/download/bedrock-linux-amd64 -o ~/.config/genie/plugins/bedrock/bedrock && chmod +x ~/.config/genie/plugins/bedrock/bedrock` |
+| **copilot** | GitHub Copilot (OAuth, OpenAI-compatible) | `curl -fsSL https://github.com/okayest-dev/genie-copilot/releases/latest/download/copilot-linux-amd64 -o ~/.config/genie/plugins/copilot/copilot && chmod +x ~/.config/genie/plugins/copilot/copilot` |
 
-For GitHub Enterprise, create `~/.config/genie/plugins/copilot/config.toml`:
-
-```toml
-domain = "github.example.com"
-```
-
-The plugin will use `https://api.github.example.com/copilot_internal/v2/token` for token exchange and read the matching host key from `~/.config/github-copilot/hosts.json`. Without this file, the plugin defaults to `github.com`.
+Each plugin repo contains full setup, config, and usage docs:
+- Bedrock: <https://github.com/okayest-dev/genie-bedrock>
+- Copilot: <https://github.com/okayest-dev/genie-copilot>
 
 ### Plugin enable/disable
 
