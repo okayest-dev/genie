@@ -287,3 +287,153 @@ func TestDoRequestOmitsAPIKeyWhenEmpty(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+func TestStreamTextResponse(t *testing.T) {
+	sseBody := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\" world\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":10}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "")
+	iter, err := c.Stream(context.Background(), llm.Request{
+		Model:    "claude-sonnet-4",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var texts []string
+	var gotFinish bool
+	var gotUsage bool
+	for ev := range iter {
+		switch ev.Kind {
+		case llm.EventText:
+			texts = append(texts, ev.Text)
+		case llm.EventFinish:
+			gotFinish = true
+			if ev.End != llm.FinishStop {
+				t.Errorf("finish = %s, want %s", ev.End, llm.FinishStop)
+			}
+		case llm.EventUsage:
+			gotUsage = true
+			if ev.Usage.PromptTokens != 5 || ev.Usage.CompletionTokens != 10 {
+				t.Errorf("usage = %+v, want prompt=5 completion=10", ev.Usage)
+			}
+		}
+	}
+	if len(texts) != 2 || texts[0] != "Hello" || texts[1] != " world" {
+		t.Errorf("texts = %+v, want [Hello, world]", texts)
+	}
+	if !gotFinish {
+		t.Error("no finish event")
+	}
+	if !gotUsage {
+		t.Error("no usage event")
+	}
+}
+
+func TestStreamToolCallResponse(t *testing.T) {
+	sseBody := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_abc\",\"name\":\"get_weather\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"location\\\":\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Paris\\\"}\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "")
+	iter, err := c.Stream(context.Background(), llm.Request{
+		Model:    "claude-sonnet-4",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "What is the weather?"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var gotToolCall bool
+	var gotFinish bool
+	for ev := range iter {
+		switch ev.Kind {
+		case llm.EventToolCall:
+			gotToolCall = true
+			if len(ev.ToolCalls) != 1 {
+				t.Fatalf("tool calls = %d, want 1", len(ev.ToolCalls))
+			}
+			tc := ev.ToolCalls[0]
+			if tc.Name != "get_weather" {
+				t.Errorf("name = %q, want get_weather", tc.Name)
+			}
+			if tc.ID != "toolu_abc" {
+				t.Errorf("id = %q, want toolu_abc", tc.ID)
+			}
+			if tc.Arguments != `{"location":"Paris"}` {
+				t.Errorf("arguments = %q, want %q", tc.Arguments, `{"location":"Paris"}`)
+			}
+		case llm.EventFinish:
+			gotFinish = true
+			if ev.End != llm.FinishToolCalls {
+				t.Errorf("finish = %s, want %s", ev.End, llm.FinishToolCalls)
+			}
+		}
+	}
+	if !gotToolCall {
+		t.Error("no tool call event")
+	}
+	if !gotFinish {
+		t.Error("no finish event")
+	}
+}
+
+func TestStreamErrorResponse(t *testing.T) {
+	sseBody := "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid key\"}}\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(sseBody))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "")
+	iter, err := c.Stream(context.Background(), llm.Request{
+		Model:    "claude-sonnet-4",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "Hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var gotError bool
+	for ev := range iter {
+		if ev.Kind == llm.EventError {
+			gotError = true
+			pe, ok := ev.Err.(*llm.ProviderError)
+			if !ok {
+				t.Errorf("error type = %T, want *ProviderError", ev.Err)
+			} else if pe.Kind != llm.KindAuth || pe.Message != "invalid key" {
+				t.Errorf("error = %+v, want kind=auth message='invalid key'", pe)
+			}
+		}
+	}
+	if !gotError {
+		t.Error("no error event")
+	}
+}
