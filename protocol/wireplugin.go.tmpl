@@ -67,6 +67,16 @@ func (h *Handler) {{ .Name }}({{ range $i, $p := .Params }}{{ if $i }}, {{ end }
 	h.onCompact = fn
 {{- else if eq .Name "OnCondense" }}
 	h.onCondense = fn
+{{- else if eq .Name "OnLifecycleRequestBuilt" }}
+	h.onLifecycleRequestBuilt = fn
+{{- else if eq .Name "OnLifecycleToolBefore" }}
+	h.onLifecycleToolBefore = fn
+{{- else if eq .Name "OnLifecycleToolAfter" }}
+	h.onLifecycleToolAfter = fn
+{{- else if eq .Name "OnLifecycleResponseReady" }}
+	h.onLifecycleResponseReady = fn
+{{- else if eq .Name "OnLifecycleTurnError" }}
+	h.onLifecycleTurnError = fn
 {{- end }}
 }
 {{ end }}
@@ -182,6 +192,86 @@ func (h *Handler) handleRequest(req *Request) {
 			return
 		}
 		h.writeResult(req.ID, ContextCondenseResult{Request: out})
+		{{- else if contains .Action "onLifecycleRequestBuilt" }}
+		if h.onLifecycleRequestBuilt == nil {
+			h.writeError(req.ID, MethodNotFound, "lifecycle/request_built not implemented")
+			return
+		}
+		params, perr := ParseParams[ContextRequest](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onLifecycleRequestBuilt(params)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, out)
+		{{- else if contains .Action "onLifecycleToolBefore" }}
+		if h.onLifecycleToolBefore == nil {
+			h.writeError(req.ID, MethodNotFound, "lifecycle/tool_before not implemented")
+			return
+		}
+		params, perr := ParseParams[LifecycleToolBeforeParams](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onLifecycleToolBefore(params.Name, params.ID, params.Arguments)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, out)
+		{{- else if contains .Action "onLifecycleToolAfter" }}
+		if h.onLifecycleToolAfter == nil {
+			h.writeError(req.ID, MethodNotFound, "lifecycle/tool_after not implemented")
+			return
+		}
+		params, perr := ParseParams[LifecycleToolAfterParams](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onLifecycleToolAfter(params.Name, params.ID, params.Arguments, params.Result, params.Error)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, out)
+		{{- else if contains .Action "onLifecycleResponseReady" }}
+		if h.onLifecycleResponseReady == nil {
+			h.writeError(req.ID, MethodNotFound, "lifecycle/response_ready not implemented")
+			return
+		}
+		params, perr := ParseParams[LifecycleResponseReadyParams](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onLifecycleResponseReady(params.Chunk, params.Final, params.FinishReason, params.Usage)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, out)
+		{{- else if contains .Action "onLifecycleTurnError" }}
+		if h.onLifecycleTurnError == nil {
+			h.writeError(req.ID, MethodNotFound, "lifecycle/turn_error not implemented")
+			return
+		}
+		params, perr := ParseParams[LifecycleTurnErrorParams](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onLifecycleTurnError(params.Error, params.Phase, params.Partial)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, out)
 		{{- else if contains .Action "caps" }}
 		h.writeResult(req.ID, h.caps)
 		{{- else if contains .Action "pong" }}

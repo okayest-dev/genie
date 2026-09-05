@@ -69,9 +69,9 @@ type Context struct {
 	// (before_request/after_response). A plugin not listed is appended in
 	// registration order. Empty means registration order for all.
 	PluginsOrder []string
-// ActiveCompact and ActiveCondense name the single-active compact/condense
-// implementation. "builtin" selects the harness's own (the default); empty
-// auto-resolves and errors when ambiguous.
+	// ActiveCompact and ActiveCondense name the single-active compact/condense
+	// implementation. "builtin" selects the harness's own (the default); empty
+	// auto-resolves and errors when ambiguous.
 	ActiveCompact  string
 	ActiveCondense string
 	// CondenseSize is the per-call token threshold above which a prior-turn
@@ -82,6 +82,14 @@ type Context struct {
 	// (their assistant tool-call stays), so the model sees the call was
 	// invoked. Off by default.
 	NetDrop bool
+}
+
+// Lifecycle holds the lifecycle-hooks plugin seam knobs (og-cbu.3/og-cbu.4).
+type Lifecycle struct {
+	// PluginsOrder is the shared chain order for lifecycle events (default:
+	// registration order). Request-side events fire in this order, response-side
+	// events reversed (onion).
+	PluginsOrder []string
 }
 
 // Config is the resolved harness configuration.
@@ -124,26 +132,29 @@ type Config struct {
 	// Empty means no default agent (current behaviour).
 	DefaultAgent string
 	// Context configures harness-level context management (history window).
-	Context Context
+	Context   Context
+	Lifecycle Lifecycle
+	AgentReg  *AgentReg
 }
 
 // fileConfig is the TOML schema. Tool booleans and bash_timeout are pointers
 // so an omitted key leaves the default; scalars fall back to defaults when
 // empty.
 type fileConfig struct {
-	Model           string      `toml:"model"`
-	BaseURL         string      `toml:"base_url"`
-	APIKeyEnv       string      `toml:"api_key_env"`
-	Wire            string      `toml:"wire"`
-	Provider        string      `toml:"provider"`
-	Gateway         string      `toml:"gateway"`
-	InstructionFile string      `toml:"instruction_file"`
-	SessionDir      string      `toml:"session_dir"`
-	BashTimeout     *int        `toml:"bash_timeout"` // seconds
-	Tools           toolsFile   `toml:"tools"`
-	Plugins         pluginsFile `toml:"plugins"`
-	Context         contextFile `toml:"context"`
-	DefaultAgent    string      `toml:"default_agent"`
+	Model           string        `toml:"model"`
+	BaseURL         string        `toml:"base_url"`
+	APIKeyEnv       string        `toml:"api_key_env"`
+	Wire            string        `toml:"wire"`
+	Provider        string        `toml:"provider"`
+	Gateway         string        `toml:"gateway"`
+	InstructionFile string        `toml:"instruction_file"`
+	SessionDir      string        `toml:"session_dir"`
+	BashTimeout     *int          `toml:"bash_timeout"` // seconds
+	Tools           toolsFile     `toml:"tools"`
+	Plugins         pluginsFile   `toml:"plugins"`
+	Context         contextFile   `toml:"context"`
+	Lifecycle       lifecycleFile `toml:"lifecycle"`
+	DefaultAgent    string        `toml:"default_agent"`
 }
 
 type toolsFile struct {
@@ -173,6 +184,17 @@ type contextPluginsFile struct {
 	Order          []string `toml:"order"`
 	ActiveCompact  string   `toml:"active_compact"`
 	ActiveCondense string   `toml:"active_condense"`
+}
+
+type lifecycleFile struct {
+	Plugins lifecyclePluginsFile `toml:"plugins"`
+}
+
+type lifecyclePluginsFile struct {
+	// Order is the shared chain order for all lifecycle events (default:
+	// registration order). Request-side events fire in this order, response-side
+	// events reversed (onion).
+	Order []string `toml:"order"`
 }
 
 // Parse resolves the full configuration from raw config-file content and an
@@ -268,6 +290,9 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		}
 		if fc.Context.NetDrop != nil {
 			cfg.Context.NetDrop = *fc.Context.NetDrop
+		}
+		if len(fc.Lifecycle.Plugins.Order) > 0 {
+			cfg.Lifecycle.PluginsOrder = fc.Lifecycle.Plugins.Order
 		}
 		if fc.DefaultAgent != "" {
 			cfg.DefaultAgent = fc.DefaultAgent

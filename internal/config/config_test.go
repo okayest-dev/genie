@@ -675,3 +675,18 @@ func TestConfigDirEnvOverride(t *testing.T) {
 		t.Errorf("SessionDir = %q, want %q", cfg.SessionDir, wantSessions)
 	}
 }
+
+func TestLifecyclePluginsOrderParses(t *testing.T) {
+	// [lifecycle.plugins] is the parallel registration block for the
+	// lifecycle-hooks seam.
+	file := `[lifecycle.plugins]
+order = ["b-plugin", "a-plugin"]
+`
+	cfg, err := Parse([]byte(file), "/tmp", map[string]string{})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Lifecycle.PluginsOrder) != 2 || cfg.Lifecycle.PluginsOrder[0] != "b-plugin" || cfg.Lifecycle.PluginsOrder[1] != "a-plugin" {
+		t.Errorf("PluginsOrder = %v", cfg.Lifecycle.PluginsOrder)
+	}
+}
