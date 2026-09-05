@@ -11,18 +11,23 @@ import (
 const (
 	ProtocolVersion = 1
 
-	MethodCapabilitiesList     = "capabilities/list"
-	MethodToolsList            = "tools/list"
-	MethodToolsCall            = "tools/call"
-	MethodWireInit             = "wire/init"
-	MethodWireStream           = "wire/stream"
-	MethodWireListModels       = "wire/list_models"
-	MethodContextBeforeRequest = "context/before_request"
-	MethodContextAfterResponse = "context/after_response"
-	MethodContextCompact       = "context/compact"
-	MethodContextCondense      = "context/condense"
-	MethodPing                 = "ping"
-	MethodShutdown             = "shutdown"
+	MethodCapabilitiesList       = "capabilities/list"
+	MethodToolsList              = "tools/list"
+	MethodToolsCall              = "tools/call"
+	MethodWireInit               = "wire/init"
+	MethodWireStream             = "wire/stream"
+	MethodWireListModels         = "wire/list_models"
+	MethodContextBeforeRequest   = "context/before_request"
+	MethodContextAfterResponse   = "context/after_response"
+	MethodContextCompact         = "context/compact"
+	MethodContextCondense        = "context/condense"
+	MethodLifecycleRequestBuilt  = "lifecycle/request_built"
+	MethodLifecycleToolBefore    = "lifecycle/tool_before"
+	MethodLifecycleToolAfter     = "lifecycle/tool_after"
+	MethodLifecycleResponseReady = "lifecycle/response_ready"
+	MethodLifecycleTurnError     = "lifecycle/turn_error"
+	MethodPing                   = "ping"
+	MethodShutdown               = "shutdown"
 )
 
 type Request struct {
@@ -84,12 +89,20 @@ type Capabilities struct {
 	CompactHook   bool `json:"context_compact"`
 	CondenseHook  bool `json:"context_condense"`
 	Version       int  `json:"version"`
+	// Lifecycle hooks the plugin can perform, declared granularly per event so a
+	// plugin participates in the agent loop only where it has something to say.
+	LifecycleRequestBuilt  bool `json:"lifecycle_request_built"`
+	LifecycleToolBefore    bool `json:"lifecycle_tool_before"`
+	LifecycleToolAfter     bool `json:"lifecycle_tool_after"`
+	LifecycleResponseReady bool `json:"lifecycle_response_ready"`
+	LifecycleTurnError     bool `json:"lifecycle_turn_error"`
 }
 
 // HasAny reports whether the plugin declares at least one capability. A plugin
 // that declares none is a protocol/validation error.
 func (c *Capabilities) HasAny() bool {
-	return c.Tools || c.Wires || c.Providers || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook
+	return c.Tools || c.Wires || c.Providers || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
+		c.LifecycleRequestBuilt || c.LifecycleToolBefore || c.LifecycleToolAfter || c.LifecycleResponseReady || c.LifecycleTurnError
 }
 
 // PresenceMask is a bit-field of the capabilities present, so a peer can detect
@@ -104,6 +117,11 @@ const (
 	PresenceAfterResponse
 	PresenceCompact
 	PresenceCondense
+	PresenceLifecycleRequestBuilt
+	PresenceLifecycleToolBefore
+	PresenceLifecycleToolAfter
+	PresenceLifecycleResponseReady
+	PresenceLifecycleTurnError
 )
 
 // Mask returns the capability presence bitmask for this declaration.
@@ -129,6 +147,21 @@ func (c *Capabilities) Mask() PresenceMask {
 	}
 	if c.CondenseHook {
 		m |= PresenceCondense
+	}
+	if c.LifecycleRequestBuilt {
+		m |= PresenceLifecycleRequestBuilt
+	}
+	if c.LifecycleToolBefore {
+		m |= PresenceLifecycleToolBefore
+	}
+	if c.LifecycleToolAfter {
+		m |= PresenceLifecycleToolAfter
+	}
+	if c.LifecycleResponseReady {
+		m |= PresenceLifecycleResponseReady
+	}
+	if c.LifecycleTurnError {
+		m |= PresenceLifecycleTurnError
 	}
 	return m
 }
@@ -233,6 +266,77 @@ type ContextCompactResult struct {
 
 type ContextCondenseResult struct {
 	Request ContextRequest `json:"request"`
+}
+
+// LifecycleRequestBuiltResult is the result of a request_built hook: the
+// possibly-rewritten turn request plus the opt-in fatal escalation flag. A
+// fatal result aborts the turn.
+type LifecycleRequestBuiltResult struct {
+	Request ContextRequest `json:"request"`
+	Fatal   bool           `json:"fatal,omitempty"`
+}
+
+// LifecycleToolBeforeParams carries a tool call to the guardrail slot before it
+// executes. The hook may rewrite arguments and/or suppress the call.
+type LifecycleToolBeforeParams struct {
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Arguments string `json:"arguments"`
+}
+
+// LifecycleToolBeforeResult is the guardrail outcome: possibly-rewritten
+// arguments, an optional suppression, and the opt-in fatal flag.
+type LifecycleToolBeforeResult struct {
+	Arguments string `json:"arguments"`
+	Suppress  bool   `json:"suppress,omitempty"`
+	Fatal     bool   `json:"fatal,omitempty"`
+}
+
+// LifecycleToolAfterParams carries a completed tool call; err is a field, not a
+// JSON-RPC error, so a failing call is still observable to every hook.
+type LifecycleToolAfterParams struct {
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Arguments string `json:"arguments"`
+	Result    string `json:"result"`
+	Error     string `json:"error,omitempty"`
+}
+
+// LifecycleToolAfterResult lets a hook rewrite the result text and/or escalate
+// to a turn-scoped abort.
+type LifecycleToolAfterResult struct {
+	Result string `json:"result"`
+	Fatal  bool   `json:"fatal,omitempty"`
+}
+
+// LifecycleResponseReadyParams carries one response text delta; the final call
+// carries Final=true plus the finish reason and usage observed at end-of-stream.
+type LifecycleResponseReadyParams struct {
+	Chunk        string `json:"chunk"`
+	Final        bool   `json:"final,omitempty"`
+	FinishReason string `json:"finish_reason,omitempty"`
+	Usage        Usage  `json:"usage,omitempty"`
+}
+
+// LifecycleResponseReadyResult lets a hook rewrite the delta and/or escalate.
+type LifecycleResponseReadyResult struct {
+	Chunk string `json:"chunk"`
+	Fatal bool   `json:"fatal,omitempty"`
+}
+
+// LifecycleTurnErrorParams carries a hard turn error to the observe-only
+// turn_error slot.
+type LifecycleTurnErrorParams struct {
+	Error string `json:"error"`
+	Phase string `json:"phase"`
+	// Partial is the assistant text accumulated before the failure.
+	Partial string `json:"partial,omitempty"`
+}
+
+// LifecycleTurnErrorResult is observe-only; the fatal flag merely escalates the
+// already-failing turn for downstream hooks/harness.
+type LifecycleTurnErrorResult struct {
+	Fatal bool `json:"fatal,omitempty"`
 }
 
 type ModelDef struct {

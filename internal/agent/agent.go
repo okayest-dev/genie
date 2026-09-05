@@ -24,11 +24,78 @@ type Option func(*turnOptions)
 
 type turnOptions struct {
 	agentName string
+	hooks     Hooks
 }
 
 // WithAgentName attaches an agent name to the user message in the session log.
 func WithAgentName(name string) Option {
 	return func(o *turnOptions) { o.agentName = name }
+}
+
+// WithHooks attaches the lifecycle-hooks seam (a LifecycleSeam in the plugin
+// package). Nil disables it.
+func WithHooks(h Hooks) Option {
+	return func(o *turnOptions) { o.hooks = h }
+}
+
+// Hooks is the lifecycle-hooks seam interface the agent loop invokes around a
+// turn. It mirrors the og-cbu.3 event model: all five events are synchronous
+// and fire inside RunTurn. The interface leaves the agent package plugin-free;
+// the plugin package implements it (LifecycleSeam), wired once in main.go.
+//
+// Contract: non-fatal hook failures never surface here — the implementation
+// degrades (skips the hook, keeps prior contributions). A method returns a
+// non-nil error only for a plugin-declared fatal escalation, which aborts the
+// turn (the session survives; the harness returns to the REPL).
+type Hooks interface {
+	// RequestBuilt rewrites the fully-assembled request once per turn, before
+	// the first Stream call. The rewritten request is what gets sent.
+	RequestBuilt(ctx context.Context, req llm.Request) (llm.Request, error)
+
+	// ToolBefore runs before a tool executes: it may rewrite the arguments JSON
+	// and may suppress the call. Suppress short-circuits the chain — the call is
+	// dead and the harness moves to the next tool call.
+	ToolBefore(ctx context.Context, name, id, args string) (argsOut string, suppress bool, err error)
+
+	// ToolAfter runs after a tool call completes (including failures; errText is
+	// a field, per og-cbu.3). It may rewrite the result text.
+	ToolAfter(ctx context.Context, name, id, args, result, errText string) (resultOut string, err error)
+
+	// ResponseReady observes/rewrites each streaming text delta; the call with
+	// final=true is the last of the stream and carries the finish reason and
+	// usage the turn ended with.
+	ResponseReady(ctx context.Context, chunk string, final bool, finish llm.FinishReason, usage llm.Usage) (chunkOut string, err error)
+
+	// TurnError observes a hard Go-error turn exit (stream-open, mid-stream
+	// EventError, session/append failure). observe-only; fires exactly once at the
+	// failing exit.
+	TurnError(ctx context.Context, errText, phase, partial string) error
+}
+
+// FatalHookError is the error a Hooks method returns when a plugin declared the
+// event fatal (turn-scoped abort). It names the plugin and event responsible and
+// wraps the underlying error that triggered the turn exit, so the root cause is
+// never masked (e.g. a fatal turn_error preserves the original stream/append
+// failure when it aborts the turn).
+type FatalHookError struct {
+	Plugin string
+	Event  string
+
+	// Cause is the underlying error the turn was exiting with, when the fatal
+	// declaration happened on a failing exit (turn_error). It may be nil for a
+	// fatal declared mid-turn (e.g. request_built, tool_before).
+	Cause error
+}
+
+func (e *FatalHookError) Error() string {
+	return fmt.Sprintf("lifecycle hook %s (plugin %q) declared fatal", e.Event, e.Plugin)
+}
+
+func (e *FatalHookError) Unwrap() error { return e.Cause }
+
+// NewFatalHookError builds a FatalHookError with the given cause.
+func NewFatalHookError(plugin, event string, cause error) *FatalHookError {
+	return &FatalHookError{Plugin: plugin, Event: event, Cause: cause}
 }
 
 // RunTurn runs the agent loop against c: build the canonical conversation for
@@ -42,11 +109,22 @@ func WithAgentName(name string) Option {
 // Prior-turn history is not threaded here: the client wrapping c owns history
 // injection from the session. opts configures optional behaviour (e.g.
 // WithAgentName for session logging).
-func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string, opts ...Option) error {
+func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string, opts ...Option) (err error) {
 	var to turnOptions
 	for _, o := range opts {
 		o(&to)
 	}
+	var reply strings.Builder
+	// turn_error fires exactly once on any hard Go-error exit, with the reply
+	// text accumulated before the failure. All other lifecycle hooks fire inline
+	// at their natural loop position.
+	defer func() {
+		if err != nil && to.hooks != nil {
+			if herr := to.hooks.TurnError(ctx, err.Error(), "turn", reply.String()); herr != nil {
+				err = herr
+			}
+		}
+	}()
 	messages := []llm.Message{
 		{Role: llm.RoleSystem, Content: instruction},
 		{Role: llm.RoleUser, Content: prompt},
@@ -79,9 +157,18 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		req.Tools = registry.ToolDefs()
 	}
 
+	// request_built: the pack slot — rewrite the fully-assembled request once
+	// per turn before anything is streamed. A non-nil error is a fatal abort.
+	if to.hooks != nil {
+		var herr error
+		req, herr = to.hooks.RequestBuilt(ctx, req)
+		if herr != nil {
+			return herr
+		}
+	}
+
 	// Track whether we've retried without tools to avoid infinite loops.
 	retriedNoTools := false
-	var reply strings.Builder
 
 	for {
 		stream, err := c.Stream(ctx, req)
@@ -114,10 +201,18 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		for ev := range stream {
 			switch ev.Kind {
 			case llm.EventText:
-				if _, err := io.WriteString(out, ev.Text); err != nil {
+				chunk := ev.Text
+				if to.hooks != nil {
+					var herr error
+					chunk, herr = to.hooks.ResponseReady(ctx, ev.Text, false, "", llm.Usage{})
+					if herr != nil {
+						return herr
+					}
+				}
+				if _, err := io.WriteString(out, chunk); err != nil {
 					return err
 				}
-				reply.WriteString(ev.Text)
+				reply.WriteString(chunk)
 			case llm.EventFinish:
 				finishReason = ev.End
 			case llm.EventUsage:
@@ -160,6 +255,13 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 
 		// No tool calls — turn is complete.
 		if len(toolCalls) == 0 {
+			// response_ready final release: exposes the finish reason + usage the
+			// turn ended with, so plugins can alert/log the turn-end summary.
+			if to.hooks != nil {
+				if _, herr := to.hooks.ResponseReady(ctx, "", true, finishReason, usage); herr != nil {
+					return herr
+				}
+			}
 			slog.Info("turn completed",
 				"finish_reason", string(finishReason),
 				"prompt_tokens", usage.PromptTokens,
@@ -175,6 +277,35 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 			// Frame the tool run on stderr.
 			if errOut != nil {
 				fmt.Fprintf(errOut, "── %s %s ──\n", tc.Name, truncateArgs(tc.Arguments, 120))
+			}
+
+			args := tc.Arguments
+
+			// tool_before: guardrail slot — a hook may rewrite the arguments and/or
+			// suppress the call. Suppress short-circuits the chain: the call is dead,
+			// and a well-formed tool message keeps the conversation sound (a bare
+			// unanswered tool call would otherwise loop).
+			if to.hooks != nil {
+				var suppress bool
+				var herr error
+				args, suppress, herr = to.hooks.ToolBefore(ctx, tc.Name, tc.ID, tc.Arguments)
+				if herr != nil {
+					return herr
+				}
+				if suppress {
+					toolMsg := llm.Message{
+						Role:       llm.RoleTool,
+						Content:    "Tool call suppressed by lifecycle hook.",
+						ToolCallID: tc.ID,
+					}
+					req.Messages = append(req.Messages, toolMsg)
+					if sess != nil {
+						if err := sess.Append(toolMsg); err != nil {
+							return err
+						}
+					}
+					continue
+				}
 			}
 
 			var result string
@@ -193,16 +324,16 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 					}
 				} else {
 					// Validate arguments before execution.
-					if err := tools.ValidateArgs(json.RawMessage(tc.Arguments), tool.Parameters()); err != nil {
+					if err := tools.ValidateArgs(json.RawMessage(args), tool.Parameters()); err != nil {
 						execErr = fmt.Errorf("invalid arguments for %s: %v", tc.Name, err)
 					} else {
 						// Snapshot pre-mutation content for write/edit tools.
 						if ldg != nil && (tc.Name == "write" || tc.Name == "edit") {
-							var args struct {
+							var largs struct {
 								Path string `json:"path"`
 							}
-							if json.Unmarshal([]byte(tc.Arguments), &args) == nil && args.Path != "" {
-								absPath := resolvePath(args.Path, cwd)
+							if json.Unmarshal([]byte(args), &largs) == nil && largs.Path != "" {
+								absPath := resolvePath(largs.Path, cwd)
 								if data, err := os.ReadFile(absPath); err == nil {
 									ldg.Snapshot(absPath, string(data))
 								} else {
@@ -211,17 +342,17 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 								ldg.RecordToolCall(tc.ID)
 							}
 						}
-						result, execErr = tool.Execute(json.RawMessage(tc.Arguments))
+						result, execErr = tool.Execute(json.RawMessage(args))
 						// Record successful mutations in ledger.
 						if ldg != nil && execErr == nil && (tc.Name == "write" || tc.Name == "edit") {
-							var args struct {
+							var largs struct {
 								Path    string `json:"path"`
 								Content string `json:"content"`
 							}
-							if json.Unmarshal([]byte(tc.Arguments), &args) == nil && args.Path != "" {
-								absPath := resolvePath(args.Path, cwd)
+							if json.Unmarshal([]byte(args), &largs) == nil && largs.Path != "" {
+								absPath := resolvePath(largs.Path, cwd)
 								oldContent := ldg.GetSnapshot(absPath)
-								newContent := args.Content
+								newContent := largs.Content
 								if tc.Name == "edit" {
 									// For edits, read the new content from the file.
 									if data, err := os.ReadFile(absPath); err == nil {
@@ -240,6 +371,20 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 							}
 						}
 					}
+				}
+			}
+
+			// tool_after: every completed call is observed (err is a field); a hook
+			// may rewrite the result text.
+			if to.hooks != nil {
+				errText := ""
+				if execErr != nil {
+					errText = execErr.Error()
+				}
+				var herr error
+				result, herr = to.hooks.ToolAfter(ctx, tc.Name, tc.ID, args, result, errText)
+				if herr != nil {
+					return herr
 				}
 			}
 
