@@ -297,6 +297,10 @@ types:
         json: suppress
         type: bool
         omitempty: true
+      - name: SetEmpty
+        json: set_empty
+        type: bool
+        omitempty: true
       - name: Fatal
         json: fatal
         type: bool

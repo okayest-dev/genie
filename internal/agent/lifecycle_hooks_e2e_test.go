@@ -30,10 +30,12 @@ import (
 // lifecycleScript is a probe plugin that echoes each hook's contribution back
 // (markers on request_built, tool_before, tool_after, response_ready) and
 // appends one NDJSON line per event to $GENIE_LIFECYCLE_LOG_PATH. When
-// LIFECYCLE_SUPPRESS_TOOL names a tool, tool_before suppresses that call.
+// LIFECYCLE_SUPPRESS_TOOL names a tool, tool_before suppresses that call; when
+// LIFECYCLE_WIPE_TOOL names a tool, tool_before wipes its arguments to empty.
 const lifecycleScript = `#!/bin/bash
 log="${GENIE_LIFECYCLE_LOG_PATH:-/dev/null}"
 suppress_tool="${LIFECYCLE_SUPPRESS_TOOL:-}"
+wipe_tool="${LIFECYCLE_WIPE_TOOL:-}"
 
 emit() {
     # emit <event> <payload-object> → one NDJSON line: the payload + the event name.
@@ -65,6 +67,9 @@ while IFS= read -r line; do
             if [ -n "$suppress_tool" ] && [ "$name" = "$suppress_tool" ]; then
                 emit tool_before "$(echo "$line" | jq -c --arg s "$name" '{tool:$s,suppressed:true}')"
                 echo "$line" | jq -c --argjson id "$id" '{jsonrpc:"2.0",result:{arguments:"",suppress:true},id:$id}'
+            elif [ -n "$wipe_tool" ] && [ "$name" = "$wipe_tool" ]; then
+                emit tool_before "$(echo "$line" | jq -c --arg s "$name" '{tool:$s,wiped:true}')"
+                echo "$line" | jq -c --argjson id "$id" '{jsonrpc:"2.0",result:{set_empty:true},id:$id}'
             else
                 emit tool_before "$(echo "$line" | jq -c --arg s "$name" '{tool:$s}')"
                 # Rewrite must stay VALID JSON (the agent executes it): inject a
@@ -199,6 +204,7 @@ type eventLog struct {
 	Error        string `json:"error"`
 	Phase        string `json:"phase"`
 	Suppressed   bool   `json:"suppressed"`
+	Wiped        bool   `json:"wiped"`
 	Final        bool   `json:"final"`
 	FinishReason string `json:"finish_reason"`
 }
@@ -343,6 +349,54 @@ func TestLifecycleHookToolBeforeSuppressionKillsCall(t *testing.T) {
 	}
 	if !suppressed {
 		t.Errorf("tool_before was not marked suppressed: %s", eventNames(logs))
+	}
+}
+
+func TestLifecycleHookToolBeforeWipeFailsClosed(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "hooks.ndjson")
+	t.Setenv("GENIE_LIFECYCLE_LOG_PATH", logPath)
+	t.Setenv("LIFECYCLE_WIPE_TOOL", "echo")
+
+	mgr, seam := loadLifecycleScript(t)
+	defer mgr.Shutdown()
+
+	// An echo tool that records whether it ever executed.
+	type tracked struct{ fired atomic.Int32 }
+	tr := &tracked{}
+	reg := tools.NewRegistry()
+	reg.Register(toolFunc{name: "echo", run: func() (string, error) { tr.fired.Add(1); return "echoed", nil }})
+
+	client := &scriptedClient{}
+	var out, errOut strings.Builder
+	if err := agent.RunTurn(context.Background(), client, "test-model", "sys", "hi", &out, &errOut, nil, reg, nil, "", agent.WithHooks(seam)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	// Wiping to empty fails closed: "" is malformed JSON, so the agent-side
+	// validation refuses the call before the tool ever runs, and the
+	// conversation stays well-formed so the turn completes.
+	if tr.fired.Load() != 0 {
+		t.Errorf("wiped tool executed %d times, want 0", tr.fired.Load())
+	}
+	if got := out.String(); !strings.Contains(got, "Final") {
+		t.Errorf("turn did not complete after the wiped call: out = %q", got)
+	}
+
+	logs := readEventLog(t, logPath)
+	var wiped, sawError bool
+	for _, l := range logs {
+		if l.Event == "tool_before" {
+			wiped = l.Wiped
+		}
+		if l.Event == "tool_after" && l.Tool == "echo" {
+			sawError = strings.Contains(l.Error, "malformed JSON")
+		}
+	}
+	if !wiped {
+		t.Errorf("tool_before was not marked wiped: %s", eventNames(logs))
+	}
+	if !sawError {
+		t.Errorf("wiped call did not fail closed with a malformed-JSON error: %s", eventNames(logs))
 	}
 }
 

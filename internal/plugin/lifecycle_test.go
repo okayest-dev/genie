@@ -10,6 +10,8 @@ package plugin
 //	tmpl-rrfatal           response_ready (final) declares fatal
 //	tmpl-err               every hook returns a JSON-RPC error (degrades)
 //	tmpl-suppress          tool_before suppresses the tool named "x"
+//	tmpl-wipe              tool_before wipes the arguments to empty (set_empty)
+//	tmpl-pass              tool_before observes only, returns an empty result
 //
 // Marker convention: request_built appends [RB:<name>], tool_after [TA:<name>],
 // response_ready [RR:<name>] (non-final deltas only), tool_before [TB:<name>].
@@ -29,13 +31,15 @@ import (
 
 const lifecycleScript = `#!/bin/bash
 name=$(basename "$0")
-fatal_req=false; fatal_ta=false; fatal_rr=false; err_all=false; suppress=""
+fatal_req=false; fatal_ta=false; fatal_rr=false; err_all=false; suppress=""; wipe=false; pass=false
 case "$name" in
     *tafatal*)    fatal_ta=true;;
     *rrfatal*)    fatal_rr=true;;
     *fatal*)      fatal_req=true;;
     *err*)        err_all=true;;
     *suppress*)   suppress="x";;
+    *wipe*)       wipe=true;;
+    *pass*)       pass=true;;
 esac
 
 while IFS= read -r line; do
@@ -61,6 +65,10 @@ while IFS= read -r line; do
         "lifecycle/tool_before")
             if $err_all; then
                 echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal explosion"},"id":'"$id"'}'
+            elif $wipe; then
+                echo '{"jsonrpc":"2.0","result":{"set_empty":true},"id":'"$id"'}'
+            elif $pass; then
+                echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
             elif [ -n "$suppress" ] && [ "$(echo "$line" | jq -r '.params.name')" = "$suppress" ]; then
                 echo '{"jsonrpc":"2.0","result":{"arguments":"","suppress":true},"id":'"$id"'}'
             else
@@ -246,6 +254,47 @@ func TestLifecycleSeamSuppressShortCircuits(t *testing.T) {
 	// the call is dead regardless (agent uses only the suppress verdict).
 	if args != "{}" {
 		t.Errorf("suppressed args = %q, want %q", args, "{}")
+	}
+}
+
+func TestLifecycleSeamToolBeforeWipesToEmpty(t *testing.T) {
+	mgr, plugs := loadLifecycleScripts(t, "tmpl-wipe", "tmpl-a")
+	defer mgr.Shutdown()
+	// Discovery order is alphabetical (tmpl-a before tmpl-wipe); pin the chain
+	// order explicitly so wipe runs before the marker append.
+	seam := NewLifecycleSeam(plugs, LifecycleConfig{Order: []string{"tmpl-wipe", "tmpl-a"}}, nil)
+
+	// A wipe (set_empty:true) is distinct from "no change": the arguments are
+	// replaced with the empty string, and that empty value feeds the next hook
+	// in the chain (tmpl-a appends its marker to what it received).
+	args, suppress, err := seam.ToolBefore(context.Background(), "y", "1", `{"secret":"abc"}`)
+	if err != nil {
+		t.Fatalf("ToolBefore: %v", err)
+	}
+	if suppress {
+		t.Error("ToolBefore should not suppress when wiping")
+	}
+	if args != "[TB:tmpl-a]" {
+		t.Errorf("tool_before wipe = %q, want %q (the wipe reached the next hook)", args, "[TB:tmpl-a]")
+	}
+}
+
+func TestLifecycleSeamToolBeforeEmptyResultIsNoChange(t *testing.T) {
+	mgr, plugs := loadLifecycleScripts(t, "tmpl-pass", "tmpl-a")
+	defer mgr.Shutdown()
+	seam := NewLifecycleSeam(plugs, LifecycleConfig{Order: []string{"tmpl-pass", "tmpl-a"}}, nil)
+
+	// An empty result (no arguments, no set_empty) means "no change": the next
+	// hook still sees the original arguments, not a wipe.
+	args, suppress, err := seam.ToolBefore(context.Background(), "y", "1", `{"secret":"abc"}`)
+	if err != nil {
+		t.Fatalf("ToolBefore: %v", err)
+	}
+	if suppress {
+		t.Error("ToolBefore should not suppress")
+	}
+	if want := `{"secret":"abc"}[TB:tmpl-a]`; args != want {
+		t.Errorf("tool_before no-change = %q, want %q", args, want)
 	}
 }
 

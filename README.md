@@ -172,7 +172,7 @@ rest of the plugin protocol.
 | Event | Fire point | Rewrites |
 |-------|-----------|----------|
 | `lifecycle/request_built` | once per turn, before the first stream | the assembled request (model, messages, tools) |
-| `lifecycle/tool_before` | before each tool executes | tool arguments; may also `suppress` the call |
+| `lifecycle/tool_before` | before each tool executes | tool arguments; may also `suppress` the call or wipe them via `set_empty` |
 | `lifecycle/tool_after` | after each tool call completes (errors are a field) | result text |
 | `lifecycle/response_ready` | per streamed text delta, then a `final` release carrying finish reason + usage | the delta text |
 | `lifecycle/turn_error` | once, when a turn exits with an error | none (observe-only) |
@@ -199,7 +199,16 @@ fails a turn. A plugin may opt in to a stricter per-event contract by setting
 `"fatal": true` on its result; the turn then aborts with a
 `FatalHookError` naming the plugin and event (a fatal `turn_error` preserves
 the original error it aborted on). Suppressing in `tool_before` kills the tool
-call — the harness moves on and keeps the conversation well-formed.
+call — the harness moves on and keeps the conversation well-formed. A
+`tool_before` hook that sets `"set_empty": true` wipes the arguments to the
+empty string — deliberately distinct from omitting `arguments` (no change) —
+and the wiped call still passes through the normal arguments validation, so it
+fails closed unless the empty string is valid for the tool. The wipe is not a
+`suppress`: a suppressed call is killed before execution and the harness
+reports `"Tool call suppressed by lifecycle hook."`, while a wiped call keeps
+running the tool path, its empty arguments hit the same validation as any
+rewrite, and a resulting error is surfaced as a normal tool error the model
+can act on.
 
 ### Plugin layout
 
