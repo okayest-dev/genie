@@ -103,7 +103,14 @@ func (s *LifecycleSeam) ToolBefore(ctx context.Context, name, id, args string) (
 			s.degrade("tool_before hook %q: %v", p.Name, err)
 			continue
 		}
-		if out.Arguments != "" {
+		// An explicit set_empty (distinct from an empty arguments, which means
+		// "no change") wipes the args to the empty string, taking precedence
+		// over a non-empty arguments; the wipe still flows through the
+		// agent-side JSON validation, so a call wiped to "" fails closed unless
+		// "" is valid for the tool.
+		if out.SetEmpty {
+			cur = ""
+		} else if out.Arguments != "" {
 			cur = out.Arguments
 		}
 		if fatal {

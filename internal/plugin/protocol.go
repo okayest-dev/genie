@@ -285,10 +285,14 @@ type LifecycleToolBeforeParams struct {
 }
 
 // LifecycleToolBeforeResult is the guardrail outcome: possibly-rewritten
-// arguments, an optional suppression, and the opt-in fatal flag.
+// arguments, an optional suppression, and the opt-in fatal flag. An empty
+// Arguments means "no change"; a hook that wants to wipe the arguments to the
+// empty string sets SetEmpty, so the wipe is distinct from the no-change case.
+// When SetEmpty is set the arguments are wiped to "" regardless of Arguments.
 type LifecycleToolBeforeResult struct {
 	Arguments string `json:"arguments"`
 	Suppress  bool   `json:"suppress,omitempty"`
+	SetEmpty  bool   `json:"set_empty,omitempty"`
 	Fatal     bool   `json:"fatal,omitempty"`
 }
 
