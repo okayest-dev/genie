@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"iter"
 	"log/slog"
 	"strings"
@@ -36,7 +37,10 @@ func captureInfo(t *testing.T) *bytes.Buffer {
 	var buf bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	t.Cleanup(func() {
-		slog.SetDefault(slog.New(slog.NewTextHandler(nil, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		// Restore to a discard handler, NEVER a nil writer. Some agent tests
+		// hold plugin subprocesses open that may log asynchronously past this
+		// boundary; a nil handler would panic on their next write.
+		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	})
 	return &buf
 }
@@ -208,8 +212,8 @@ func newTestRegistry(t *testing.T) *tools.Registry {
 
 type readtoolStub struct{}
 
-func (r *readtoolStub) Name() string            { return "read" }
-func (r *readtoolStub) Description() string     { return "Read a file" }
+func (r *readtoolStub) Name() string        { return "read" }
+func (r *readtoolStub) Description() string { return "Read a file" }
 func (r *readtoolStub) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -225,8 +229,8 @@ func (r *readtoolStub) Execute(_ json.RawMessage) (string, error) {
 
 type echoStub struct{}
 
-func (e *echoStub) Name() string            { return "echo" }
-func (e *echoStub) Description() string     { return "Echo input" }
+func (e *echoStub) Name() string        { return "echo" }
+func (e *echoStub) Description() string { return "Echo input" }
 func (e *echoStub) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
@@ -236,8 +240,8 @@ func (e *echoStub) Execute(_ json.RawMessage) (string, error) {
 
 type bashStub struct{}
 
-func (b *bashStub) Name() string            { return "bash" }
-func (b *bashStub) Description() string     { return "Run bash" }
+func (b *bashStub) Name() string        { return "bash" }
+func (b *bashStub) Description() string { return "Run bash" }
 func (b *bashStub) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
