@@ -50,7 +50,8 @@ while IFS= read -r line; do
                 echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal explosion"},"id":'"$id"'}'
             elif $fatal_req; then
                 echo "$line" | jq -c --argjson id "$id" '
-                    {jsonrpc:"2.0",result:{request:{model:.params.model,messages:.params.messages,tools:.params.tools},fatal:true},id:$id}'
+                    [.params.messages[] | if .role=="user" then .content=(.content + "[RB:fatal]") else . end] as $m
+                    | {jsonrpc:"2.0",result:{request:{model:.params.model,messages:$m,tools:.params.tools},fatal:true},id:$id}'
             else
                 echo "$line" | jq -c --argjson id "$id" --arg suf "$name" '
                     [.params.messages[] | if .role=="user" then .content=(.content + "[RB:" + $suf + "]") else . end] as $m
@@ -303,7 +304,7 @@ func TestLifecycleSeamFatalEscalationAborts(t *testing.T) {
 	seam := NewLifecycleSeam(plugs, LifecycleConfig{}, nil)
 
 	req := llm.Request{Model: "m", Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}}
-	_, err := seam.RequestBuilt(context.Background(), req)
+	got, err := seam.RequestBuilt(context.Background(), req)
 	var fatalErr *agent.FatalHookError
 	if !errors.As(err, &fatalErr) {
 		t.Fatalf("expected agent.FatalHookError, got %v", err)
@@ -311,10 +312,26 @@ func TestLifecycleSeamFatalEscalationAborts(t *testing.T) {
 	if fatalErr.Event != "lifecycle/request_built" || fatalErr.Plugin != "tmpl-fatal" {
 		t.Errorf("fatal error = %+v, want request_built/tmpl-fatal", fatalErr)
 	}
+	// Bug #3 guard: the aborting hook's own rewrite must NOT be committed into
+	// the returned request — the abort can't leak the mutating plugin's content.
+	if gotM := userContent(got); gotM != "hi" {
+		t.Errorf("request_built fatal leaked the aborting hook's rewrite: content %q, want %q", gotM, "hi")
+	}
+	if fatalErr.Cause != nil {
+		t.Errorf("mid-turn fatal should have no cause, got %v", fatalErr.Cause)
+	}
 
-	// turn_error is observe-only but the fatal flag still escalates.
-	if err := seam.TurnError(context.Background(), "boom", "phase", "partial"); !errors.As(err, &fatalErr) {
-		t.Fatalf("expected fatal turn_error error, got %v", err)
+	// turn_error is observe-only but the fatal flag still escalates, and must
+	// wrap the original error (bug #2 guard: root cause is never masked).
+	turnErr := seam.TurnError(context.Background(), "boom", "phase", "partial")
+	if !errors.As(turnErr, &fatalErr) {
+		t.Fatalf("expected fatal turn_error error, got %v", turnErr)
+	}
+	if fatalErr.Event != "lifecycle/turn_error" {
+		t.Errorf("turn_error fatal event = %q, want lifecycle/turn_error", fatalErr.Event)
+	}
+	if err := errors.Unwrap(turnErr); err == nil || err.Error() != "boom" {
+		t.Errorf("turn_error fatal unwrap = %v, want error wrapping %q", err, "boom")
 	}
 }
 

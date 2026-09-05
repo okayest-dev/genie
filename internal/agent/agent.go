@@ -67,20 +67,35 @@ type Hooks interface {
 	ResponseReady(ctx context.Context, chunk string, final bool, finish llm.FinishReason, usage llm.Usage) (chunkOut string, err error)
 
 	// TurnError observes a hard Go-error turn exit (stream-open, mid-stream
-	// EventError, session/append failure). obtain-only; fires exactly once at the
+	// EventError, session/append failure). observe-only; fires exactly once at the
 	// failing exit.
 	TurnError(ctx context.Context, errText, phase, partial string) error
 }
 
 // FatalHookError is the error a Hooks method returns when a plugin declared the
-// event fatal (turn-scoped abort). It names the plugin and event responsible.
+// event fatal (turn-scoped abort). It names the plugin and event responsible and
+// wraps the underlying error that triggered the turn exit, so the root cause is
+// never masked (e.g. a fatal turn_error preserves the original stream/append
+// failure when it aborts the turn).
 type FatalHookError struct {
 	Plugin string
 	Event  string
+
+	// Cause is the underlying error the turn was exiting with, when the fatal
+	// declaration happened on a failing exit (turn_error). It may be nil for a
+	// fatal declared mid-turn (e.g. request_built, tool_before).
+	Cause error
 }
 
 func (e *FatalHookError) Error() string {
 	return fmt.Sprintf("lifecycle hook %s (plugin %q) declared fatal", e.Event, e.Plugin)
+}
+
+func (e *FatalHookError) Unwrap() error { return e.Cause }
+
+// NewFatalHookError builds a FatalHookError with the given cause.
+func NewFatalHookError(plugin, event string, cause error) *FatalHookError {
+	return &FatalHookError{Plugin: plugin, Event: event, Cause: cause}
 }
 
 // RunTurn runs the agent loop against c: build the canonical conversation for

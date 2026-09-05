@@ -2,7 +2,7 @@
 // capabilities (og-cbu.3 event model) into an agent.Hooks the agent loop
 // invokes around each turn. All five events are sync ordered chains (og-cbu.4):
 // request-side events fire in config-listed order, response-side events in
-// reversed (onion) order so inverse pairs pack/expand nest. thumb_error is
+// reversed (onion) order so inverse pairs pack/expand nest. turn_error is
 // observe-only and runs in listed order. Every hook degrades by default (skip,
 // keep prior contributions); a plugin may opt-in to a per-event fatal escalation
 // that aborts the turn (agent.FatalHookError).
@@ -10,6 +10,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -79,10 +80,14 @@ func (s *LifecycleSeam) RequestBuilt(ctx context.Context, req llm.Request) (llm.
 			s.degrade("request_built hook %q: %v", p.Name, err)
 			continue
 		}
-		cur = out
 		if fatal {
-			return cur, s.fatal(p.Name, "lifecycle/request_built")
+			// A fatal declaration aborts the turn: do NOT commit the aborting
+			// hook's own rewrite into the request. Return the request as it was
+			// before this hook so nothing its plugin mutated leaks into the
+			// (aborted) turn.
+			return cur, s.fatalNoCause(p.Name, "lifecycle/request_built")
 		}
+		cur = out
 	}
 	return cur, nil
 }
@@ -102,7 +107,7 @@ func (s *LifecycleSeam) ToolBefore(ctx context.Context, name, id, args string) (
 			cur = out.Arguments
 		}
 		if fatal {
-			return cur, false, s.fatal(p.Name, "lifecycle/tool_before")
+			return cur, false, s.fatalNoCause(p.Name, "lifecycle/tool_before")
 		}
 		if out.Suppress {
 			slog.Info("lifecycle: tool suppressed", "plugin", p.Name, "tool", name)
@@ -123,7 +128,7 @@ func (s *LifecycleSeam) ToolAfter(ctx context.Context, name, id, args, result, e
 		}
 		cur = out.Result
 		if fatal {
-			return cur, s.fatal(p.Name, "lifecycle/tool_after")
+			return cur, s.fatalNoCause(p.Name, "lifecycle/tool_after")
 		}
 	}
 	return cur, nil
@@ -141,13 +146,15 @@ func (s *LifecycleSeam) ResponseReady(ctx context.Context, chunk string, final b
 		}
 		cur = out.Chunk
 		if fatal {
-			return cur, s.fatal(p.Name, "lifecycle/response_ready")
+			return cur, s.fatalNoCause(p.Name, "lifecycle/response_ready")
 		}
 	}
 	return cur, nil
 }
 
 // TurnError runs the observe-only turn_error chain once at a failing turn exit.
+// A fatal declaration aborts, wrapping the original error it observed so the
+// turn error is never masked by the escalation.
 func (s *LifecycleSeam) TurnError(ctx context.Context, errText, phase, partial string) error {
 	for _, p := range s.turnError {
 		fatal, err := p.CallLifecycleTurnError(ctx, errText, phase, partial)
@@ -156,14 +163,26 @@ func (s *LifecycleSeam) TurnError(ctx context.Context, errText, phase, partial s
 			continue
 		}
 		if fatal {
-			return s.fatal(p.Name, "lifecycle/turn_error")
+			return s.fatal(p.Name, "lifecycle/turn_error", errText)
 		}
 	}
 	return nil
 }
 
-func (s *LifecycleSeam) fatal(pluginName, event string) error {
-	return &agent.FatalHookError{Plugin: pluginName, Event: event}
+// fatalNoCause builds a turn-scoped abort for a mid-turn event that has no
+// underlying error to preserve (e.g. request_built, tool_*).
+func (s *LifecycleSeam) fatalNoCause(pluginName, event string) error {
+	return agent.NewFatalHookError(pluginName, event, nil)
+}
+
+// fatal builds the turn-scoped abort error naming the responsible plugin and
+// event. cause, when non-empty, is wrapped so the root error survives.
+func (s *LifecycleSeam) fatal(pluginName, event, causeText string) error {
+	var cause error
+	if causeText != "" {
+		cause = errors.New(causeText)
+	}
+	return agent.NewFatalHookError(pluginName, event, cause)
 }
 
 // degrade surfaces a visible degradation message to the terminal (via onDegrade)

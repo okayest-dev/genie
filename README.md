@@ -161,6 +161,45 @@ Wire plugins speak the genie wire plugin protocol (version 1; the schema in `pro
 
 - **Tool plugins** — add new tools to the harness
 - **Wire plugins** — add new provider backends (e.g. AWS Bedrock, GitHub Copilot)
+- **Lifecycle plugins** — hook into the agent loop around each turn
+
+### Lifecycle hooks
+
+Lifecycle plugins observe and can rewrite each turn as it runs, via five
+synchronous events. The wire schema lives in `protocol/schema.yaml` like the
+rest of the plugin protocol.
+
+| Event | Fire point | Rewrites |
+|-------|-----------|----------|
+| `lifecycle/request_built` | once per turn, before the first stream | the assembled request (model, messages, tools) |
+| `lifecycle/tool_before` | before each tool executes | tool arguments; may also `suppress` the call |
+| `lifecycle/tool_after` | after each tool call completes (errors are a field) | result text |
+| `lifecycle/response_ready` | per streamed text delta, then a `final` release carrying finish reason + usage | the delta text |
+| `lifecycle/turn_error` | once, when a turn exits with an error | none (observe-only) |
+
+Hooks run as **sync ordered chains**. Request-side events
+(`request_built`, `tool_before`) fire in the order plugins are listed in
+`[lifecycle.plugins]`; response-side events (`tool_after`, `response_ready`)
+fire in the reverse (onion) order so paired plugins pack and unpack. The list
+only needs the plugins you order explicitly — anything omitted is appended in
+discovery order:
+
+```toml
+[lifecycle.plugins]
+order = ["guardrails", "logging"]
+```
+
+A plugin declares which events it wants on the wire in its handshake
+capabilities: `lifecycle_request_built`, `lifecycle_tool_before`,
+`lifecycle_tool_after`, `lifecycle_response_ready`, `lifecycle_turn_error`.
+
+**Failure semantics.** Hooks degrade by default: if a hook errors, it is
+skipped and any earlier hooks' contributions are kept — a failing plugin never
+fails a turn. A plugin may opt in to a stricter per-event contract by setting
+`"fatal": true` on its result; the turn then aborts with a
+`FatalHookError` naming the plugin and event (a fatal `turn_error` preserves
+the original error it aborted on). Suppressing in `tool_before` kills the tool
+call — the harness moves on and keeps the conversation well-formed.
 
 ### Plugin layout
 
