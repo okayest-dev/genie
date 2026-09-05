@@ -29,6 +29,16 @@ constants:
     value: "context/compact"
   - name: MethodContextCondense
     value: "context/condense"
+  - name: MethodLifecycleRequestBuilt
+    value: "lifecycle/request_built"
+  - name: MethodLifecycleToolBefore
+    value: "lifecycle/tool_before"
+  - name: MethodLifecycleToolAfter
+    value: "lifecycle/tool_after"
+  - name: MethodLifecycleResponseReady
+    value: "lifecycle/response_ready"
+  - name: MethodLifecycleTurnError
+    value: "lifecycle/turn_error"
   - name: MethodPing
     value: "ping"
   - name: MethodShutdown
@@ -111,6 +121,21 @@ types:
         type: bool
       - name: CondenseHook
         json: context_condense
+        type: bool
+      - name: LifecycleRequestBuilt
+        json: lifecycle_request_built
+        type: bool
+      - name: LifecycleToolBefore
+        json: lifecycle_tool_before
+        type: bool
+      - name: LifecycleToolAfter
+        json: lifecycle_tool_after
+        type: bool
+      - name: LifecycleResponseReady
+        json: lifecycle_response_ready
+        type: bool
+      - name: LifecycleTurnError
+        json: lifecycle_turn_error
         type: bool
       - name: Version
         json: version
@@ -241,6 +266,119 @@ types:
         json: request
         type: ContextRequest
 
+  - name: LifecycleRequestBuiltResult
+    fields:
+      - name: Request
+        json: request
+        type: ContextRequest
+      - name: Fatal
+        json: fatal
+        type: bool
+        omitempty: true
+
+  - name: LifecycleToolBeforeParams
+    fields:
+      - name: Name
+        json: name
+        type: string
+      - name: ID
+        json: id
+        type: string
+      - name: Arguments
+        json: arguments
+        type: string
+
+  - name: LifecycleToolBeforeResult
+    fields:
+      - name: Arguments
+        json: arguments
+        type: string
+      - name: Suppress
+        json: suppress
+        type: bool
+        omitempty: true
+      - name: Fatal
+        json: fatal
+        type: bool
+        omitempty: true
+
+  - name: LifecycleToolAfterParams
+    fields:
+      - name: Name
+        json: name
+        type: string
+      - name: ID
+        json: id
+        type: string
+      - name: Arguments
+        json: arguments
+        type: string
+      - name: Result
+        json: result
+        type: string
+      - name: Error
+        json: error
+        type: string
+        omitempty: true
+
+  - name: LifecycleToolAfterResult
+    fields:
+      - name: Result
+        json: result
+        type: string
+      - name: Fatal
+        json: fatal
+        type: bool
+        omitempty: true
+
+  - name: LifecycleResponseReadyParams
+    fields:
+      - name: Chunk
+        json: chunk
+        type: string
+      - name: Final
+        json: final
+        type: bool
+        omitempty: true
+      - name: FinishReason
+        json: finish_reason
+        type: string
+        omitempty: true
+      - name: Usage
+        json: usage
+        type: Usage
+        omitempty: true
+
+  - name: LifecycleResponseReadyResult
+    fields:
+      - name: Chunk
+        json: chunk
+        type: string
+      - name: Fatal
+        json: fatal
+        type: bool
+        omitempty: true
+
+  - name: LifecycleTurnErrorParams
+    fields:
+      - name: Error
+        json: error
+        type: string
+      - name: Phase
+        json: phase
+        type: string
+      - name: Partial
+        json: partial
+        type: string
+        omitempty: true
+
+  - name: LifecycleTurnErrorResult
+    fields:
+      - name: Fatal
+        json: fatal
+        type: bool
+        omitempty: true
+
 handler:
   struct:
     fields:
@@ -264,6 +402,16 @@ handler:
         type: "func(request ContextRequest) (ContextRequest, error)"
       - name: onCondense
         type: "func(request ContextRequest) (ContextRequest, error)"
+      - name: onLifecycleRequestBuilt
+        type: "func(request ContextRequest) (LifecycleRequestBuiltResult, error)"
+      - name: onLifecycleToolBefore
+        type: "func(name, id, arguments string) (LifecycleToolBeforeResult, error)"
+      - name: onLifecycleToolAfter
+        type: "func(name, id, arguments, result, error string) (LifecycleToolAfterResult, error)"
+      - name: onLifecycleResponseReady
+        type: "func(chunk string, final bool, finishReason string, usage Usage) (LifecycleResponseReadyResult, error)"
+      - name: onLifecycleTurnError
+        type: "func(error, phase, partial string) (LifecycleTurnErrorResult, error)"
 
   methods:
     - name: SetModels
@@ -307,6 +455,36 @@ handler:
       params:
         - name: fn
           type: "func(request ContextRequest) (ContextRequest, error)"
+
+    - name: OnLifecycleRequestBuilt
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(request ContextRequest) (LifecycleRequestBuiltResult, error)"
+
+    - name: OnLifecycleToolBefore
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(name, id, arguments string) (LifecycleToolBeforeResult, error)"
+
+    - name: OnLifecycleToolAfter
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(name, id, arguments, result, error string) (LifecycleToolAfterResult, error)"
+
+    - name: OnLifecycleResponseReady
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(chunk string, final bool, finishReason string, usage Usage) (LifecycleResponseReadyResult, error)"
+
+    - name: OnLifecycleTurnError
+      receiver: "*Handler"
+      params:
+        - name: fn
+          type: "func(error, phase, partial string) (LifecycleTurnErrorResult, error)"
 
   # Methods that are not configurable - always generated as-is
   static_methods:
@@ -371,6 +549,16 @@ handler:
       action: "call onCompact, write ContextCompactResult"
     - method: MethodContextCondense
       action: "call onCondense, write ContextCondenseResult"
+    - method: MethodLifecycleRequestBuilt
+      action: "call onLifecycleRequestBuilt, write result"
+    - method: MethodLifecycleToolBefore
+      action: "call onLifecycleToolBefore, write result"
+    - method: MethodLifecycleToolAfter
+      action: "call onLifecycleToolAfter, write result"
+    - method: MethodLifecycleResponseReady
+      action: "call onLifecycleResponseReady, write result"
+    - method: MethodLifecycleTurnError
+      action: "call onLifecycleTurnError, write result"
     - method: MethodPing
       action: "writeResult with map[string]bool{\"pong\": true}"
     - method: MethodShutdown

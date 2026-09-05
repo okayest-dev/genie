@@ -681,6 +681,88 @@ func (p *Plugin) CallContextCondense(ctx context.Context, req llm.Request) (llm.
 	return p.callContextRewrite(ctx, MethodContextCondense, "context/condense", req)
 }
 
+// CallLifecycleRequestBuilt invokes a plugin's request_built hook: it may
+// rewrite the fully-assembled turn request. fatal reports the plugin's opt-in
+// turn-scoped abort escalation (og-cbu.3/og-cbu.4); a non-fatal error means the
+// hook failed and its contribution should be dropped (degrade-by-default).
+func (p *Plugin) CallLifecycleRequestBuilt(ctx context.Context, req llm.Request) (llm.Request, bool, error) {
+	result, err := p.callContext(MethodLifecycleRequestBuilt, toContextRequest(req))
+	if err != nil {
+		return req, false, err
+	}
+	var out LifecycleRequestBuiltResult
+	if err := json.Unmarshal(result, &out); err != nil {
+		return req, false, fmt.Errorf("parse lifecycle/request_built: %w", err)
+	}
+	return fromContextRequest(out.Request), out.Fatal, nil
+}
+
+// CallLifecycleToolBefore invokes a plugin's tool_before guardrail hook, which
+// may rewrite arguments and/or suppress the call. On success the returned
+// result carries the rewrite/suppression/fatal flags; an error means the hook
+// failed (dropped).
+func (p *Plugin) CallLifecycleToolBefore(ctx context.Context, name, id, args string) (LifecycleToolBeforeResult, bool, error) {
+	params := LifecycleToolBeforeParams{Name: name, ID: id, Arguments: args}
+	result, err := p.callContext(MethodLifecycleToolBefore, params)
+	if err != nil {
+		return LifecycleToolBeforeResult{}, false, err
+	}
+	var out LifecycleToolBeforeResult
+	if err := json.Unmarshal(result, &out); err != nil {
+		return LifecycleToolBeforeResult{}, false, fmt.Errorf("parse lifecycle/tool_before: %w", err)
+	}
+	return out, out.Fatal, nil
+}
+
+// CallLifecycleToolAfter invokes a plugin's tool_after hook, which observes a
+// completed tool call (err is a field) and may rewrite the result text.
+func (p *Plugin) CallLifecycleToolAfter(ctx context.Context, name, id, args, result, errText string) (LifecycleToolAfterResult, bool, error) {
+	params := LifecycleToolAfterParams{Name: name, ID: id, Arguments: args, Result: result, Error: errText}
+	raw, err := p.callContext(MethodLifecycleToolAfter, params)
+	if err != nil {
+		return LifecycleToolAfterResult{}, false, err
+	}
+	var out LifecycleToolAfterResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return LifecycleToolAfterResult{}, false, fmt.Errorf("parse lifecycle/tool_after: %w", err)
+	}
+	return out, out.Fatal, nil
+}
+
+// CallLifecycleResponseReady invokes a plugin's response_ready hook for one text
+// delta (or the final release, Final=true, which carries finish reason + usage).
+func (p *Plugin) CallLifecycleResponseReady(ctx context.Context, chunk string, final bool, finish llm.FinishReason, usage llm.Usage) (LifecycleResponseReadyResult, bool, error) {
+	params := LifecycleResponseReadyParams{
+		Chunk:        chunk,
+		Final:        final,
+		FinishReason: string(finish),
+		Usage:        Usage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens},
+	}
+	raw, err := p.callContext(MethodLifecycleResponseReady, params)
+	if err != nil {
+		return LifecycleResponseReadyResult{}, false, err
+	}
+	var out LifecycleResponseReadyResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return LifecycleResponseReadyResult{}, false, fmt.Errorf("parse lifecycle/response_ready: %w", err)
+	}
+	return out, out.Fatal, nil
+}
+
+// CallLifecycleTurnError invokes a plugin's observe-only turn_error hook.
+func (p *Plugin) CallLifecycleTurnError(ctx context.Context, errText, phase, partial string) (bool, error) {
+	params := LifecycleTurnErrorParams{Error: errText, Phase: phase, Partial: partial}
+	raw, err := p.callContext(MethodLifecycleTurnError, params)
+	if err != nil {
+		return false, err
+	}
+	var out LifecycleTurnErrorResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return false, fmt.Errorf("parse lifecycle/turn_error: %w", err)
+	}
+	return out.Fatal, nil
+}
+
 func (m *Manager) GetPlugins() map[string]*Plugin {
 	m.pluginsMu.RLock()
 	defer m.pluginsMu.RUnlock()
