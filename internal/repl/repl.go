@@ -43,9 +43,12 @@ type Config struct {
 	// CtxOpts are the ContextManager options (turns window, counter,
 	// resolver) applied wherever a context-wrapped client is constructed.
 	CtxOpts []contextmgr.Option
-	Stdin   io.Reader
-	Stdout  io.Writer
-	Stderr  io.Writer
+	// AgentOpts are the agent.RunTurn options (e.g. the lifecycle-hooks seam
+	// via agent.WithHooks) applied to every turn.
+	AgentOpts []agent.Option
+	Stdin     io.Reader
+	Stdout    io.Writer
+	Stderr    io.Writer
 }
 
 // contextTurns returns the history window from the harness config, defaulting
@@ -223,6 +226,7 @@ func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, 
 	model := currentModel(cfg, state.currentAgent)
 
 	var opts []agent.Option
+	opts = append(opts, cfg.AgentOpts...)
 	if state.currentAgent != nil {
 		opts = append(opts, agent.WithAgentName(state.currentAgent.Name))
 	}
@@ -301,7 +305,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 			}
 			fmt.Fprintln(cfg.Stdout, "Available models:")
 			for _, m := range models {
-			_marker := "  "
+				_marker := "  "
 				if m.ID == cfg.Model {
 					_marker = "* "
 				}

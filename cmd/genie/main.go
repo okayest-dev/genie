@@ -255,6 +255,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	// Build the plugin lifecycle seam from loaded plugins + [lifecycle.plugins].
+	// All lifecycle events degrade by default; a plugin-declared fatal escalation
+	// aborts the turn. The seam implements agent.Hooks and is delivered via the
+	// WithHooks option on both REPL and -p paths.
+	lifecycleSeam := plugin.NewLifecycleSeam(pluginMgr.PluginsInOrder(), plugin.LifecycleConfig{
+		Order: cfg.Lifecycle.PluginsOrder,
+	}, func(msg string) { fmt.Fprintf(stderr, "lifecycle degraded: %s\n", msg) })
+
 	counter := tokens.New()
 	ctxOpts := []contextmgr.Option{
 		contextmgr.WithTurns(cfg.Context.Turns),
@@ -284,6 +292,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			DefaultAgent: runAgent,
 			BashTimeout:  cfg.BashTimeout,
 			CtxOpts:      ctxOpts,
+			AgentOpts:    []agent.Option{agent.WithHooks(lifecycleSeam)},
 			Stdin:        os.Stdin,
 			Stdout:       stdout,
 			Stderr:       stderr,
@@ -324,6 +333,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if runAgent != nil {
 		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
 	}
+	turnOpts = append(turnOpts, agent.WithHooks(lifecycleSeam))
 	ctxClient := contextmgr.New(client, sess, ctxOpts...)
 	err = agent.RunTurn(ctx, ctxClient, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, turnOpts...)
 
