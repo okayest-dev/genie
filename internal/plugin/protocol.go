@@ -434,6 +434,15 @@ func (c *Capabilities) Validate() error {
 	return nil
 }
 
+// IsCode reports whether err is a plugin JSON-RPC error with the given code.
+func IsCode(err error, code int) bool {
+	var pe *Error
+	if errors.As(err, &pe) {
+		return pe.Code == code
+	}
+	return false
+}
+
 func (e *Error) Error() string {
 	if e.Data != nil {
 		return e.Message + ": " + toString(e.Data)

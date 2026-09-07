@@ -615,6 +615,58 @@ func (p *Plugin) CallTool(name string, args map[string]any) (*ToolsCallResult, e
 	}
 }
 
+// CallCommandHelp requests curated help text from the plugin. The plugin may
+// return a -32601 (method-not-found) error when it does not supply curated
+// help, which callers should handle by falling back to the flat commands/list
+// listing.
+func (p *Plugin) CallCommandHelp(name string) (*CommandsHelpResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.Active {
+		return nil, fmt.Errorf("plugin %s is not active", p.Name)
+	}
+
+	params := CommandsHelpParams{Name: name}
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodCommandsHelp,
+		Params:  mustMarshal(params),
+		ID:      time.Now().UnixNano(),
+	}
+	if err := p.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+
+	respCh := make(chan *Response, 1)
+	go func() {
+		resp, _ := p.Codec.ReadResponse()
+		respCh <- resp
+	}()
+
+	select {
+	case <-ctx.Done():
+		p.Active = false
+		return nil, fmt.Errorf("command help timeout")
+	case resp := <-respCh:
+		if resp == nil {
+			p.Active = false
+			return nil, fmt.Errorf("plugin %s is not active", p.Name)
+		}
+		if resp.Error != nil {
+			return nil, resp.Error
+		}
+		var result CommandsHelpResult
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			return nil, fmt.Errorf("parse command help result: %w", err)
+		}
+		return &result, nil
+	}
+}
+
 func (p *Plugin) CallCommand(name, args string) (*CommandsRunResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

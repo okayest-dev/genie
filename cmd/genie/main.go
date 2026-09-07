@@ -293,6 +293,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			BashTimeout:  cfg.BashTimeout,
 			CtxOpts:      ctxOpts,
 			AgentOpts:    []agent.Option{agent.WithHooks(lifecycleSeam)},
+			Commands:     &plugin.ManagerCommands{Manager: pluginMgr},
 			Stdin:        os.Stdin,
 			Stdout:       stdout,
 			Stderr:       stderr,

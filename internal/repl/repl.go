@@ -6,6 +6,8 @@ package repl
 import (
 	"bufio"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +30,50 @@ import (
 
 const prompt = "genie> "
 
+// CommandInfo describes a single command a plugin exposes.
+type CommandInfo struct {
+	Name        string
+	Description string
+}
+
+// CommandResult is the outcome of running a plugin command: the REPL prints
+// Text, or compact JSON of Data when Text is empty.
+type CommandResult struct {
+	Text string
+	Data any
+}
+
+// CommandSource is the narrow interface the REPL uses to discover and run
+// plugin commands. It is carried by Config and wired from the plugin manager
+// so the REPL stays decoupled from the manager.
+type CommandSource interface {
+	// Plugins returns the names of available plugins in deterministic order.
+	// It lets /help enumerate the flat plugin-commands section.
+	Plugins() []string
+	// ListCommands returns the commands a plugin exposes. Returns
+	// ErrUnknownPlugin when the name is not a loaded plugin.
+	ListCommands(plugin string) ([]CommandInfo, error)
+	// RunCommand invokes a plugin command and returns the result. The raw
+	// argument string is passed through unchanged.
+	RunCommand(plugin, command, args string) (*CommandResult, error)
+	// Help returns curated help text for a plugin or a single command.
+	// The plugin may not supply curated help; callers should fall back to
+	// ListCommands when Help returns an error.
+	Help(plugin, command string) (string, error)
+}
+
+var (
+	// ErrUnknownPlugin is returned by CommandSource when the plugin name
+	// does not match any loaded plugin.
+	ErrUnknownPlugin = errors.New("unknown plugin")
+	// ErrUnknownCommand is returned by CommandSource when a command name
+	// is not registered by the plugin.
+	ErrUnknownCommand = errors.New("unknown command")
+	// ErrPluginInactive is returned by CommandSource when the plugin is
+	// not currently active.
+	ErrPluginInactive = errors.New("plugin not active")
+)
+
 // Config holds the dependencies for running the REPL.
 type Config struct {
 	Client       llm.Client
@@ -46,9 +92,12 @@ type Config struct {
 	// AgentOpts are the agent.RunTurn options (e.g. the lifecycle-hooks seam
 	// via agent.WithHooks) applied to every turn.
 	AgentOpts []agent.Option
-	Stdin     io.Reader
-	Stdout    io.Writer
-	Stderr    io.Writer
+	// Commands is the plugin command source. When nil, plugin slash
+	// commands are not available.
+	Commands CommandSource
+	Stdin    io.Reader
+	Stdout   io.Writer
+	Stderr   io.Writer
 }
 
 // contextTurns returns the history window from the harness config, defaulting
@@ -273,6 +322,9 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		fmt.Fprintln(cfg.Stdout, "  /agent <name>     switch to a named agent")
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "  @<name> <prompt>  one-shot agent switch")
+		if cfg.Commands != nil {
+			printPluginCommandsHelp(cfg)
+		}
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
 
@@ -392,10 +444,106 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		fmt.Fprintf(cfg.Stdout, "switched to %s (model: %s%s)\n", resolved.Name, resolved.Model, toolsStr)
 
 	default:
+		if cfg.Commands != nil && handlePluginCommand(line, cfg) {
+			break
+		}
 		fmt.Fprintf(cfg.Stdout, "unknown command: %s (try /help)\n", cmd)
 	}
 
 	return false
+}
+
+// handlePluginCommand routes /<plugin> ... to the plugin command source. It
+// returns true when the command was handled (hit or miss).
+func handlePluginCommand(line string, cfg *Config) bool {
+	rest := strings.TrimPrefix(line, "/")
+	pluginName, rest, _ := strings.Cut(rest, " ")
+	pluginName = strings.ToLower(pluginName)
+	rest = strings.TrimLeft(rest, " \t")
+
+	if rest == "" {
+		return handlePluginBare(pluginName, cfg)
+	}
+
+	command := rest
+	var args string
+	if idx := strings.IndexAny(command, " \t"); idx >= 0 {
+		args = strings.TrimSpace(command[idx:])
+		command = command[:idx]
+	}
+
+	result, err := cfg.Commands.RunCommand(pluginName, command, args)
+	if err != nil {
+		fmt.Fprintf(cfg.Stdout, "%s\n", formatPluginError(pluginName, command, err))
+		return true
+	}
+
+	if result.Text != "" {
+		fmt.Fprintln(cfg.Stdout, result.Text)
+	} else if result.Data != nil {
+		b, err := json.Marshal(result.Data)
+		if err != nil {
+			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+		} else {
+			fmt.Fprintln(cfg.Stdout, string(b))
+		}
+	}
+	return true
+}
+
+// handlePluginBare handles a bare /<plugin> by showing curated help or listing
+// the plugin's commands.
+func handlePluginBare(pluginName string, cfg *Config) bool {
+	text, err := cfg.Commands.Help(pluginName, "")
+	if err == nil && text != "" {
+		fmt.Fprintln(cfg.Stdout, text)
+		return true
+	}
+
+	cmds, err := cfg.Commands.ListCommands(pluginName)
+	if err != nil {
+		fmt.Fprintf(cfg.Stdout, "%s\n", formatPluginError(pluginName, "", err))
+		return true
+	}
+	if len(cmds) == 0 {
+		fmt.Fprintf(cfg.Stdout, "%s has no commands\n", pluginName)
+		return true
+	}
+	fmt.Fprintf(cfg.Stdout, "%s commands:\n", pluginName)
+	for _, c := range cmds {
+		fmt.Fprintf(cfg.Stdout, "  %s  %s\n", c.Name, c.Description)
+	}
+	return true
+}
+
+// formatPluginError produces a user-facing message for plugin command errors.
+func formatPluginError(pluginName, command string, err error) string {
+	switch {
+	case errors.Is(err, ErrUnknownPlugin):
+		return fmt.Sprintf("unknown command: /%s (try /help)", pluginName)
+	case errors.Is(err, ErrPluginInactive):
+		return fmt.Sprintf("plugin %s is not active", pluginName)
+	case errors.Is(err, ErrUnknownCommand):
+		return fmt.Sprintf("%s: no such command: %s", pluginName, command)
+	default:
+		return fmt.Sprintf("%s: %v", pluginName, err)
+	}
+}
+
+// printPluginCommandsHelp prints a flat plugin-commands section for /help,
+// enumerating each plugin's command (name + one-line description).
+func printPluginCommandsHelp(cfg *Config) {
+	fmt.Fprintln(cfg.Stdout, "")
+	fmt.Fprintln(cfg.Stdout, "Plugin commands:")
+	for _, name := range cfg.Commands.Plugins() {
+		cmds, err := cfg.Commands.ListCommands(name)
+		if err != nil {
+			continue
+		}
+		for _, c := range cmds {
+			fmt.Fprintf(cfg.Stdout, "  /%s %s  %s\n", name, c.Name, c.Description)
+		}
+	}
 }
 
 // fileNames returns a comma-separated list of file paths from a batch's files.
