@@ -168,6 +168,8 @@ Wire plugins speak the genie wire plugin protocol (version 1; the schema in `pro
 
 A command plugin advertises `commands: true` in its handshake and answers `commands/list` (cached at load) with `{name, description, usage}` entries. The REPL routes two-token input `/<plugin> <command> …` to the plugin via `commands/run`, passing the raw argument string. Bare `/<plugin>` invokes the plugin's optional `commands/help`, falling back to its flat listing. Command RPC shares the tool-call budget (5s timeout) and failure rules; interactive work (like a device-flow login) completes inside the plugin's own process.
 
+Command names are single-token within a plugin (whitespace or a leading slash is dropped with a warning; duplicate names resolve last-wins). A plugin whose own name matches a built-in slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `agent`) is rejected at load with a warning — the built-in wins.
+
 ### Lifecycle hooks
 
 Lifecycle plugins observe and can rewrite each turn as it runs, via five
