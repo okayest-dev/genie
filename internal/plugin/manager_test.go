@@ -485,3 +485,559 @@ capabilities = ["wires"]
 		t.Error("expected directory layout capability 'wires'")
 	}
 }
+
+func commandsPluginScript() string {
+	return `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"greet","description":"Greet someone","usage":"<name>"}]},"id":'"$id"'}'
+            ;;
+        "commands/run")
+            cmd_name=$(echo "$line" | jq -r '.params.name')
+            cmd_args=$(echo "$line" | jq -r '.params.arguments')
+            echo '{"jsonrpc":"2.0","result":{"text":"Hello from '"$cmd_name"': '"$cmd_args"'"},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+}
+
+func loadCommandsPlugin(t *testing.T, script string) (*Manager, *Plugin) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("cmd-plugin not found")
+	}
+	return mgr, p
+}
+
+func TestManagerLoadCommandsPlugin(t *testing.T) {
+	mgr, p := loadCommandsPlugin(t, commandsPluginScript())
+	defer mgr.Shutdown()
+
+	if len(p.Commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(p.Commands))
+	}
+	if p.Commands[0].Name != "greet" {
+		t.Errorf("expected command name 'greet', got %q", p.Commands[0].Name)
+	}
+	if p.Commands[0].Description != "Greet someone" {
+		t.Errorf("expected description 'Greet someone', got %q", p.Commands[0].Description)
+	}
+	if p.Commands[0].Usage != "<name>" {
+		t.Errorf("expected usage '<name>', got %q", p.Commands[0].Usage)
+	}
+}
+
+func TestManagerCallCommand(t *testing.T) {
+	mgr, p := loadCommandsPlugin(t, commandsPluginScript())
+	defer mgr.Shutdown()
+
+	result, err := p.CallCommand("greet", "World")
+	if err != nil {
+		t.Fatalf("CallCommand failed: %v", err)
+	}
+	if result.Text != "Hello from greet: World" {
+		t.Errorf("expected 'Hello from greet: World', got %q", result.Text)
+	}
+}
+
+func TestManagerCallCommandTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	slowScript := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"slow","description":"A slow command"}]},"id":'"$id"'}'
+            ;;
+        "commands/run")
+            sleep 10
+            echo '{"jsonrpc":"2.0","result":{"text":"too late"},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(slowScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("cmd-plugin not found")
+	}
+
+	_, err := p.CallCommand("slow", "")
+	if err == nil {
+		t.Fatal("expected error from timed-out command")
+	}
+	if p.Active {
+		t.Error("plugin should be inactive after timeout")
+	}
+
+	mgr.Shutdown()
+}
+
+func TestManagerCallCommandRPCError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	errorScript := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"fail","description":"A command that fails"}]},"id":'"$id"'}'
+            ;;
+        "commands/run")
+            echo '{"jsonrpc":"2.0","error":{"code":-32602,"message":"bad input"},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(errorScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("cmd-plugin not found")
+	}
+
+	_, err := p.CallCommand("fail", "")
+	if err == nil {
+		t.Fatal("expected error from RPC error")
+	}
+	if !p.Active {
+		t.Error("plugin should still be active after RPC error")
+	}
+
+	mgr.Shutdown()
+}
+
+func TestManagerCallCommandDeadPlugin(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	dieScript := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"bye","description":"Exit"}]},"id":'"$id"'}'
+            ;;
+        "commands/run")
+            exit 1
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(dieScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("cmd-plugin not found")
+	}
+
+	_, err := p.CallCommand("bye", "")
+	if err == nil {
+		t.Fatal("expected error from dead plugin")
+	}
+	if !strings.Contains(err.Error(), "not active") {
+		t.Errorf("expected 'not active' error, got %q", err.Error())
+	}
+
+	mgr.Shutdown()
+}
+
+func TestManagerReservedNameRejected(t *testing.T) {
+	reservedNames := []string{"help", "quit", "exit", "new", "changes", "model", "agent"}
+	for _, name := range reservedNames {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			script := commandsPluginScript()
+			pluginPath := filepath.Join(tmpDir, name)
+			if err := os.WriteFile(pluginPath, []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			reg := tools.NewRegistry()
+			mgr := NewManager(tmpDir, nil, nil, reg)
+			done := make(chan error, 1)
+			go func() { done <- mgr.LoadPlugins() }()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("LoadPlugins failed: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("LoadPlugins timed out")
+			}
+			plugins := mgr.GetPlugins()
+			if _, ok := plugins[name]; ok {
+				t.Errorf("plugin with reserved name %q should have been rejected", name)
+			}
+			mgr.Shutdown()
+		})
+	}
+}
+
+func TestManagerCommandsEmptyList(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	emptyScript := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":{"commands":[]},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(emptyScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("cmd-plugin not found")
+	}
+	if len(p.Commands) != 0 {
+		t.Errorf("expected 0 commands, got %d", len(p.Commands))
+	}
+	mgr.Shutdown()
+}
+
+func TestNormalizeCommands(t *testing.T) {
+	defs := []CommandDef{
+		{Name: "keep-start", Description: "first valid"},
+		{Name: "two words", Description: "whitespace dropped"},
+		{Name: "tab\there", Description: "tab dropped"},
+		{Name: "/leading", Description: "leading slash dropped"},
+		{Name: "", Description: "empty name dropped"},
+		{Name: "keep-start", Description: "duplicate, last-wins"},
+		{Name: "dup", Description: "first dup"},
+		{Name: "dup", Description: "last dup"},
+		{Name: "tail", Description: "last valid"},
+	}
+	got := normalizeCommands(defs)
+	want := []string{"keep-start", "dup", "tail"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d commands, got %d: %+v", len(want), len(got), got)
+	}
+	for i, name := range want {
+		if got[i].Name != name {
+			t.Errorf("expected command %d to be %q, got %q", i, name, got[i].Name)
+		}
+	}
+	if got[0].Description != "duplicate, last-wins" {
+		t.Errorf("expected duplicate to resolve last-wins, got %q", got[0].Description)
+	}
+	if got[1].Description != "last dup" {
+		t.Errorf("expected duplicate to resolve last-wins, got %q", got[1].Description)
+	}
+
+	if got := normalizeCommands(nil); len(got) != 0 {
+		t.Errorf("expected empty list tolerated, got %d", len(got))
+	}
+}
+
+func TestManagerCommandsNameValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"good","description":"kept"},{"name":"two words","description":"dropped"},{"name":"good","description":"last-wins"},{"name":"/nope","description":"leading slash"}]},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("cmd-plugin not found")
+	}
+	if len(p.Commands) != 1 {
+		t.Fatalf("expected 1 command after filtering, got %d: %+v", len(p.Commands), p.Commands)
+	}
+	if p.Commands[0].Name != "good" || p.Commands[0].Description != "last-wins" {
+		t.Errorf("expected single 'good' (last-wins) command, got %+v", p.Commands)
+	}
+	mgr.Shutdown()
+}
+
+func TestManagerCommandsListRPCError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("plugin should remain registered (inactive) after a commands/list RPC error")
+	}
+	if p.Active {
+		t.Error("plugin should be inactive after a commands/list RPC error")
+	}
+	mgr.Shutdown()
+}
+
+func TestManagerCommandsListParseError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	script := `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"wires":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":"not-an-object","id":'"$id"'}'
+            ;;
+        "shutdown")
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+	pluginPath := filepath.Join(tmpDir, "cmd-plugin")
+	if err := os.WriteFile(pluginPath, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewRegistry()
+	mgr := NewManager(tmpDir, nil, nil, reg)
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+	plugins := mgr.GetPlugins()
+	p, ok := plugins["cmd-plugin"]
+	if !ok {
+		t.Fatal("plugin should remain registered (inactive) after a malformed commands/list")
+	}
+	if p.Active {
+		t.Error("plugin should be inactive after a malformed commands/list")
+	}
+	mgr.Shutdown()
+}

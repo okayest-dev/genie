@@ -24,12 +24,25 @@ const (
 	ShutdownForce  = 2 * time.Second
 )
 
+// ReservedSlashNames are built-in REPL slash commands that plugins may not
+// shadow. A plugin whose display name matches one of these is rejected at load.
+var ReservedSlashNames = map[string]bool{
+	"help":    true,
+	"quit":    true,
+	"exit":    true,
+	"new":     true,
+	"changes": true,
+	"model":   true,
+	"agent":   true,
+}
+
 type Plugin struct {
 	Name         string
 	Path         string
 	Manifest     *Manifest
 	Capabilities Capabilities
 	Tools        []ToolDef
+	Commands     []CommandDef
 	Models       []ModelDef
 	Cmd          *exec.Cmd
 	Codec        *Codec
@@ -226,6 +239,21 @@ func (m *Manager) loadPlugin(path string) error {
 		}
 	}
 
+	if p.Capabilities.Commands {
+		if ReservedSlashNames[name] {
+			slog.Warn("plugin name collides with reserved built-in slash command, skipping", "name", name)
+			p.Close()
+			m.pluginsMu.Lock()
+			delete(m.plugins, name)
+			m.pluginsMu.Unlock()
+			return nil
+		}
+		if err := p.loadCommands(); err != nil {
+			p.Close()
+			return fmt.Errorf("load commands: %w", err)
+		}
+	}
+
 	if p.Capabilities.Wires {
 		if err := p.loadWires(); err != nil {
 			p.Close()
@@ -233,7 +261,7 @@ func (m *Manager) loadPlugin(path string) error {
 		}
 	}
 
-	slog.Info("plugin loaded", "name", name, "tools", len(p.Tools), "wires", p.Capabilities.Wires)
+	slog.Info("plugin loaded", "name", name, "tools", len(p.Tools), "commands", len(p.Commands), "wires", p.Capabilities.Wires)
 	return nil
 }
 
@@ -306,6 +334,62 @@ func (p *Plugin) loadTools() error {
 	}
 	p.Tools = result.Tools
 	return nil
+}
+
+func (p *Plugin) loadCommands() error {
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodCommandsList,
+		ID:      2,
+	}
+	if err := p.Codec.WriteRequest(req); err != nil {
+		return err
+	}
+
+	resp, err := p.Codec.ReadResponse()
+	if err != nil {
+		return err
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("commands/list: %w", resp.Error)
+	}
+
+	var result CommandsListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return fmt.Errorf("parse commands/list: %w", err)
+	}
+	p.Commands = normalizeCommands(result.Commands)
+	return nil
+}
+
+// normalizeCommands applies the plugin protocol's command-name rules: a command
+// whose name is not a single token (contains whitespace or a leading slash) is
+// dropped with a warning, duplicate names resolve last-wins with a warning, and
+// an empty list is tolerated.
+func normalizeCommands(defs []CommandDef) []CommandDef {
+	last := make(map[string]int)
+	for i, def := range defs {
+		if isSingleToken(def.Name) {
+			last[def.Name] = i
+		}
+	}
+	var out []CommandDef
+	for i, def := range defs {
+		if lastIdx, ok := last[def.Name]; ok {
+			if lastIdx != i {
+				slog.Warn("duplicate command name, last-wins", "name", def.Name)
+				continue
+			}
+			out = append(out, def)
+			continue
+		}
+		slog.Warn("dropping command with non-single-token name", "name", def.Name)
+	}
+	return out
+}
+
+func isSingleToken(name string) bool {
+	return name != "" && !strings.HasPrefix(name, "/") && !strings.ContainsAny(name, " \t\n")
 }
 
 func (p *Plugin) loadWires() error {
@@ -526,6 +610,54 @@ func (p *Plugin) CallTool(name string, args map[string]any) (*ToolsCallResult, e
 		var result ToolsCallResult
 		if err := json.Unmarshal(resp.Result, &result); err != nil {
 			return nil, fmt.Errorf("parse tool result: %w", err)
+		}
+		return &result, nil
+	}
+}
+
+func (p *Plugin) CallCommand(name, args string) (*CommandsRunResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.Active {
+		return nil, fmt.Errorf("plugin %s is not active", p.Name)
+	}
+
+	params := CommandsRunParams{Name: name, Arguments: args}
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodCommandsRun,
+		Params:  mustMarshal(params),
+		ID:      time.Now().UnixNano(),
+	}
+	if err := p.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+
+	respCh := make(chan *Response, 1)
+	go func() {
+		resp, _ := p.Codec.ReadResponse()
+		respCh <- resp
+	}()
+
+	select {
+	case <-ctx.Done():
+		p.Active = false
+		return nil, fmt.Errorf("command run timeout")
+	case resp := <-respCh:
+		if resp == nil {
+			p.Active = false
+			return nil, fmt.Errorf("plugin %s is not active", p.Name)
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("command run error: %s", resp.Error.Message)
+		}
+		var result CommandsRunResult
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			return nil, fmt.Errorf("parse command result: %w", err)
 		}
 		return &result, nil
 	}
