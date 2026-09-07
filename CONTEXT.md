@@ -119,3 +119,35 @@ _Avoid_: active agent, current agent
 **Handoff**:
 An agent yielding the foreground to another named agent, which becomes primary and addresses the user directly, then hands back. Driven by a tool; a stack remembers the return path. Distinct from delegation (delegation stays behind the scenes; handoff puts the target in the foreground).
 _Avoid_: switch (alone), yield (alone)
+
+## Plugin auth
+
+**Credential store**:
+The plugin-owned file a wire plugin with its own authentication persists durable credentials to — host-keyed JSON under the plugin's XDG data dir, owner-only permissions, atomic writes. Owned by the plugin; never the shared Copilot `apps.json`.
+_Avoid_: auth store, apps.json, token cache
+
+**Credential record**:
+One host's entry in a credential store — the durable login (the GitHub OAuth token) plus its metadata: host, user, expiry and refresh token when issued, and the provider's API base. Never carries the derived token.
+_Avoid_: credential (alone), stored token
+
+**Derived token**:
+The short-lived provider token minted from a credential record by a token exchange (the ~25 minute Copilot JWT), held in memory by the plugin only.
+_Avoid_: session token, Copilot JWT, cached token
+
+**Token exchange**:
+The unattended call that turns a credential record into a fresh derived token for the provider's host. A plugin-owned operation, distinct from login.
+_Avoid_: refresh (alone), mint
+
+**Device-flow login**:
+The attended, interactive login that creates or renews a credential record — displays a code and verification URL, polls until the user authorizes, and persists the record. Distinct from refresh.
+_Avoid_: auth login, oauth login
+
+**Refresh**:
+Unattended renewal of a credential — re-exchanging a derived token, or rotating a refresh token back into the credential record. Distinct from login.
+_Avoid_: re-login, re-auth
+
+## Plugin command
+
+**Plugin command**:
+A user-typed slash command a wire plugin registers over the `commands` capability and the REPL invokes as `/<plugin> <command>` — e.g. `copilot`'s `auth` reached as `/copilot auth login`. The plugin advertises the command (`name`, `description`, `usage`) via `commands/list`; the REPL passes the raw remaining arguments to it through `commands/run`. Distinct from a Tool, which the model invokes, not the user.
+_Avoid_: plugin slash command, plugin tool, registered command

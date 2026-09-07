@@ -57,6 +57,12 @@ func (h *Handler) {{ .Name }}({{ range $i, $p := .Params }}{{ if $i }}, {{ end }
 	h.models = models
 {{- else if eq .Name "OnInit" }}
 	h.onInit = fn
+{{- else if eq .Name "OnCommandsList" }}
+	h.onCommandsList = fn
+{{- else if eq .Name "OnCommandsRun" }}
+	h.onCommandsRun = fn
+{{- else if eq .Name "OnCommandsHelp" }}
+	h.onCommandsHelp = fn
 {{- else if eq .Name "OnStream" }}
 	h.onStream = fn
 {{- else if eq .Name "OnBeforeRequest" }}
@@ -115,6 +121,49 @@ func (h *Handler) handleRequest(req *Request) {
 			}
 		}
 		h.writeResult(req.ID, WireInitResult{OK: true})
+		{{- else if contains .Action "onCommandsList" }}
+		if h.onCommandsList == nil {
+			h.writeError(req.ID, MethodNotFound, "commands/list not implemented")
+			return
+		}
+		commands, err := h.onCommandsList()
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, CommandsListResult{Commands: commands})
+		{{- else if contains .Action "onCommandsRun" }}
+		if h.onCommandsRun == nil {
+			h.writeError(req.ID, MethodNotFound, "commands/run not implemented")
+			return
+		}
+		params, perr := ParseParams[CommandsRunParams](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onCommandsRun(params.Name, params.Arguments)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, out)
+		{{- else if contains .Action "onCommandsHelp" }}
+		if h.onCommandsHelp == nil {
+			h.writeError(req.ID, MethodNotFound, "commands/help not implemented")
+			return
+		}
+		params, perr := ParseParams[CommandsHelpParams](req.Params)
+		if perr != nil {
+			h.writeError(req.ID, InvalidParams, perr.Error())
+			return
+		}
+		out, err := h.onCommandsHelp(params.Name)
+		if err != nil {
+			h.writeError(req.ID, InternalError, err.Error())
+			return
+		}
+		h.writeResult(req.ID, out)
 		{{- else if contains .Action "WireListModels" }}
 		h.writeResult(req.ID, WireListModelsResult{Models: h.models})
 		{{- else if contains .Action "onStream" }}
