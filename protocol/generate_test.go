@@ -57,6 +57,9 @@ func TestGenerateMethodConstants(t *testing.T) {
 		`MethodContextAfterResponse = "context/after_response"`,
 		`MethodContextCompact = "context/compact"`,
 		`MethodContextCondense = "context/condense"`,
+		`MethodCommandsList = "commands/list"`,
+		`MethodCommandsRun = "commands/run"`,
+		`MethodCommandsHelp = "commands/help"`,
 		`MethodPing = "ping"`,
 		`MethodShutdown = "shutdown"`,
 	}
@@ -97,6 +100,12 @@ func TestGenerateTypes(t *testing.T) {
 		"type WireInitResult struct",
 		"type ModelDef struct",
 		"type WireListModelsResult struct",
+		"type CommandDef struct",
+		"type CommandsListResult struct",
+		"type CommandsRunParams struct",
+		"type CommandsRunResult struct",
+		"type CommandsHelpParams struct",
+		"type CommandsHelpResult struct",
 	}
 
 	for _, want := range typeNames {
@@ -119,6 +128,9 @@ func TestGenerateHandler(t *testing.T) {
 		"func NewHandler(caps Capabilities) *Handler",
 		"func (h *Handler) SetModels(",
 		"func (h *Handler) OnInit(",
+		"func (h *Handler) OnCommandsList(",
+		"func (h *Handler) OnCommandsRun(",
+		"func (h *Handler) OnCommandsHelp(",
 		"func (h *Handler) OnStream(",
 		"func (h *Handler) OnBeforeRequest(",
 		"func (h *Handler) OnAfterResponse(",
@@ -145,6 +157,9 @@ func TestGenerateDispatch(t *testing.T) {
 	cases := []string{
 		"case MethodCapabilitiesList:",
 		"case MethodWireInit:",
+		"case MethodCommandsList:",
+		"case MethodCommandsRun:",
+		"case MethodCommandsHelp:",
 		"case MethodWireListModels:",
 		"case MethodWireStream:",
 		"case MethodPing:",

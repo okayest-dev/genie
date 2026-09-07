@@ -162,6 +162,11 @@ Wire plugins speak the genie wire plugin protocol (version 1; the schema in `pro
 - **Tool plugins** — add new tools to the harness
 - **Wire plugins** — add new provider backends (e.g. AWS Bedrock, GitHub Copilot)
 - **Lifecycle plugins** — hook into the agent loop around each turn
+- **Command plugins** — expose user-typed slash commands (`/<plugin> <command>`, e.g. `/copilot auth`) via the `commands` capability (`commands/list`, `commands/run`, optional `commands/help`); useful for plugin-owned login/credential workflows. Slash names are single-token within the plugin and fully namespaced, so nothing collides with genie's built-in commands.
+
+### Plugins and commands
+
+A command plugin advertises `commands: true` in its handshake and answers `commands/list` (cached at load) with `{name, description, usage}` entries. The REPL routes two-token input `/<plugin> <command> …` to the plugin via `commands/run`, passing the raw argument string. Bare `/<plugin>` invokes the plugin's optional `commands/help`, falling back to its flat listing. Command RPC shares the tool-call budget (5s timeout) and failure rules; interactive work (like a device-flow login) completes inside the plugin's own process.
 
 ### Lifecycle hooks
 

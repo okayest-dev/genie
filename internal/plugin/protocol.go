@@ -14,6 +14,9 @@ const (
 	MethodCapabilitiesList       = "capabilities/list"
 	MethodToolsList              = "tools/list"
 	MethodToolsCall              = "tools/call"
+	MethodCommandsList           = "commands/list"
+	MethodCommandsRun            = "commands/run"
+	MethodCommandsHelp           = "commands/help"
 	MethodWireInit               = "wire/init"
 	MethodWireStream             = "wire/stream"
 	MethodWireListModels         = "wire/list_models"
@@ -82,6 +85,10 @@ type Capabilities struct {
 	Tools     bool `json:"tools"`
 	Wires     bool `json:"wires"`
 	Providers bool `json:"providers"`
+	// Commands registers user-typed slash commands the plugin exposes in the
+	// REPL as /<plugin> <command>, discovered via commands/list and driven via
+	// commands/run.
+	Commands bool `json:"commands"`
 	// Context hooks the plugin can perform, declared granularly so a plugin
 	// participates in context processing without faking unrelated seams.
 	BeforeRequest bool `json:"context_before"`
@@ -101,7 +108,7 @@ type Capabilities struct {
 // HasAny reports whether the plugin declares at least one capability. A plugin
 // that declares none is a protocol/validation error.
 func (c *Capabilities) HasAny() bool {
-	return c.Tools || c.Wires || c.Providers || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
+	return c.Tools || c.Wires || c.Providers || c.Commands || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
 		c.LifecycleRequestBuilt || c.LifecycleToolBefore || c.LifecycleToolAfter || c.LifecycleResponseReady || c.LifecycleTurnError
 }
 
@@ -113,6 +120,7 @@ const (
 	PresenceTools PresenceMask = 1 << iota
 	PresenceWires
 	PresenceProviders
+	PresenceCommands
 	PresenceBeforeRequest
 	PresenceAfterResponse
 	PresenceCompact
@@ -135,6 +143,9 @@ func (c *Capabilities) Mask() PresenceMask {
 	}
 	if c.Providers {
 		m |= PresenceProviders
+	}
+	if c.Commands {
+		m |= PresenceCommands
 	}
 	if c.BeforeRequest {
 		m |= PresenceBeforeRequest
@@ -187,6 +198,48 @@ type ToolsCallResult struct {
 
 type ContentItem struct {
 	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// CommandDef is one slash command a wire plugin registers over the commands
+// capability, addressed in the REPL as /<plugin> <name>. Usage is free-text,
+// the contract for the command's arguments, not a structured schema.
+type CommandDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Usage       string `json:"usage,omitempty"`
+}
+
+// CommandsListResult is the response to commands/list: the plugin's advertised
+// commands, cached at load mirroring tools/list.
+type CommandsListResult struct {
+	Commands []CommandDef `json:"commands"`
+}
+
+// CommandsRunParams carries a command invocation; Arguments is the raw string
+// the user typed after the command token, and the plugin owns its own
+// sub-command parsing.
+type CommandsRunParams struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// CommandsRunResult is the outcome of a command run: the REPL prints Text, or
+// compact JSON of Data when Text is empty.
+type CommandsRunResult struct {
+	Text string `json:"text,omitempty"`
+	Data any    `json:"data,omitempty"`
+}
+
+// CommandsHelpParams requests curated help for a plugin (Name omitted) or a
+// single command; probed lazily, an absent method falls back to the flat
+// commands/list listing.
+type CommandsHelpParams struct {
+	Name string `json:"name,omitempty"`
+}
+
+// CommandsHelpResult is the curated help text for the requested plugin/command.
+type CommandsHelpResult struct {
 	Text string `json:"text"`
 }
 

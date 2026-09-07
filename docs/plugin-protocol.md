@@ -9,7 +9,7 @@ Plugins are external executables that communicate with genie over stdin/stdout u
 - **Transport**: stdio (stdin for requests, stdout for responses)
 - **Encoding**: UTF-8 JSON
 - **Framing**: One JSON object per line (NDJSON)
-- **Protocol Version**: 2
+- **Protocol Version**: 1
 
 Plugins can be written in any language that can read from stdin and write to stdout.
 
@@ -89,11 +89,17 @@ Standard JSON-RPC error codes:
     "tools": true,
     "wires": false,
     "providers": false,
+    "commands": true,
     "context_before": true,
     "context_after": false,
     "context_compact": false,
     "context_condense": false,
-    "version": 2
+    "lifecycle_request_built": true,
+    "lifecycle_tool_before": false,
+    "lifecycle_tool_after": false,
+    "lifecycle_response_ready": false,
+    "lifecycle_turn_error": false,
+    "version": 1
   },
   "id": 1
 }
@@ -103,11 +109,13 @@ Standard JSON-RPC error codes:
 - `tools` (boolean): Plugin provides tools
 - `wires` (boolean): Plugin provides wire protocols
 - `providers` (boolean): Plugin provides provider access (collapsed into wires)
+- `commands` (boolean): Plugin registers slash commands (see `commands/list`)
 - `context_before` (boolean): Plugin declares a `context/before_request` hook
 - `context_after` (boolean): Plugin declares a `context/after_response` hook
 - `context_compact` (boolean): Plugin declares a `context/compact` hook (single-active)
 - `context_condense` (boolean): Plugin declares a `context/condense` hook (single-active)
-- `version` (integer): Protocol version (must be 1)
+- `lifecycle_*` (boolean): Plugin declares lifecycle hooks (`lifecycle/request_built`, `lifecycle/tool_before`, `lifecycle/tool_after`, `lifecycle/response_ready`, `lifecycle/turn_error`)
+- `version` (integer): Protocol version (1)
 
 ### tools/list
 
@@ -200,6 +208,114 @@ Each tool definition contains:
 - `content` (array): Array of content items
   - `type` (string): Content type (currently only "text")
   - `text` (string): Text content
+
+### commands/list
+
+**Direction**: Host → Plugin
+
+**Purpose**: Discover the plugin's registered slash commands. A plugin that declares `commands: true` in its capabilities is queried once at load, mirroring `tools/list`. Each command is addressed in the REPL as `/<plugin> <command>` (e.g. the `auth` command of the `copilot` plugin is run as `/copilot auth`).
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "commands/list",
+  "id": 2
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "commands": [
+      {
+        "name": "auth",
+        "description": "Log in, refresh, or show status for the Copilot host",
+        "usage": "auth [login|refresh|status] [--host <host>]"
+      }
+    ]
+  },
+  "id": 2
+}
+```
+
+Each command definition contains:
+- `name` (string, required): Single-token command identifier — no whitespace, no leading `/`. Names that are not single tokens are dropped with a warning; duplicate names resolve last-wins with a warning; an empty list is tolerated.
+- `description` (string, required): One-line human-readable description, shown in the flat `/help` plugin-commands listing.
+- `usage` (string, optional): Free-text usage line for the command.
+
+### commands/run
+
+**Direction**: Host → Plugin
+
+**Purpose**: Execute a command. Arguments are delivered as the raw string the user typed after the command token; the plugin owns its own sub-command parsing (e.g. `/copilot auth login --host tenant.ghe.com` reports `name: "auth"`, `arguments: "login --host tenant.ghe.com"`). The call must return promptly: interactive work (a device-flow login) completes asynchronously inside the plugin's own process, driven by the same request-scoped rules as wire auth.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "commands/run",
+  "params": {
+    "name": "auth",
+    "arguments": "login --host tenant.ghe.com"
+  },
+  "id": 3
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "text": "Open https://github.com/login/device and enter code ABCD-1234"
+  },
+  "id": 3
+}
+```
+
+**Fields**:
+- `name` (string): Command name to invoke
+- `arguments` (string): Raw argument string from the REPL line
+
+**Result**:
+- `text` (string, optional): Text the REPL prints to the user
+- `data` (any, optional): Structured result, printed as compact JSON when `text` is empty
+
+**Failure semantics** mirror `tools/call`: the call runs within the `RequestTimeout` (5s) RPC budget — a timeout marks the plugin inactive; a JSON-RPC error response prints the plugin's message and the plugin stays active; a command invoked on a plugin that has died reports "plugin <name> is not active".
+
+### commands/help
+
+**Direction**: Host → Plugin
+
+**Purpose**: Optional curated help for a plugin or a single command, invoked lazily when the user runs bare `/<plugin>` with no command token. The method is not declared in capabilities — it is probed at call time: an `-32601` (method not found) response means the plugin has no help function and the host falls back to the flat `commands/list` listing. Providing it is the plugin's prerogative, never genie's requirement.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "commands/help",
+  "params": {
+    "name": "auth"
+  },
+  "id": 4
+}
+```
+
+`name` is optional; omitted, it asks for plugin-level help.
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "text": "auth manages the Copilot credential: 'login' starts a device flow, 'refresh' renews the token, 'status' shows the current host."
+  },
+  "id": 4
+}
+```
 
 ### wire/init
 
@@ -472,7 +588,7 @@ capabilities = ["tools", "wires"]
 **Fields**:
 - `name` (string, required): Plugin name
 - `version` (string, required): Plugin version
-- `capabilities` (array of strings, required): List of capabilities ("tools", "wires", "providers", "context_before", "context_after", "context_compact", "context_condense")
+- `capabilities` (array of strings, required): List of capabilities ("tools", "wires", "providers", "commands", "context_before", "context_after", "context_compact", "context_condense", "lifecycle_request_built", "lifecycle_tool_before", "lifecycle_tool_after", "lifecycle_response_ready", "lifecycle_turn_error")
 
 If no manifest is present, the host will probe the plugin with `capabilities/list` after spawning.
 
@@ -509,11 +625,14 @@ Environment variable override: `GENIE_PLUGIN_DIR`
 | Plugin doesn't respond to ping | Kill plugin, mark inactive |
 | Plugin returns invalid JSON | Kill plugin, mark inactive, log error |
 | Plugin returns unknown method | Error response (-32601), plugin stays active |
+| Plugin command exceeds RequestTimeout (5s) | Timeout, mark plugin inactive (mirrors tools/call) |
+| Plugin command returns JSON-RPC error | Error response printed, plugin stays active |
 
 ## Name Collision Handling
 
 - **Tool collision**: Plugin tools that collide with built-in tool names are silently dropped (built-in wins). A warning is logged.
 - **Wire collision**: Plugin wires that collide with registered wire names are rejected with a warning. Core wires are never overridden.
+- **Built-in slash name collision**: A plugin whose display name matches a built-in REPL slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `agent`) is rejected at startup with a warning and skipped — the built-in wins. Plugin command names (`/<plugin> <command>`) share the plugin's namespace and never collide with built-ins.
 
 ## Logging
 
@@ -539,7 +658,8 @@ def main():
                 "tools": True,
                 "wires": False,
                 "providers": False,
-                "version": 2
+                "commands": True,
+                "version": 1
             }
         elif req["method"] == "tools/list":
             resp["result"] = {
@@ -561,6 +681,20 @@ def main():
             resp["result"] = {
                 "content": [{"type": "text", "text": f"Hello, {name}!"}]
             }
+        elif req["method"] == "commands/list":
+            resp["result"] = {
+                "commands": [{
+                    "name": "greet",
+                    "description": "Greet the user",
+                    "usage": "greet [name]"
+                }]
+            }
+        elif req["method"] == "commands/run":
+            params = req.get("params", {})
+            args = params.get("arguments", "")
+            resp["result"] = {"text": f"Hello, {args or 'World'}!"}
+        elif req["method"] == "commands/help":
+            resp["result"] = {"text": "greet says hello to you or the name you pass."}
         elif req["method"] == "ping":
             resp["result"] = {}
         elif req["method"] == "shutdown":
