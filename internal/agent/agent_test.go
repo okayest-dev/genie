@@ -123,6 +123,39 @@ func TestRunTurnToolCallsExecutedSerially(t *testing.T) {
 	}
 }
 
+// TestRunTurnTextOnlyFencedBashNotExecuted characterises the issue #10 repro:
+// a text-only stream whose text carries a fenced bash block (the way a model
+// expresses a tool invocation when the wire cannot do native tool calls) is
+// treated as a final answer. The tool never executes, so the model never sees
+// a tool result and the turn ends. When the text-fence tool-call fix lands,
+// this test must flip to assert that bash executes and the loop continues.
+func TestRunTurnTextOnlyFencedBashNotExecuted(t *testing.T) {
+	var bashCalls int
+	reg := tools.NewRegistry()
+	reg.Register(&countingBashStub{calls: &bashCalls})
+
+	c := &mockClient{events: []llm.Event{
+		{Kind: llm.EventText, Text: "Let me look at the repo.\n\n```bash\nfind . -name '*.go'\n```\n"},
+		{Kind: llm.EventFinish, End: llm.FinishStop},
+	}}
+
+	var out bytes.Buffer
+	if err := RunTurn(context.Background(), c, "m", "sys", "hi", &out, nil, nil, reg, nil, ""); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if bashCalls != 0 {
+		t.Errorf("bash executed %d times; text fence was not (and must not be) treated as a tool call", bashCalls)
+	}
+	if strings.Contains(out.String(), "── bash ") {
+		t.Errorf("unexpected tool framing for a text-only reply: %q", out.String())
+	}
+	// The fence is echoed to the user verbatim and the turn ends — the issue
+	// #10 symptom.
+	if !strings.Contains(out.String(), "```bash") {
+		t.Errorf("stdout missing fenced block: %q", out.String())
+	}
+}
+
 func TestRunTurnDisabledToolReturnsError(t *testing.T) {
 	var calls int
 	mock := &mockStreamClient{
@@ -246,5 +279,20 @@ func (b *bashStub) Parameters() map[string]any {
 	return map[string]any{"type": "object"}
 }
 func (b *bashStub) Execute(_ json.RawMessage) (string, error) {
+	return "output", nil
+}
+
+// countingBashStub is an enabled bash tool whose execution count is observable.
+type countingBashStub struct {
+	calls *int
+}
+
+func (b *countingBashStub) Name() string        { return "bash" }
+func (b *countingBashStub) Description() string { return "Run bash" }
+func (b *countingBashStub) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (b *countingBashStub) Execute(_ json.RawMessage) (string, error) {
+	*b.calls++
 	return "output", nil
 }
