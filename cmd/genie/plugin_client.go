@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"iter"
+	"strings"
 
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/plugin"
@@ -33,8 +34,9 @@ func (c *pluginWireClient) Stream(_ context.Context, req llm.Request) (iter.Seq[
 	}
 
 	var wireResult struct {
-		Text      string `json:"text"`
-		ToolCalls []struct {
+		Text         string `json:"text"`
+		FinishReason string `json:"finish_reason"`
+		ToolCalls    []struct {
 			ID       string `json:"id"`
 			Type     string `json:"type"`
 			Function struct {
@@ -60,8 +62,8 @@ func (c *pluginWireClient) Stream(_ context.Context, req llm.Request) (iter.Seq[
 			tcs := make([]llm.ToolCall, 0, len(wireResult.ToolCalls))
 			for _, tc := range wireResult.ToolCalls {
 				tcs = append(tcs, llm.ToolCall{
-					ID:       tc.ID,
-					Name:     tc.Function.Name,
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				})
 			}
@@ -69,7 +71,7 @@ func (c *pluginWireClient) Stream(_ context.Context, req llm.Request) (iter.Seq[
 		}
 		if wireResult.Usage != nil {
 			yield(llm.Event{
-				Kind: llm.EventUsage,
+				Kind:  llm.EventUsage,
 				Usage: llm.Usage{
 					PromptTokens:     wireResult.Usage.PromptTokens,
 					CompletionTokens: wireResult.Usage.CompletionTokens,
@@ -77,8 +79,25 @@ func (c *pluginWireClient) Stream(_ context.Context, req llm.Request) (iter.Seq[
 				},
 			})
 		}
-		yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+		yield(llm.Event{Kind: llm.EventFinish, End: finishReason(wireResult.FinishReason)})
 	}, nil
+}
+
+// finishReason maps a wire plugin's finish_reason string to a canonical
+// llm.FinishReason, defaulting to stop when the plugin omits it.
+func finishReason(reason string) llm.FinishReason {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "tool_calls", "function_call":
+		return llm.FinishToolCalls
+	case "length":
+		return llm.FinishLength
+	case "stop":
+		return llm.FinishStop
+	case "":
+		return llm.FinishStop
+	default:
+		return llm.FinishOther
+	}
 }
 
 func (c *pluginWireClient) ListModels(_ context.Context) ([]llm.Model, error) {

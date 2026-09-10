@@ -100,11 +100,11 @@ func TestPluginWireClientTextOnlyRepro(t *testing.T) {
 	}
 }
 
-// TestPluginWireClientFlattensFinishReason characterises the adapter defect
-// that contributes to the bug: a plugin-returned finish_reason (here
-// tool_calls) is dropped — the adapter always yields a bare stop finish, so
-// the agent loop can never branch on the provider's real end reason.
-func TestPluginWireClientFlattensFinishReason(t *testing.T) {
+// TestPluginWireClientSurfacesFinishReason covers the fix: a plugin-returned
+// finish_reason (here tool_calls) is surfaced to the agent loop instead of
+// being flattened to a bare stop, so the loop can branch on the provider's
+// real end reason.
+func TestPluginWireClientSurfacesFinishReason(t *testing.T) {
 	c := newPluginWireClient(fakeWirePlugin(json.RawMessage(
 		`{"text":"hi","finish_reason":"tool_calls"}`,
 	)))
@@ -124,8 +124,30 @@ func TestPluginWireClientFlattensFinishReason(t *testing.T) {
 	if finish == nil {
 		t.Fatal("no finish event emitted")
 	}
-	if finish.End != llm.FinishStop {
-		t.Errorf("finish = %q, want %q (plugin's tool_calls reason must currently be flattened)", finish.End, llm.FinishStop)
+	if finish.End != llm.FinishToolCalls {
+		t.Errorf("finish = %q, want %q (plugin's tool_calls reason must surface)", finish.End, llm.FinishToolCalls)
+	}
+}
+
+func TestFinishReasonMapping(t *testing.T) {
+	tests := []struct {
+		in   string
+		want llm.FinishReason
+	}{
+		{"", llm.FinishStop},
+		{"stop", llm.FinishStop},
+		{"tool_calls", llm.FinishToolCalls},
+		{"function_call", llm.FinishToolCalls},
+		{"length", llm.FinishLength},
+		{"content_filter", llm.FinishOther},
+		{"TOOL_CALLS", llm.FinishToolCalls},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := finishReason(tt.in); got != tt.want {
+				t.Errorf("finishReason(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
 	}
 }
 

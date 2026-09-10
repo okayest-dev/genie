@@ -123,36 +123,51 @@ func TestRunTurnToolCallsExecutedSerially(t *testing.T) {
 	}
 }
 
-// TestRunTurnTextOnlyFencedBashNotExecuted characterises the issue #10 repro:
-// a text-only stream whose text carries a fenced bash block (the way a model
-// expresses a tool invocation when the wire cannot do native tool calls) is
-// treated as a final answer. The tool never executes, so the model never sees
-// a tool result and the turn ends. When the text-fence tool-call fix lands,
-// this test must flip to assert that bash executes and the loop continues.
-func TestRunTurnTextOnlyFencedBashNotExecuted(t *testing.T) {
+// TestRunTurnTextOnlyFencedBashExecuted covers the issue #10 fix: a text-only
+// response whose text carries a fenced bash block (the way a model expresses a
+// tool invocation when the wire cannot do native tool calls) is recognised as a
+// tool call, executed, fed back, and the loop continues until a genuinely
+// final text reply.
+func TestRunTurnTextOnlyFencedBashExecuted(t *testing.T) {
 	var bashCalls int
 	reg := tools.NewRegistry()
 	reg.Register(&countingBashStub{calls: &bashCalls})
 
-	c := &mockClient{events: []llm.Event{
-		{Kind: llm.EventText, Text: "Let me look at the repo.\n\n```bash\nfind . -name '*.go'\n```\n"},
-		{Kind: llm.EventFinish, End: llm.FinishStop},
-	}}
+	var streams int
+	mock := &mockStreamClient{
+		streamFunc: func(_ context.Context, _ llm.Request) (iter.Seq[llm.Event], error) {
+			streams++
+			if streams == 1 {
+				return func(yield func(llm.Event) bool) {
+					yield(llm.Event{Kind: llm.EventText, Text: "Let me look at the repo.\n\n```bash\nfind . -name '*.go'\n```\n"})
+					yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+				}, nil
+			}
+			return func(yield func(llm.Event) bool) {
+				yield(llm.Event{Kind: llm.EventText, Text: "done"})
+				yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+			}, nil
+		},
+	}
 
-	var out bytes.Buffer
-	if err := RunTurn(context.Background(), c, "m", "sys", "hi", &out, nil, nil, reg, nil, ""); err != nil {
+	var out, errOut bytes.Buffer
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, reg, nil, ""); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	if bashCalls != 0 {
-		t.Errorf("bash executed %d times; text fence was not (and must not be) treated as a tool call", bashCalls)
+	if bashCalls != 1 {
+		t.Fatalf("bash executed %d times, want 1 (fenced block must be executed)", bashCalls)
 	}
-	if strings.Contains(out.String(), "── bash ") {
-		t.Errorf("unexpected tool framing for a text-only reply: %q", out.String())
+	if streams != 2 {
+		t.Errorf("model streamed %d times, want 2 (loop must continue after a fenced call)", streams)
 	}
-	// The fence is echoed to the user verbatim and the turn ends — the issue
-	// #10 symptom.
 	if !strings.Contains(out.String(), "```bash") {
-		t.Errorf("stdout missing fenced block: %q", out.String())
+		t.Errorf("stdout missing the model's fenced block: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "done") {
+		t.Errorf("stdout missing the final text reply: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "── bash ") {
+		t.Errorf("stderr missing tool framing for the fenced call: %q", errOut.String())
 	}
 }
 
@@ -290,7 +305,13 @@ type countingBashStub struct {
 func (b *countingBashStub) Name() string        { return "bash" }
 func (b *countingBashStub) Description() string { return "Run bash" }
 func (b *countingBashStub) Parameters() map[string]any {
-	return map[string]any{"type": "object"}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command": map[string]any{"type": "string"},
+		},
+		"required": []any{"command"},
+	}
 }
 func (b *countingBashStub) Execute(_ json.RawMessage) (string, error) {
 	*b.calls++
