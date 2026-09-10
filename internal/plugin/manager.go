@@ -723,11 +723,10 @@ func (p *Plugin) StreamWire(request json.RawMessage) (json.RawMessage, error) {
 		return nil, fmt.Errorf("plugin %s is not active", p.Name)
 	}
 
-	params := WireStreamParams{Request: request}
 	req := &Request{
 		JSONRPC: "2.0",
 		Method:  MethodWireStream,
-		Params:  mustMarshal(params),
+		Params:  request,
 		ID:      time.Now().UnixNano(),
 	}
 	if err := p.Codec.WriteRequest(req); err != nil {

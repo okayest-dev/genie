@@ -251,9 +251,6 @@ type WireInitResult struct {
 	OK bool `json:"ok"`
 }
 
-type WireStreamParams struct {
-	Request json.RawMessage `json:"request"`
-}
 
 type WireListModelsResult struct {
 	Models []ModelDef `json:"models"`
