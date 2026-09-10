@@ -20,6 +20,7 @@ type AgentDef struct {
 	InstructionFile string   // empty = inherit config instruction_file
 	Tools           []string // nil = inherit all; non-nil = exact set
 	InheritAgentsMD *bool    // nil = true (inherit); explicit false = don't
+	Skills          []string // nil = inherit all; non-nil = exact set (empty = none)
 }
 
 // fileAgentDef is the TOML schema with pointer types for optionals.
@@ -28,6 +29,7 @@ type fileAgentDef struct {
 	InstructionFile string   `toml:"instruction_file"`
 	Tools           []string `toml:"tools"`
 	InheritAgentsMD *bool    `toml:"inherit_agents_md"`
+	Skills          []string `toml:"skills"`
 }
 
 // ResolvedAgent is an AgentDef with all fields resolved against harness
@@ -39,6 +41,7 @@ type ResolvedAgent struct {
 	InstructionFile string
 	Tools           []string
 	InheritAgentsMD bool
+	Skills          []string // guaranteed non-nil; inherit-all or exact set
 }
 
 // ParseAgentDef parses a TOML agent definition file. The name is derived
@@ -64,12 +67,21 @@ func ParseAgentDef(data []byte, name, sourcePath string) (*AgentDef, error) {
 		InstructionFile: fa.InstructionFile,
 		Tools:           fa.Tools,
 		InheritAgentsMD: fa.InheritAgentsMD,
+		Skills:          fa.Skills,
 	}, nil
 }
 
 // ResolveAgentDef fills in zero-value fields from harness config.
-// Returns a new ResolvedAgent; does not mutate the original.
-func ResolveAgentDef(def *AgentDef, cfg *Config) ResolvedAgent {
+// availableSkills is the discovered skill pool; an absent Skills field on the
+// def inherits it, an explicit set (possibly empty) overrides it. The result
+// is a new ResolvedAgent; the original def, cfg, and pool are not mutated.
+func ResolveAgentDef(def *AgentDef, cfg *Config, availableSkills []string) ResolvedAgent {
+	skills := []string{}
+	if def.Skills != nil {
+		skills = append(skills, def.Skills...)
+	} else {
+		skills = append(skills, availableSkills...)
+	}
 	r := ResolvedAgent{
 		Name:            def.Name,
 		Source:          def.Source,
@@ -77,6 +89,7 @@ func ResolveAgentDef(def *AgentDef, cfg *Config) ResolvedAgent {
 		InstructionFile: cfg.InstructionFile,
 		Tools:           allToolNames(cfg.Tools),
 		InheritAgentsMD: true,
+		Skills:          skills,
 	}
 	if def.Model != "" {
 		r.Model = def.Model
@@ -174,8 +187,10 @@ func (r *AgentReg) Get(name string) (*AgentDef, error) {
 }
 
 // GetResolved returns a fully resolved agent with config defaults
-// applied. Returns error if agent not found.
-func (r *AgentReg) GetResolved(name string, cfg *Config) (*ResolvedAgent, error) {
+// applied. availableSkills is the discovered skill pool used both to fill in
+// "inherit all" and to validate an agent's explicit skills list — a name not
+// in the pool is a hard error. Returns error if agent not found.
+func (r *AgentReg) GetResolved(name string, cfg *Config, availableSkills []string) (*ResolvedAgent, error) {
 	def, err := r.Get(name)
 	if err != nil {
 		return nil, err
@@ -183,8 +198,30 @@ func (r *AgentReg) GetResolved(name string, cfg *Config) (*ResolvedAgent, error)
 	if def == nil {
 		return nil, fmt.Errorf("agent %q: not found", name)
 	}
-	resolved := ResolveAgentDef(def, cfg)
+	if err := validateAgentSkills(name, def.Skills, availableSkills); err != nil {
+		return nil, err
+	}
+	resolved := ResolveAgentDef(def, cfg, availableSkills)
 	return &resolved, nil
+}
+
+// validateAgentSkills rejects skill names in an agent's explicit skills list
+// (non-nil) that are not present in the discovered pool. Absent (nil) skills
+// inherit the pool, so nothing to validate; an empty list selects none.
+func validateAgentSkills(agentName string, declared, available []string) error {
+	if declared == nil {
+		return nil
+	}
+	pool := make(map[string]bool, len(available))
+	for _, name := range available {
+		pool[name] = true
+	}
+	for _, name := range declared {
+		if !pool[name] {
+			return fmt.Errorf("agent %q: unknown skill %q (not in the discovered skill pool)", agentName, name)
+		}
+	}
+	return nil
 }
 
 // scanDir reads a directory for .toml agent definition files.

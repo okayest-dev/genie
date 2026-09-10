@@ -241,8 +241,9 @@ func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Confi
 		return
 	}
 
-	// Look up the agent.
-	resolved, err := cfg.AgentReg.GetResolved(agentName, cfg.Cfg)
+	// Look up the agent. The skill pool stays empty until the pipeline is
+	// wired in; an agent with explicit skills fails fast here.
+	resolved, err := cfg.AgentReg.GetResolved(agentName, cfg.Cfg, nil)
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 		return
@@ -406,7 +407,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 					_marker = "* "
 				}
 				def, _ := cfg.AgentReg.Get(name)
-				resolved, _ := cfg.AgentReg.GetResolved(name, cfg.Cfg)
+				resolved, _ := cfg.AgentReg.GetResolved(name, cfg.Cfg, nil)
 				modelStr := ""
 				if resolved != nil {
 					modelStr = fmt.Sprintf("  model: %s", resolved.Model)
@@ -426,7 +427,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		}
 		// Switch agent.
 		target := strings.TrimSpace(parts[1])
-		resolved, err := cfg.AgentReg.GetResolved(target, cfg.Cfg)
+		resolved, err := cfg.AgentReg.GetResolved(target, cfg.Cfg, nil)
 		if err != nil {
 			fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 			return false

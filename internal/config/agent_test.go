@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ model = "gpt-4o"
 instruction_file = "/tmp/instr.md"
 tools = ["read", "bash"]
 inherit_agents_md = false
+skills = ["tdd", "research"]
 `)
 	def, err := ParseAgentDef(data, "coder", "/agents/coder.toml")
 	if err != nil {
@@ -35,6 +37,9 @@ inherit_agents_md = false
 	if def.InheritAgentsMD == nil || *def.InheritAgentsMD {
 		t.Errorf("InheritAgentsMD = %v, want false", def.InheritAgentsMD)
 	}
+	if len(def.Skills) != 2 || def.Skills[0] != "tdd" || def.Skills[1] != "research" {
+		t.Errorf("Skills = %v, want [tdd research]", def.Skills)
+	}
 }
 
 func TestParseAgentDefEmpty(t *testing.T) {
@@ -51,6 +56,22 @@ func TestParseAgentDefEmpty(t *testing.T) {
 	if def.InheritAgentsMD != nil {
 		t.Errorf("InheritAgentsMD = %v, want nil", def.InheritAgentsMD)
 	}
+	if def.Skills != nil {
+		t.Errorf("Skills = %v, want nil", def.Skills)
+	}
+}
+
+func TestParseAgentDefSkillsEmpty(t *testing.T) {
+	def, err := ParseAgentDef([]byte(`skills = []`), "bare", "/x.toml")
+	if err != nil {
+		t.Fatalf("ParseAgentDef: %v", err)
+	}
+	if def.Skills == nil {
+		t.Fatal("Skills = nil, want non-nil empty list (explicit no-skill agent)")
+	}
+	if len(def.Skills) != 0 {
+		t.Errorf("Skills = %v, want empty", def.Skills)
+	}
 }
 
 func TestParseAgentDefPartialFields(t *testing.T) {
@@ -66,6 +87,9 @@ func TestParseAgentDefPartialFields(t *testing.T) {
 	}
 	if def.Tools != nil {
 		t.Errorf("Tools = %v, want nil", def.Tools)
+	}
+	if def.Skills != nil {
+		t.Errorf("Skills = %v, want nil", def.Skills)
 	}
 }
 
@@ -99,8 +123,9 @@ func TestResolveAgentDefDefaults(t *testing.T) {
 		InstructionFile: "/cfg/instr.md",
 		Tools:           Tools{Read: true, Write: true, Edit: false, Bash: true},
 	}
+	pool := []string{"tdd", "research"}
 	def := &AgentDef{Name: "test", Source: "/x.toml"}
-	resolved := ResolveAgentDef(def, cfg)
+	resolved := ResolveAgentDef(def, cfg, pool)
 
 	if resolved.Name != "test" {
 		t.Errorf("Name = %q, want %q", resolved.Name, "test")
@@ -124,6 +149,12 @@ func TestResolveAgentDefDefaults(t *testing.T) {
 	if !resolved.InheritAgentsMD {
 		t.Errorf("InheritAgentsMD = false, want true (default)")
 	}
+	if resolved.Skills == nil {
+		t.Fatal("Skills = nil, want non-nil (inherits pool)")
+	}
+	if len(resolved.Skills) != 2 || resolved.Skills[0] != "tdd" || resolved.Skills[1] != "research" {
+		t.Errorf("Skills = %v, want [tdd research] (inherits pool)", resolved.Skills)
+	}
 }
 
 func TestResolveAgentDefOverrides(t *testing.T) {
@@ -139,8 +170,9 @@ func TestResolveAgentDefOverrides(t *testing.T) {
 		InstructionFile: "/agent/instr.md",
 		Tools:           []string{"read", "bash"},
 		InheritAgentsMD: &falseVal,
+		Skills:          []string{"research"},
 	}
-	resolved := ResolveAgentDef(def, cfg)
+	resolved := ResolveAgentDef(def, cfg, []string{"tdd", "research", "grilling"})
 
 	if resolved.Model != "gpt-4o" {
 		t.Errorf("Model = %q, want %q", resolved.Model, "gpt-4o")
@@ -154,6 +186,68 @@ func TestResolveAgentDefOverrides(t *testing.T) {
 	if resolved.InheritAgentsMD {
 		t.Errorf("InheritAgentsMD = true, want false")
 	}
+	if len(resolved.Skills) != 1 || resolved.Skills[0] != "research" {
+		t.Errorf("Skills = %v, want [research]", resolved.Skills)
+	}
+}
+
+func TestResolveAgentDefSkillsInherit(t *testing.T) {
+	cfg := &Config{Model: "big-pickle"}
+	pool := []string{"tdd", "research", "grilling"}
+	def := &AgentDef{Name: "x", Source: "/x.toml"}
+
+	resolved := ResolveAgentDef(def, cfg, pool)
+
+	if resolved.Skills == nil {
+		t.Fatal("Skills = nil, want non-nil (absent skills field inherits all)")
+	}
+	if len(resolved.Skills) != 3 ||
+		resolved.Skills[0] != "tdd" ||
+		resolved.Skills[1] != "research" ||
+		resolved.Skills[2] != "grilling" {
+		t.Errorf("Skills = %v, want [tdd research grilling]", resolved.Skills)
+	}
+}
+
+func TestResolveAgentDefSkillsInheritEmptyPool(t *testing.T) {
+	cfg := &Config{Model: "big-pickle"}
+	def := &AgentDef{Name: "x", Source: "/x.toml"}
+
+	resolved := ResolveAgentDef(def, cfg, nil)
+
+	if resolved.Skills == nil {
+		t.Fatal("Skills = nil, want non-nil even with an empty pool")
+	}
+	if len(resolved.Skills) != 0 {
+		t.Errorf("Skills = %v, want empty", resolved.Skills)
+	}
+}
+
+func TestResolveAgentDefSkillsNone(t *testing.T) {
+	cfg := &Config{Model: "big-pickle"}
+	pool := []string{"tdd", "research"}
+	def := &AgentDef{Name: "x", Source: "/x.toml", Skills: []string{}}
+
+	resolved := ResolveAgentDef(def, cfg, pool)
+
+	if resolved.Skills == nil {
+		t.Fatal("Skills = nil, want non-nil empty (skills = [] selects none)")
+	}
+	if len(resolved.Skills) != 0 {
+		t.Errorf("Skills = %v, want empty", resolved.Skills)
+	}
+}
+
+func TestResolveAgentDefSkillsSelect(t *testing.T) {
+	cfg := &Config{Model: "big-pickle"}
+	pool := []string{"tdd", "research", "grilling"}
+	def := &AgentDef{Name: "x", Source: "/x.toml", Skills: []string{"grilling", "tdd"}}
+
+	resolved := ResolveAgentDef(def, cfg, pool)
+
+	if len(resolved.Skills) != 2 || resolved.Skills[0] != "grilling" || resolved.Skills[1] != "tdd" {
+		t.Errorf("Skills = %v, want [grilling tdd]", resolved.Skills)
+	}
 }
 
 func TestResolveAgentDefDoesNotMutate(t *testing.T) {
@@ -162,13 +256,21 @@ func TestResolveAgentDefDoesNotMutate(t *testing.T) {
 		InstructionFile: "/cfg/instr.md",
 		Tools:           Tools{Read: true, Write: true, Edit: true, Bash: true},
 	}
-	def := &AgentDef{Name: "x", Model: "fast"}
-	resolved := ResolveAgentDef(def, cfg)
+	pool := []string{"tdd", "research"}
+	def := &AgentDef{Name: "x", Model: "fast", Skills: []string{"research"}}
+	resolved := ResolveAgentDef(def, cfg, pool)
 
 	// Mutate resolved — should not affect original def or cfg.
 	resolved.Model = "mutated"
+	resolved.Skills[0] = "mutated"
 	if def.Model != "fast" {
 		t.Errorf("original AgentDef was mutated")
+	}
+	if def.Skills[0] != "research" {
+		t.Errorf("original AgentDef Skills was mutated")
+	}
+	if pool[0] != "tdd" || pool[1] != "research" {
+		t.Errorf("input pool was mutated")
 	}
 }
 
@@ -267,7 +369,7 @@ func TestAgentRegGetResolved(t *testing.T) {
 	}
 
 	reg := NewAgentReg(dir, t.TempDir())
-	resolved, err := reg.GetResolved("coder", cfg)
+	resolved, err := reg.GetResolved("coder", cfg, nil)
 	if err != nil {
 		t.Fatalf("GetResolved: %v", err)
 	}
@@ -280,11 +382,60 @@ func TestAgentRegGetResolved(t *testing.T) {
 	if len(resolved.Tools) != 1 || resolved.Tools[0] != "read" {
 		t.Errorf("Tools = %v, want [read]", resolved.Tools)
 	}
+	if resolved.Skills == nil {
+		t.Fatal("Skills = nil, want non-nil (inherits empty pool)")
+	}
+}
+
+func TestAgentRegGetResolvedSkillsInherit(t *testing.T) {
+	dir := t.TempDir()
+	writeAgentFile(t, dir, "coder.toml", `model = "fast"`)
+	cfg := &Config{Model: "big-pickle"}
+	pool := []string{"tdd", "research"}
+
+	reg := NewAgentReg(dir, t.TempDir())
+	resolved, err := reg.GetResolved("coder", cfg, pool)
+	if err != nil {
+		t.Fatalf("GetResolved: %v", err)
+	}
+	if len(resolved.Skills) != 2 || resolved.Skills[0] != "tdd" || resolved.Skills[1] != "research" {
+		t.Errorf("Skills = %v, want [tdd research] (inherited from pool)", resolved.Skills)
+	}
+}
+
+func TestAgentRegGetResolvedUnknownSkill(t *testing.T) {
+	dir := t.TempDir()
+	writeAgentFile(t, dir, "coder.toml", `skills = ["ghost", "tdd"]`)
+	cfg := &Config{Model: "big-pickle"}
+
+	reg := NewAgentReg(dir, t.TempDir())
+	_, err := reg.GetResolved("coder", cfg, []string{"tdd", "research"})
+	if err == nil {
+		t.Fatal("GetResolved accepted unknown skill name; want an error")
+	}
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("error = %q, want it to name the unknown skill %q", err, "ghost")
+	}
+}
+
+func TestAgentRegGetResolvedValidSkills(t *testing.T) {
+	dir := t.TempDir()
+	writeAgentFile(t, dir, "coder.toml", `skills = ["tdd", "research"]`)
+	cfg := &Config{Model: "big-pickle"}
+
+	reg := NewAgentReg(dir, t.TempDir())
+	resolved, err := reg.GetResolved("coder", cfg, []string{"tdd", "research", "grilling"})
+	if err != nil {
+		t.Fatalf("GetResolved: %v", err)
+	}
+	if len(resolved.Skills) != 2 || resolved.Skills[0] != "tdd" || resolved.Skills[1] != "research" {
+		t.Errorf("Skills = %v, want [tdd research]", resolved.Skills)
+	}
 }
 
 func TestAgentRegGetResolvedNotFound(t *testing.T) {
 	reg := NewAgentReg(t.TempDir(), t.TempDir())
-	_, err := reg.GetResolved("nonexistent", &Config{})
+	_, err := reg.GetResolved("nonexistent", &Config{}, nil)
 	if err == nil {
 		t.Fatal("GetResolved returned nil error for missing agent")
 	}
