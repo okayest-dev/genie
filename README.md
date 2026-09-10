@@ -105,9 +105,16 @@ bash = true
 # enable = ["my-plugin"]
 # disable = ["broken-plugin"]
 
+[skills]
+# dirs = ["/custom/skills"]   # replaces the default three-directory stack
+# enable = ["alpha"]          # allowlist: when set, only named skills load
+# disable = ["beta"]          # denylist, applied on top of enable
+
 [context]
 # turns = 0   # prior turns of history carried into each new turn; 0 = all
 ```
+
+The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top.
 
 ### Environment variables
 
@@ -123,6 +130,7 @@ bash = true
 | `GENIE_SESSION_DIR` | Session storage directory |
 | `GENIE_BASH_TIMEOUT` | Bash command timeout (seconds) |
 | `GENIE_PLUGIN_DIR` | Plugin discovery directory |
+| `GENIE_SKILL_DIR` | Skill discovery directory (replaces all skill dirs) |
 | `GENIE_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
 | `GENIE_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
 

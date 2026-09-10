@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -688,5 +689,120 @@ order = ["b-plugin", "a-plugin"]
 	}
 	if len(cfg.Lifecycle.PluginsOrder) != 2 || cfg.Lifecycle.PluginsOrder[0] != "b-plugin" || cfg.Lifecycle.PluginsOrder[1] != "a-plugin" {
 		t.Errorf("PluginsOrder = %v", cfg.Lifecycle.PluginsOrder)
+	}
+}
+
+// wantDefaultSkillDirs is the fresh-install three-directory stack: a local
+// .genie/skills, the external ecosystem at ~/.agents/skills, and the global
+// config dir. Returned in priority order (lowest index wins).
+func wantDefaultSkillDirs(t *testing.T, userConfigDir string) []string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []string{
+		".genie/skills",
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(userConfigDir, "genie", "skills"),
+	}
+}
+
+func TestSkillsDefaultStack(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := wantDefaultSkillDirs(t, "/home/u")
+	if len(cfg.Skills.Dirs) != len(want) {
+		t.Fatalf("Skills.Dirs = %v, want %v", cfg.Skills.Dirs, want)
+	}
+	for i := range want {
+		if cfg.Skills.Dirs[i] != want[i] {
+			t.Errorf("Skills.Dirs[%d] = %q, want %q", i, cfg.Skills.Dirs[i], want[i])
+		}
+	}
+	if len(cfg.Skills.Enable) != 0 || len(cfg.Skills.Disable) != 0 {
+		t.Errorf("Skills.Enable/Disable should default empty, got enable=%v disable=%v", cfg.Skills.Enable, cfg.Skills.Disable)
+	}
+}
+
+func TestSkillsFromFile(t *testing.T) {
+	file := `[skills]
+dirs = ["/custom/skills", "~/shared/skills"]
+enable = ["alpha", "beta"]
+disable = ["gamma"]
+`
+	cfg, err := Parse([]byte(file), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDirs := []string{"/custom/skills", filepath.Join(home, "shared", "skills")}
+	if len(cfg.Skills.Dirs) != 2 || cfg.Skills.Dirs[0] != wantDirs[0] || cfg.Skills.Dirs[1] != wantDirs[1] {
+		t.Errorf("Skills.Dirs = %v, want %v", cfg.Skills.Dirs, wantDirs)
+	}
+	if cfg.Skills.Enable[0] != "alpha" || cfg.Skills.Enable[1] != "beta" {
+		t.Errorf("Skills.Enable = %v, want [alpha beta]", cfg.Skills.Enable)
+	}
+	if cfg.Skills.Disable[0] != "gamma" {
+		t.Errorf("Skills.Disable = %v, want [gamma]", cfg.Skills.Disable)
+	}
+}
+
+func TestSkillsEnvReplacesDirsOnly(t *testing.T) {
+	file := `[skills]
+dirs = ["/file/skills"]
+enable = ["alpha"]
+disable = ["gamma"]
+`
+	cfg, err := Parse([]byte(file), "/home/u", env("GENIE_SKILL_DIR", "/env/skills"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	wantDirs := []string{"/env/skills"}
+	if len(cfg.Skills.Dirs) != 1 || cfg.Skills.Dirs[0] != wantDirs[0] {
+		t.Errorf("Skills.Dirs = %v, want %v (env replaces dirs)", cfg.Skills.Dirs, wantDirs)
+	}
+	// enable/disable from the file still apply on top.
+	if cfg.Skills.Enable[0] != "alpha" {
+		t.Errorf("Skills.Enable = %v, want [alpha]", cfg.Skills.Enable)
+	}
+	if cfg.Skills.Disable[0] != "gamma" {
+		t.Errorf("Skills.Disable = %v, want [gamma]", cfg.Skills.Disable)
+	}
+}
+
+func TestSkillsEnvReplacesDefaults(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", env("GENIE_SKILL_DIR", "/env/skills"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Skills.Dirs) != 1 || cfg.Skills.Dirs[0] != "/env/skills" {
+		t.Errorf("Skills.Dirs = %v, want [/env/skills]", cfg.Skills.Dirs)
+	}
+}
+
+func TestSkillsUnknownKeyRejected(t *testing.T) {
+	file := `[skills]
+enabel = ["typo"]
+`
+	_, err := Parse([]byte(file), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted unknown [skills] key; want an error")
+	}
+}
+
+func TestSkillsEmptyEnvVarDoesNotOverride(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", env("GENIE_SKILL_DIR", ""))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := wantDefaultSkillDirs(t, "/home/u")
+	if len(cfg.Skills.Dirs) != len(want) || cfg.Skills.Dirs[0] != want[0] {
+		t.Errorf("Skills.Dirs = %v, want default stack %v (empty env must not override)", cfg.Skills.Dirs, want)
 	}
 }

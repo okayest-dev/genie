@@ -92,6 +92,17 @@ type Lifecycle struct {
 	PluginsOrder []string
 }
 
+// Skills holds the skill-discovery knobs (og-uem.12.2). Defaults to a
+// three-directory stack in priority order: the project-local .genie/skills,
+// the external ecosystem at ~/.agents/skills, and the user config dir.
+// Enable is an allowlist (when set, only named skills load); Disable is a
+// denylist applied on top.
+type Skills struct {
+	Dirs    []string
+	Enable  []string
+	Disable []string
+}
+
 // Config is the resolved harness configuration.
 type Config struct {
 	// Model is the session's model id (default big-pickle).
@@ -134,6 +145,7 @@ type Config struct {
 	// Context configures harness-level context management (history window).
 	Context   Context
 	Lifecycle Lifecycle
+	Skills    Skills
 	AgentReg  *AgentReg
 }
 
@@ -152,6 +164,7 @@ type fileConfig struct {
 	BashTimeout     *int          `toml:"bash_timeout"` // seconds
 	Tools           toolsFile     `toml:"tools"`
 	Plugins         pluginsFile   `toml:"plugins"`
+	Skills          skillsFile    `toml:"skills"`
 	Context         contextFile   `toml:"context"`
 	Lifecycle       lifecycleFile `toml:"lifecycle"`
 	DefaultAgent    string        `toml:"default_agent"`
@@ -166,6 +179,12 @@ type toolsFile struct {
 
 type pluginsFile struct {
 	Dir     string   `toml:"dir"`
+	Enable  []string `toml:"enable"`
+	Disable []string `toml:"disable"`
+}
+
+type skillsFile struct {
+	Dirs    []string `toml:"dirs"`
 	Enable  []string `toml:"enable"`
 	Disable []string `toml:"disable"`
 }
@@ -246,6 +265,7 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		}
 		applyTools(&cfg.Tools, fc.Tools)
 		applyPlugins(&cfg, fc.Plugins, userConfigDir)
+		applySkills(&cfg, fc.Skills)
 		if fc.Context.Turns != nil {
 			if *fc.Context.Turns < 0 {
 				return nil, fmt.Errorf("config: context.turns must be non-negative, got %d", *fc.Context.Turns)
@@ -373,7 +393,23 @@ func defaults(userConfigDir string) Config {
 		BashTimeout: defaultBashTimeout,
 		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true},
 		PluginDir:   filepath.Join(userConfigDir, "genie", "plugins"),
+		Skills:      Skills{Dirs: defaultSkillDirs(userConfigDir)},
 		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
+	}
+}
+
+// defaultSkillDirs is the fresh-install discovery stack in priority order:
+// the project-local .genie/skills, the external ecosystem at ~/.agents/skills,
+// and the user-config directory.
+func defaultSkillDirs(userConfigDir string) []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = userConfigDir
+	}
+	return []string{
+		".genie/skills",
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(userConfigDir, "genie", "skills"),
 	}
 }
 
@@ -443,6 +479,10 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	if v := env["GENIE_PLUGIN_DIR"]; v != "" {
 		cfg.PluginDir = v
 		applied = append(applied, "GENIE_PLUGIN_DIR")
+	}
+	if v := env["GENIE_SKILL_DIR"]; v != "" {
+		cfg.Skills.Dirs = []string{v}
+		applied = append(applied, "GENIE_SKILL_DIR")
 	}
 	if v := env["GENIE_DEFAULT_AGENT"]; v != "" {
 		cfg.DefaultAgent = v
@@ -515,7 +555,7 @@ func validateBudgetPercent(p float64) error {
 
 func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) {
 	if src.Dir != "" {
-		cfg.PluginDir = expandPath(src.Dir, userConfigDir)
+		cfg.PluginDir = expandPath(src.Dir)
 	} else {
 		cfg.PluginDir = filepath.Join(userConfigDir, "genie", "plugins")
 	}
@@ -523,9 +563,33 @@ func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) {
 	cfg.PluginDisable = src.Disable
 }
 
-func expandPath(path, baseDir string) string {
+// applySkills overlays the [skills] table on the defaults. A non-empty dirs
+// list replaces the default stack entirely; empty enable/disable keep any
+// prior (default) values empty so they stay allowlist/denylist-neutral.
+func applySkills(cfg *Config, src skillsFile) {
+	if len(src.Dirs) > 0 {
+		dirs := make([]string, len(src.Dirs))
+		for i, d := range src.Dirs {
+			dirs[i] = expandPath(d)
+		}
+		cfg.Skills.Dirs = dirs
+	}
+	cfg.Skills.Enable = src.Enable
+	cfg.Skills.Disable = src.Disable
+}
+
+// expandPath expands a leading ~ or ~/ to the current user's home directory.
+func expandPath(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
 	if strings.HasPrefix(path, "~/") {
-		return filepath.Join(baseDir, path[2:])
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
 	}
 	return path
 }
