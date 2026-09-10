@@ -142,7 +142,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if agentName != "" {
 		agentReg := resolveAgentReg(cwd)
-		resolved, err := agentReg.GetResolved(agentName, cfg)
+		resolved, err := agentReg.GetResolved(agentName, cfg, nil)
 		if err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 3
