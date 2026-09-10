@@ -198,6 +198,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		var usage llm.Usage
 		var finishReason llm.FinishReason
 		var toolCalls []llm.ToolCall
+		var delta strings.Builder
 		for ev := range stream {
 			switch ev.Kind {
 			case llm.EventText:
@@ -213,6 +214,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 					return err
 				}
 				reply.WriteString(chunk)
+				delta.WriteString(chunk)
 			case llm.EventFinish:
 				finishReason = ev.End
 			case llm.EventUsage:
@@ -221,6 +223,18 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				toolCalls = ev.ToolCalls
 			case llm.EventError:
 				return ev.Err
+			}
+		}
+
+		// Text-only reply: recognise tool invocations the model expressed as
+		// fenced code blocks (```bash``` ...), the fallback for wires that
+		// cannot do native tool calling. Only the current iteration's text is
+		// scanned so a prior iteration's already-executed block is never re-run.
+		if len(toolCalls) == 0 && registry != nil {
+			if fenceCalls := parseFencedToolCalls(delta.String(), registry); len(fenceCalls) > 0 {
+				slog.Info("fenced tool calls recognised", "count", len(fenceCalls))
+				toolCalls = fenceCalls
+				finishReason = llm.FinishToolCalls
 			}
 		}
 

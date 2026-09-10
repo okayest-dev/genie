@@ -157,7 +157,7 @@ Genie auto-detects the wire protocol from the model ID prefix:
 
 Override with `wire = "openai"` (or `anthropic`, `responses`, `google`) in config or `GENIE_WIRE` env var.
 
-If a model doesn't support tool calling, the harness retries without tools — letting free/non-tool models still work.
+If a model doesn't support tool calling, the harness retries without tools — letting free/non-tool models still work. In that fallback — and for any other text-only reply — genie also recognises tool invocations the model expresses as fenced code blocks: a block whose info string names a registered tool (e.g. ` ```bash\nmake test\n``` `) is executed like a native tool call, its result fed back, and the turn continues until the model finishes. Fence content that is a JSON object is used verbatim as the tool's arguments; otherwise it is wrapped into the tool's single required string property (e.g. `{"command": "<content>"}` for `bash`).
 
 ## Plugins
 
