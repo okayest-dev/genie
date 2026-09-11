@@ -188,7 +188,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Load plugins.
-	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, runRegistry)
+	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, runRegistry,
+		plugin.WithStreamTimeout(cfg.PluginWireStreamTimeout))
 	if err := pluginMgr.LoadPlugins(); err != nil {
 		fmt.Fprintf(stderr, "Error loading plugins: %v\n", err)
 		return 1

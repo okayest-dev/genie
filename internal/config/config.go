@@ -34,6 +34,11 @@ const (
 	defaultAPIKeyEnv   = "OPENCODE_API_KEY"
 	defaultBashTimeout = 120 * time.Second
 
+	// defaultPluginWireStreamTimeout is how long a wire plugin's wire/stream
+	// completion RPC may run before genie starts treating it as hung. LLM
+	// completions routinely outlive the 5s RequestTimeout used for quick RPCs.
+	defaultPluginWireStreamTimeout = 10 * time.Minute
+
 	configFileName = "config.toml"
 )
 
@@ -139,6 +144,10 @@ type Config struct {
 	PluginEnable []string
 	// PluginDisable is a denylist of plugin names to skip.
 	PluginDisable []string
+	// PluginWireStreamTimeout is the per-call timeout for a wire plugin's
+	// wire/stream completion RPC. LLM completions routinely outlive the 5s
+	// request timeout used for quick RPCs, hence the separate default.
+	PluginWireStreamTimeout time.Duration
 	// DefaultAgent is the name of the agent definition loaded at startup.
 	// Empty means no default agent (current behaviour).
 	DefaultAgent string
@@ -181,6 +190,9 @@ type pluginsFile struct {
 	Dir     string   `toml:"dir"`
 	Enable  []string `toml:"enable"`
 	Disable []string `toml:"disable"`
+	// WireStreamTimeout is the per-call timeout for wire/stream completion
+	// RPCs, in seconds.
+	WireStreamTimeout *int `toml:"wire_stream_timeout"`
 }
 
 type skillsFile struct {
@@ -265,6 +277,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		}
 		applyTools(&cfg.Tools, fc.Tools)
 		applyPlugins(&cfg, fc.Plugins, userConfigDir)
+		if fc.Plugins.WireStreamTimeout != nil {
+			if *fc.Plugins.WireStreamTimeout <= 0 {
+				return nil, fmt.Errorf("config: plugins.wire_stream_timeout must be a positive number of seconds, got %d", *fc.Plugins.WireStreamTimeout)
+			}
+			cfg.PluginWireStreamTimeout = time.Duration(*fc.Plugins.WireStreamTimeout) * time.Second
+		}
 		applySkills(&cfg, fc.Skills)
 		if fc.Context.Turns != nil {
 			if *fc.Context.Turns < 0 {
@@ -344,6 +362,7 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		"instruction_file", cfg.InstructionFile,
 		"session_dir", cfg.SessionDir,
 		"bash_timeout_s", int(cfg.BashTimeout.Seconds()),
+		"plugin_wire_stream_timeout_s", int(cfg.PluginWireStreamTimeout.Seconds()),
 		"tools_read", cfg.Tools.Read,
 		"tools_write", cfg.Tools.Write,
 		"tools_edit", cfg.Tools.Edit,
@@ -386,15 +405,16 @@ func Load() (*Config, error) {
 
 func defaults(userConfigDir string) Config {
 	return Config{
-		Model:       defaultModel,
-		BaseURL:     defaultBaseURL,
-		APIKeyEnv:   defaultAPIKeyEnv,
-		SessionDir:  filepath.Join(userConfigDir, "genie", "sessions"),
-		BashTimeout: defaultBashTimeout,
-		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true},
-		PluginDir:   filepath.Join(userConfigDir, "genie", "plugins"),
-		Skills:      Skills{Dirs: defaultSkillDirs(userConfigDir)},
-		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
+		Model:                   defaultModel,
+		BaseURL:                 defaultBaseURL,
+		APIKeyEnv:               defaultAPIKeyEnv,
+		SessionDir:              filepath.Join(userConfigDir, "genie", "sessions"),
+		BashTimeout:             defaultBashTimeout,
+		Tools:                   Tools{Read: true, Write: true, Edit: true, Bash: true},
+		PluginDir:               filepath.Join(userConfigDir, "genie", "plugins"),
+		PluginWireStreamTimeout: defaultPluginWireStreamTimeout,
+		Skills:                  Skills{Dirs: defaultSkillDirs(userConfigDir)},
+		Context:                 Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
 	}
 }
 
@@ -479,6 +499,17 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	if v := env["GENIE_PLUGIN_DIR"]; v != "" {
 		cfg.PluginDir = v
 		applied = append(applied, "GENIE_PLUGIN_DIR")
+	}
+	if v := env["GENIE_PLUGIN_WIRE_STREAM_TIMEOUT"]; v != "" {
+		secs, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: GENIE_PLUGIN_WIRE_STREAM_TIMEOUT: %q is not a number of seconds", v)
+		}
+		if secs <= 0 {
+			return nil, fmt.Errorf("config: GENIE_PLUGIN_WIRE_STREAM_TIMEOUT must be a positive number of seconds, got %d", secs)
+		}
+		cfg.PluginWireStreamTimeout = time.Duration(secs) * time.Second
+		applied = append(applied, "GENIE_PLUGIN_WIRE_STREAM_TIMEOUT")
 	}
 	if v := env["GENIE_SKILL_DIR"]; v != "" {
 		cfg.Skills.Dirs = []string{v}
