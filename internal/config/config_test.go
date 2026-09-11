@@ -314,6 +314,68 @@ func TestEmptyEnvVarMeansUnset(t *testing.T) {
 	}
 }
 
+func TestPluginWireStreamTimeoutDefault(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.PluginWireStreamTimeout != 10*time.Minute {
+		t.Errorf("PluginWireStreamTimeout = %v, want the default 10m", cfg.PluginWireStreamTimeout)
+	}
+}
+
+func TestPluginWireStreamTimeoutFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[plugins]\nwire_stream_timeout = 600\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.PluginWireStreamTimeout != 600*time.Second {
+		t.Errorf("PluginWireStreamTimeout = %v, want 600s from file", cfg.PluginWireStreamTimeout)
+	}
+}
+
+func TestPluginWireStreamTimeoutEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("[plugins]\nwire_stream_timeout = 600\n"), "/home/u",
+		env("GENIE_PLUGIN_WIRE_STREAM_TIMEOUT", "300"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.PluginWireStreamTimeout != 300*time.Second {
+		t.Errorf("PluginWireStreamTimeout = %v, want 300s (env overrides file)", cfg.PluginWireStreamTimeout)
+	}
+}
+
+func TestPluginWireStreamTimeoutMustBePositive(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		file    string
+		envVars map[string]string
+	}{
+		{name: "file zero", file: "[plugins]\nwire_stream_timeout = 0", envVars: nil},
+		{name: "file negative", file: "[plugins]\nwire_stream_timeout = -5", envVars: nil},
+		{name: "env zero", envVars: env("GENIE_PLUGIN_WIRE_STREAM_TIMEOUT", "0")},
+		{name: "env non-numeric", envVars: env("GENIE_PLUGIN_WIRE_STREAM_TIMEOUT", "lots")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
+			if err == nil {
+				t.Fatalf("Parse accepted %q %v; want an error for a non-positive stream timeout", tc.file, tc.envVars)
+			}
+		})
+	}
+}
+
+func TestEmptyPluginWireStreamTimeoutEnvDoesNotOverride(t *testing.T) {
+	cfg, err := Parse([]byte("[plugins]\nwire_stream_timeout = 600\n"), "/home/u",
+		env("GENIE_PLUGIN_WIRE_STREAM_TIMEOUT", ""))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.PluginWireStreamTimeout != 600*time.Second {
+		t.Errorf("PluginWireStreamTimeout = %v, want 600s (empty env must not override)", cfg.PluginWireStreamTimeout)
+	}
+}
+
 func TestContextTurnsFromFile(t *testing.T) {
 	cfg, err := Parse([]byte("[context]\nturns = 5\n"), "/home/u", nil)
 	if err != nil {

@@ -104,6 +104,7 @@ bash = true
 # dir = "~/.config/genie/plugins"
 # enable = ["my-plugin"]
 # disable = ["broken-plugin"]
+# wire_stream_timeout = 600  # per-call timeout for a wire plugin's stream RPC (seconds)
 
 [skills]
 # dirs = ["/custom/skills"]   # replaces the default three-directory stack
@@ -130,6 +131,7 @@ The default skill discovery stack is, in priority order (lowest wins): `./.genie
 | `GENIE_SESSION_DIR` | Session storage directory |
 | `GENIE_BASH_TIMEOUT` | Bash command timeout (seconds) |
 | `GENIE_PLUGIN_DIR` | Plugin discovery directory |
+| `GENIE_PLUGIN_WIRE_STREAM_TIMEOUT` | Wire plugin stream RPC timeout (seconds) |
 | `GENIE_SKILL_DIR` | Skill discovery directory (replaces all skill dirs) |
 | `GENIE_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
 | `GENIE_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
@@ -277,7 +279,7 @@ enable = ["bedrock"]    # explicit allowlist (empty = all)
 disable = ["broken"]    # denylist (takes precedence)
 ```
 
-Max 16 plugins loaded concurrently. Plugins that crash or hang are automatically marked inactive.
+Max 16 plugins loaded concurrently. Plugins that crash or hang are automatically marked inactive. Wire plugin stream completions use their own, much longer timeout (`[plugins] wire_stream_timeout`, default 10 minutes): a completion that outlives it doesn't kill the plugin — genie waits a short grace period for the late response, and only marks the plugin inactive if it never answers.
 
 ## Agent instructions
 

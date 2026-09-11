@@ -22,7 +22,16 @@ const (
 	PingInterval   = 30 * time.Second
 	ShutdownGrace  = 2 * time.Second
 	ShutdownForce  = 2 * time.Second
+	// StreamTimeout is the timeout applied to a wire plugin's wire/stream
+	// completion RPC. Completions legitimately take longer than the 5s
+	// RequestTimeout used for quick RPCs (tool calls, pings, hooks).
+	StreamTimeout = 10 * time.Minute
 )
+
+// streamResync is how long StreamWire waits for the late completion response
+// of a timed-out stream before deactivating the plugin, so the codec pipeline
+// resyncs instead of the next RPC swallowing a stale response.
+var streamResync = 30 * time.Second
 
 // ReservedSlashNames are built-in REPL slash commands that plugins may not
 // shadow. A plugin whose display name matches one of these is rejected at load.
@@ -37,48 +46,64 @@ var ReservedSlashNames = map[string]bool{
 }
 
 type Plugin struct {
-	Name         string
-	Path         string
-	Manifest     *Manifest
-	Capabilities Capabilities
-	Tools        []ToolDef
-	Commands     []CommandDef
-	Models       []ModelDef
-	Cmd          *exec.Cmd
-	Codec        *Codec
-	mu           sync.Mutex
-	Active       bool
-	Cancel       context.CancelFunc
-	Done         chan struct{}
-	wg           sync.WaitGroup
+	Name          string
+	Path          string
+	Manifest      *Manifest
+	Capabilities  Capabilities
+	Tools         []ToolDef
+	Commands      []CommandDef
+	Models        []ModelDef
+	Cmd           *exec.Cmd
+	Codec         *Codec
+	streamTimeout time.Duration
+	mu            sync.Mutex
+	Active        bool
+	Cancel        context.CancelFunc
+	Done          chan struct{}
+	wg            sync.WaitGroup
 }
 
 type Manager struct {
-	plugins      map[string]*Plugin
-	pluginOrder  []string
-	pluginsMu    sync.RWMutex
-	toolReg      *tools.Registry
-	wireRegistry map[llm.Wire]llm.Factory
-	pluginDir    string
-	enableList   []string
-	disableList  []string
-	wg           sync.WaitGroup
-	ctx          context.Context
-	cancel       context.CancelFunc
+	plugins       map[string]*Plugin
+	pluginOrder   []string
+	pluginsMu     sync.RWMutex
+	toolReg       *tools.Registry
+	wireRegistry  map[llm.Wire]llm.Factory
+	pluginDir     string
+	enableList    []string
+	disableList   []string
+	streamTimeout time.Duration
+	wg            sync.WaitGroup
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
-func NewManager(pluginDir string, enableList, disableList []string, toolReg *tools.Registry) *Manager {
+// Option configures a Manager.
+type Option func(*Manager)
+
+// WithStreamTimeout sets the per-call timeout a wire plugin's wire/stream
+// completion RPC may run for before genie starts treating it as hung.
+func WithStreamTimeout(d time.Duration) Option {
+	return func(m *Manager) { m.streamTimeout = d }
+}
+
+func NewManager(pluginDir string, enableList, disableList []string, toolReg *tools.Registry, opts ...Option) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{
-		plugins:      make(map[string]*Plugin),
-		toolReg:      toolReg,
-		wireRegistry: make(map[llm.Wire]llm.Factory),
-		pluginDir:    pluginDir,
-		enableList:   enableList,
-		disableList:  disableList,
-		ctx:          ctx,
-		cancel:       cancel,
+	m := &Manager{
+		plugins:       make(map[string]*Plugin),
+		toolReg:       toolReg,
+		wireRegistry:  make(map[llm.Wire]llm.Factory),
+		pluginDir:     pluginDir,
+		enableList:    enableList,
+		disableList:   disableList,
+		streamTimeout: StreamTimeout,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 func (m *Manager) LoadPlugins() error {
@@ -206,14 +231,15 @@ func (m *Manager) loadPlugin(path string) error {
 	ctx, cancel := context.WithCancel(m.ctx)
 	codec := NewCodec(stdout, stdin)
 	p := &Plugin{
-		Name:     name,
-		Path:     path,
-		Manifest: manifest,
-		Cmd:      cmd,
-		Codec:    codec,
-		Active:   true,
-		Cancel:   cancel,
-		Done:     make(chan struct{}),
+		Name:          name,
+		Path:          path,
+		Manifest:      manifest,
+		Cmd:           cmd,
+		Codec:         codec,
+		streamTimeout: m.streamTimeout,
+		Active:        true,
+		Cancel:        cancel,
+		Done:          make(chan struct{}),
 	}
 
 	m.pluginsMu.Lock()
@@ -733,7 +759,11 @@ func (p *Plugin) StreamWire(request json.RawMessage) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	timeout := p.streamTimeout
+	if timeout <= 0 {
+		timeout = StreamTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	respCh := make(chan *Response, 1)
@@ -744,8 +774,17 @@ func (p *Plugin) StreamWire(request json.RawMessage) (json.RawMessage, error) {
 
 	select {
 	case <-ctx.Done():
-		p.Active = false
-		return nil, fmt.Errorf("wire stream timeout")
+		// The completion outran the stream timeout. Don't deactivate yet:
+		// give it a short grace window for the late response to arrive so the
+		// codec pipeline resyncs, instead of the next RPC swallowing a stale
+		// response. Only mark the plugin inactive if it never answers.
+		select {
+		case <-respCh:
+			return nil, fmt.Errorf("wire stream timeout")
+		case <-time.After(streamResync):
+			p.Active = false
+			return nil, fmt.Errorf("wire stream timeout (%s), plugin marked inactive", timeout)
+		}
 	case resp := <-respCh:
 		if resp == nil {
 			p.Active = false
