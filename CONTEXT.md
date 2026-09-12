@@ -17,7 +17,7 @@ One full exchange in a session — from the user submitting a line at the prompt
 _Avoid_: interaction, cycle
 
 **Tool**:
-A named capability the model can invoke — `read`, `write`, `edit`, `bash` — defined by a JSON schema and executed by the harness.
+A named capability the model can invoke — `read`, `write`, `edit`, `code` (and `bash` behind a feature flag) — defined by a JSON schema and executed by the harness.
 _Avoid_: function, command
 
 **Session**:
@@ -119,6 +119,28 @@ _Avoid_: active agent, current agent
 **Handoff**:
 An agent yielding the foreground to another named agent, which becomes primary and addresses the user directly, then hands back. Driven by a tool; a stack remembers the return path. Distinct from delegation (delegation stays behind the scenes; handoff puts the target in the foreground).
 _Avoid_: switch (alone), yield (alone)
+
+## Code tool
+
+**Code tool**:
+A sandboxed code-execution tool the model invokes by emitting TypeScript/JavaScript snippets. Executes in a Deno subprocess with granular permissions (filesystem per-directory, network per-host, subprocess per-executable). Replaces `bash` as the default execution tool; `bash` is retained behind a feature flag.
+_Avoid_: code execution tool, sandbox tool
+
+**Base policy**:
+The default permission envelope for the code tool, defined in the config file (`[permissions]` section). Specifies which filesystem paths, network hosts, subprocesses, and env vars the code model can access without escalation. Intersected with the model's per-call `permissions` array.
+_Avoid_: default permissions, permission defaults
+
+**Effective policy**:
+The running union of base policy plus all granted escalations (permanent from config, session-scoped from in-memory, single-call from one-shot set). The code tool's permission intersection operates against this envelope, not the base policy alone.
+_Avoid_: active policy, current permissions
+
+**Permission escalation**:
+The process by which the model requests permissions beyond the current effective policy. The model calls `request_permission`; the user decides the tier (single call, session, permanent). The harness updates the effective policy and, for permanent tier, persists the escalation to the config file.
+_Avoid_: permission grant, scope expansion
+
+**Escalation tier**:
+The lifetime a user assigns to a granted escalation: single code call (discarded after one execution), remainder of session (in-memory, lost on session end), or permanent (persisted to config file, loaded at startup). The model does not choose the tier — the user decides interactively.
+_Avoid_: permission scope, grant duration
 
 ## Plugin auth
 
