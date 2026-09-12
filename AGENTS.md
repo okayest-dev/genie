@@ -19,7 +19,7 @@ ready-for-agent / ready-for-human / wontfix. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the root plus `docs/adr/`. See `docs/agents/domain.
+Domain terminology and the glossary live in beads memory, not markdown — look terms up with `bd memories <term>` (entries are keyed `glossary-*`). Decisions stay as ADRs in `docs/adr/`. See `docs/agents/domain.md`.
 
 ### Build and Test
 
