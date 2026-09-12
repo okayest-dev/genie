@@ -186,7 +186,7 @@ There is no existing test code in the repo (planning-only so far). The patterns 
 
 ## Further Notes
 
-- **Vocabulary**: this spec's terms are the glossary in `CONTEXT.md` — harness, agent loop, turn, tool, session, REPL, agent instruction, instruction file, change ledger, change batch, changes view, provider, wire protocol. Use those, not "system prompt", "function", "thread", "diffset".
+- **Vocabulary**: this spec's terms are the glossary in beads memory (`bd memories <term>`, entries keyed `glossary-*`) — harness, agent loop, turn, tool, session, REPL, agent instruction, instruction file, change ledger, change batch, changes view, provider, wire protocol. Use those, not "system prompt", "function", "thread", "diffset".
 - **Reference shape**: pi (earendil-works/pi) is the minimality reference; genie deliberately diverges on raw-mode TUI (canonical mode in v1), confirms (write/bash), and instruction sources (no parent walk, no global file).
 - **Provider risks carried into the spec**: Zen streaming fidelity unverified live (no key exercised), undocumented rate limits (429s, backoff headers unknown), and free-model tool-call support unverified — hence the no-tools fallback and best-effort usage. The fake-provider test seam doubles as the harness's resilience proof against these.
 - **Free models are temporary**: OpenCode Zen's `*-free` models are "available for a limited time"; `big-pickle` is the current default and a free "stealth" model. The config default is a per-install scalar, not a promise.
