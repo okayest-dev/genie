@@ -465,14 +465,63 @@ func TestMinimalConfigUsesProviderDefaults(t *testing.T) {
 	assertRequestModel(t, p, "big-pickle", "")
 }
 
-// TestNoProviderFailsStartup pins the og-z1m.3 interim unset-provider
-// behaviour at the binary seam: with no selection anywhere, startup fails
-// with a clear error before any request can be made. og-z1m.4 trades this for
-// the prompt/one-shot fallback.
-func TestNoProviderFailsStartup(t *testing.T) {
-	dir := configDir(t, "")
-	stdout, stderr, code := run(t, []string{"XDG_CONFIG_HOME=" + dir}, "-p", "hi")
-	assertCleanFailure(t, stdout, stderr, code, "no active provider")
+// twoProviderConfigAt returns a config body declaring two openai-wire
+// providers (aaa, zzz), both pointed at the scripted fake, with no top-level
+// provider selector. Sorted, aaa is the first declared provider; picking a
+// provider in tests below is deterministic.
+func twoProviderConfigAt(url string) string {
+	return fmt.Sprintf(
+		"[providers.aaa]\nwire = \"openai\"\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"aaa-model\"\n\n"+
+			"[providers.zzz]\nwire = \"openai\"\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"zzz-model\"\n",
+		url, url)
+}
+
+// TestOneShotFallbackFirstDeclaredProvider is the og-z1m.4 acceptance at the
+// binary seam for -p: with no provider selected anywhere, the run boots on the
+// first declared provider and warns on stderr.
+func TestOneShotFallbackFirstDeclaredProvider(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	dir := configDir(t, twoProviderConfigAt(p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if !strings.Contains(stderr, "warning: no provider selected") || !strings.Contains(stderr, "aaa") {
+		t.Errorf("stderr = %q, want a fallback warning naming the first declared provider", stderr)
+	}
+	assertRequestModel(t, p, "aaa-model", "Bearer test-key")
+}
+
+// TestInteractivePromptSelectsProvider is the og-z1m.4 acceptance at the
+// binary seam for the REPL: with no provider selected, startup lists the
+// declared providers, prompts, and boots on the pick.
+func TestInteractivePromptSelectsProvider(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	dir := configDir(t, twoProviderConfigAt(p.URL))
+	stdin := "zzz\nhi\n/quit\n"
+	stdout, stderr, code := runWithStdin(t, stdin, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	for _, want := range []string{"Available providers:", "  aaa", "  zzz", "Select provider:"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout = %q, want it to contain %q", stdout, want)
+		}
+	}
+	assertRequestModel(t, p, "zzz-model", "Bearer test-key")
 }
 
 func TestMalformedConfigFailsFast(t *testing.T) {

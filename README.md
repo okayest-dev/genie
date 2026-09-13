@@ -33,6 +33,8 @@ genie
 
 You get an interactive `genie>` prompt. Type naturally — the model can read, write, edit files, and run shell commands.
 
+If no provider is configured, genie lists the declared providers on first start and asks you to pick one.
+
 ## Usage
 
 ### Interactive REPL
@@ -50,6 +52,8 @@ genie -p "explain this project"
 ```
 
 Runs a single prompt, prints the reply to stdout, and exits. Tool calls requiring confirmation are auto-denied in this mode.
+
+With no provider selected, `-p` runs on the first declared provider and prints a warning — it cannot prompt. No declared providers at all is a startup error.
 
 ### Slash commands
 
@@ -88,6 +92,8 @@ Precedence: **defaults < config file < environment variables**.
 # The active provider, named from the [providers] tables below. Everything the
 # harness boots on — wire, endpoint, key env, default model — comes from that
 # provider's table, so usually you only set this and a base_url/api_key_env.
+# Unset, the REPL prompts you to pick from the declared providers; one-shot
+# -p mode falls back to the first declared provider with a warning.
 provider = "zen"
 
 # The legacy top-level connection keys (model, base_url, wire, gateway) still
@@ -139,7 +145,9 @@ bash = true
 #
 # A provider missing a default model, or naming an unknown wire, fails at
 # startup; duplicate provider tables are rejected. Selecting a provider that
-# has no table (e.g. an uninstalled wire plugin) also fails at startup.
+# has no table (e.g. an uninstalled wire plugin) also fails at startup. With
+# no provider selected and no declared providers, startup fails naming the
+# requirement.
 ```
 
 The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. See [docs/agent-definitions.md](docs/agent-definitions.md).
