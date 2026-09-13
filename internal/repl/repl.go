@@ -213,9 +213,14 @@ func resolveRegistry(cfg *Config, agent *config.ResolvedAgent) *tools.Registry {
 	return cfg.Registry.Subset(agent.Tools)
 }
 
-// currentModel returns the model for the current agent, falling back to config.
+// currentModel returns the model for the current agent, falling back to
+// config. The config global is the shipped default, not the boot model, so
+// only an agent that declares its own model outright may override: a resolved
+// agent whose Model merely inherited the config global must not clobber the
+// active provider's default (og-z1m.3). The nil Cfg guard keeps repl-only
+// tests (which build Config without a harness Config) on the provider default.
 func currentModel(cfg *Config, agent *config.ResolvedAgent) string {
-	if agent != nil && agent.Model != "" {
+	if cfg.Cfg != nil && agent.HasExplicitModel(cfg.Cfg.Model) {
 		return agent.Model
 	}
 	return cfg.Model

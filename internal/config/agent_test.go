@@ -461,3 +461,26 @@ func writeAgentFile(t *testing.T, dir, name, content string) {
 		t.Fatalf("writeAgentFile: %v", err)
 	}
 }
+
+// TestHasExplicitModel pins the explicit-only override rule: resolution fills
+// ResolvedAgent.Model with the harness global, so only a model that differs
+// from that sentinel counts as an explicit declaration (og-z1m.3).
+func TestHasExplicitModel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		agent  *ResolvedAgent
+		global string
+		want   bool
+	}{
+		{name: "nil agent", agent: nil, global: "big-pickle", want: false},
+		{name: "inherited model is not explicit", agent: &ResolvedAgent{Model: "big-pickle"}, global: "big-pickle", want: false},
+		{name: "declared model is explicit", agent: &ResolvedAgent{Model: "claude-sonnet-4-5"}, global: "big-pickle", want: true},
+		{name: "no model", agent: &ResolvedAgent{}, global: "big-pickle", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.agent.HasExplicitModel(tc.global); got != tc.want {
+				t.Errorf("HasExplicitModel(%q) = %v, want %v", tc.global, got, tc.want)
+			}
+		})
+	}
+}

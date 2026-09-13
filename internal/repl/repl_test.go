@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
 )
 
@@ -267,5 +268,28 @@ func TestHandleChangesInvalidID(t *testing.T) {
 	handleChanges("abc", cfg, "test", &stdout)
 	if !strings.Contains(stdout.String(), "invalid change id: abc") {
 		t.Errorf("output = %q, want 'invalid change id: abc'", stdout.String())
+	}
+}
+
+// TestCurrentModelExplicitOnly pins the og-z1m.3 explicit-only heuristic:
+// the runtime model is the active provider's default (cfg.Model) unless an
+// agent declares its own model outright. A resolved agent whose Model merely
+// inherited the config global must not clobber it.
+func TestCurrentModelExplicitOnly(t *testing.T) {
+	global := &config.Config{Model: "big-pickle"}
+	providerDefault := &Config{Model: "other-model", Cfg: global}
+
+	inherited := &config.ResolvedAgent{Name: "a", Model: "big-pickle"}
+	if got := currentModel(providerDefault, inherited); got != "other-model" {
+		t.Errorf("inherited agent: currentModel = %q, want provider default %q", got, "other-model")
+	}
+
+	declared := &config.ResolvedAgent{Name: "b", Model: "claude-sonnet-4-5"}
+	if got := currentModel(providerDefault, declared); got != "claude-sonnet-4-5" {
+		t.Errorf("declaring agent: currentModel = %q, want agent model %q", got, "claude-sonnet-4-5")
+	}
+
+	if got := currentModel(providerDefault, nil); got != "other-model" {
+		t.Errorf("no agent: currentModel = %q, want provider default %q", got, "other-model")
 	}
 }

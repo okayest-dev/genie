@@ -154,9 +154,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		runAgent = resolved
 	}
 
-	// Apply agent overrides to model.
-	runModel := cfg.Model
-	if runAgent != nil && runAgent.Model != "" {
+	// Resolve the boot client and first model from the active provider through
+	// the registry. The startup client no longer comes from flat-key wire/base_url
+	// selection, from a plugin, or from a model-prefix route: the provider named
+	// by the selection key is the only path (og-z1m.3).
+	reg := registryFromConfig(cfg)
+	client, runModel, err := resolveStartup(reg, cfg.Provider)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+
+	// A per-agent model override still wins, but only when the agent declares
+	// one outright: a resolved default that merely copied the config global must
+	// not clobber the active provider's own default model.
+	if runAgent.HasExplicitModel(cfg.Model) {
 		runModel = runAgent.Model
 	}
 
@@ -173,20 +185,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		runRegistry = registry.Subset(runAgent.Tools)
 	}
 
-	wire := cfg.Wire
-	if wire == "" {
-		wire = llm.DetectWire(runModel)
-	}
-	baseURL := cfg.BaseURL
-	if cfg.Gateway != "" {
-		baseURL = cfg.Gateway
-	}
-	client, err := llm.NewClient(wire, baseURL, cfg.APIKey)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-
 	// Load plugins.
 	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, runRegistry,
 		plugin.WithStreamTimeout(cfg.PluginWireStreamTimeout))
@@ -195,34 +193,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer pluginMgr.Shutdown()
-
-	// Route through an explicit provider or build a model-based route table.
-	if cfg.Provider != "" {
-		p, ok := pluginMgr.GetPlugins()[cfg.Provider]
-		if !ok {
-			fmt.Fprintf(stderr, "Error: provider %q not found (loaded plugins: %s)\n", cfg.Provider, pluginNames(pluginMgr))
-			return 1
-		}
-		if !p.Capabilities.Wires {
-			fmt.Fprintf(stderr, "Error: provider %q does not support wires\n", cfg.Provider)
-			return 1
-		}
-		client = newPluginWireClient(p)
-	} else {
-		modelRoutes := make(map[string]llm.Client)
-		for _, p := range pluginMgr.GetPlugins() {
-			if !p.Capabilities.Wires {
-				continue
-			}
-			pc := newPluginWireClient(p)
-			for _, m := range p.Models {
-				modelRoutes[m.ID] = pc
-			}
-		}
-		if len(modelRoutes) > 0 {
-			client = llm.NewRoutingClient(client, modelRoutes)
-		}
-	}
 
 	// Context window & budget: per-model config overrides first, then
 	// authoritative provider data via the optional ModelInfo probe (lazily
@@ -394,17 +364,6 @@ func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration)
 	}
 
 	return reg
-}
-
-func pluginNames(mgr *plugin.Manager) string {
-	names := make([]string, 0)
-	for name := range mgr.GetPlugins() {
-		names = append(names, name)
-	}
-	if len(names) == 0 {
-		return "(none)"
-	}
-	return strings.Join(names, ", ")
 }
 
 // readStdinPrompt reads all of stdin, trims whitespace, and returns the

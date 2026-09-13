@@ -115,11 +115,34 @@ func TestEmptyPromptUsageError(t *testing.T) {
 	}
 }
 
-// providerEnv points the binary at a fake provider with a fixed model and key.
-func providerEnv(p *fake.Provider) []string {
+// providerConfigAt returns a config-file body that declares zen as the active
+// provider, overriding the shipped zen table's base_url and model so the
+// binary talks to a test server instead of the real endpoint.
+func providerConfigAt(baseURL, model string) string {
+	return fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = %q\n", baseURL, model)
+}
+
+// providerConfig returns the config body for a scripted fake provider.
+func providerConfig(p *fake.Provider) string {
+	return providerConfigAt(p.URL, "test-model")
+}
+
+// providerBaseURLConfig points the shipped zen provider at the given base
+// URL, leaving its model, key env and everything else on the shipped
+// defaults — for tests that assert those defaults hold.
+func providerBaseURLConfig(baseURL string) string {
+	return fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\n", baseURL)
+}
+
+// providerEnv points the binary at a config dir declaring the fake as the
+// active zen provider, with the key it reads (zen's shipped openai key)
+// set. Provider selection now lives in the config, so tests never drive
+// startup through the flat GENIE_BASE_URL/GENIE_MODEL env keys (og-z1m.3).
+func providerEnv(t *testing.T, p *fake.Provider) []string {
+	t.Helper()
+	dir := configDir(t, providerConfig(p))
 	return []string{
-		"GENIE_BASE_URL=" + p.URL,
-		"GENIE_MODEL=test-model",
+		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=test-key",
 	}
 }
@@ -246,7 +269,7 @@ func TestStreamsReply(t *testing.T) {
 			fake.Done,
 		},
 	})
-	stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+	stdout, stderr, code := run(t, providerEnv(t, p), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -304,7 +327,7 @@ func TestReasoningFieldsIgnored(t *testing.T) {
 			fake.Done,
 		},
 	})
-	stdout, stderr, code := run(t, providerEnv(p), "-p", "what is 6*7?")
+	stdout, stderr, code := run(t, providerEnv(t, p), "-p", "what is 6*7?")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -326,7 +349,7 @@ func TestMissingUsageNeverBreaksTurn(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := scriptedProvider(t, fake.Behavior{Chunks: tc.chunks})
-			stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+			stdout, stderr, code := run(t, providerEnv(t, p), "-p", "hi")
 			if code != 0 {
 				t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 			}
@@ -362,7 +385,7 @@ func TestOpenFailuresReportError(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p := scriptedProvider(t, fake.Behavior{Error: tc.error})
-			stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+			stdout, stderr, code := run(t, providerEnv(t, p), "-p", "hi")
 			assertCleanFailure(t, stdout, stderr, code, tc.wantStderr)
 		})
 	}
@@ -372,7 +395,8 @@ func TestNetworkDownReportsError(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	url := srv.URL
 	srv.Close()
-	stdout, stderr, code := run(t, []string{"GENIE_BASE_URL=" + url}, "-p", "hi")
+	dir := configDir(t, providerBaseURLConfig(url))
+	stdout, stderr, code := run(t, []string{"XDG_CONFIG_HOME=" + dir, "OPENCODE_API_KEY=test-key"}, "-p", "hi")
 	assertCleanFailure(t, stdout, stderr, code, "Error: ")
 }
 
@@ -380,7 +404,7 @@ func TestConfigFileDrivesWireRequest(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	dir := configDir(t, fmt.Sprintf("base_url = %q\nmodel = \"cfg-model\"\n", p.URL))
+	dir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"cfg-model\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=test-key",
@@ -394,14 +418,21 @@ func TestConfigFileDrivesWireRequest(t *testing.T) {
 	assertRequestModel(t, p, "cfg-model", "Bearer test-key")
 }
 
-func TestEnvOverridesConfigFile(t *testing.T) {
+// TestEnvBeatsConfigFileProviderSelection is the env > file precedence rule
+// at the provider seam: the config file selects zen, GENIE_PROVIDER selects
+// "other", and the env selection wins.
+func TestEnvBeatsConfigFileProviderSelection(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	dir := configDir(t, fmt.Sprintf("base_url = %q\nmodel = \"file-model\"\n", p.URL))
+	cfg := fmt.Sprintf("provider = \"zen\"\n\n"+
+		"[providers.zen]\nbase_url = %q\nmodel = \"zen-file\"\n\n"+
+		"[providers.other]\nwire = \"openai\"\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"other-env\"\n",
+		p.URL, p.URL)
+	dir := configDir(t, cfg)
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"GENIE_MODEL=env-model",
+		"GENIE_PROVIDER=other",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -410,17 +441,19 @@ func TestEnvOverridesConfigFile(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	assertRequestModel(t, p, "env-model", "Bearer test-key")
+	assertRequestModel(t, p, "other-env", "Bearer test-key")
 }
 
-func TestMissingConfigFileUsesDefaults(t *testing.T) {
+// TestMinimalConfigUsesProviderDefaults pins that a minimal config overlay
+// — only the base_url to reach a test server — boots the shipped zen default:
+// its default model and the absence of a key mean no Authorization header.
+func TestMinimalConfigUsesProviderDefaults(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	dir := configDir(t, "")
+	dir := configDir(t, providerBaseURLConfig(p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"GENIE_BASE_URL=" + p.URL,
 		"OPENCODE_API_KEY=",
 	}, "-p", "hi")
 	if code != 0 {
@@ -430,6 +463,16 @@ func TestMissingConfigFileUsesDefaults(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	assertRequestModel(t, p, "big-pickle", "")
+}
+
+// TestNoProviderFailsStartup pins the og-z1m.3 interim unset-provider
+// behaviour at the binary seam: with no selection anywhere, startup fails
+// with a clear error before any request can be made. og-z1m.4 trades this for
+// the prompt/one-shot fallback.
+func TestNoProviderFailsStartup(t *testing.T) {
+	dir := configDir(t, "")
+	stdout, stderr, code := run(t, []string{"XDG_CONFIG_HOME=" + dir}, "-p", "hi")
+	assertCleanFailure(t, stdout, stderr, code, "no active provider")
 }
 
 func TestMalformedConfigFailsFast(t *testing.T) {
@@ -448,7 +491,7 @@ func TestAPIKeyReadsFromConfiguredEnvVar(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	dir := configDir(t, fmt.Sprintf("base_url = %q\napi_key_env = \"GENIE_MY_KEY\"\n", p.URL))
+	dir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\napi_key_env = \"GENIE_MY_KEY\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
 		"GENIE_MY_KEY=test-key",
@@ -467,7 +510,7 @@ func TestDefaultPromptAlwaysInRequest(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+	stdout, stderr, code := run(t, providerEnv(t, p), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -486,10 +529,9 @@ func TestInstructionFileInRequest(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = %q\n", p.URL, instFile))
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\ninstruction_file = %q\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", instFile, p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 		// Work from an empty dir so no AGENTS.md interference
 		"HOME=" + dir,
@@ -513,10 +555,9 @@ func TestAGENTSMDInRequest(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\n", p.URL))
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
 	stdout, stderr, code := runInDir(t, workDir, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -533,10 +574,9 @@ func TestMissingInstructionFileFailsAtStartup(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = \"/nonexistent/instructions.md\"\n", p.URL))
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\ninstruction_file = \"/nonexistent/instructions.md\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	assertCleanFailure(t, stdout, stderr, code, "instruction file")
@@ -559,10 +599,9 @@ func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	cfgDir := configDir(t, fmt.Sprintf("base_url = %q\ninstruction_file = %q\n", p.URL, instFile))
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\ninstruction_file = %q\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", instFile, p.URL))
 	stdout, stderr, code := runInDir(t, workDir, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
-		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -589,7 +628,7 @@ func TestTextStreamsLive(t *testing.T) {
 		Delay: time.Second,
 	})
 	cmd := exec.Command(binPath, "-p", "hi")
-	cmd.Env = append(os.Environ(), providerEnv(p)...)
+	cmd.Env = append(os.Environ(), providerEnv(t, p)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -627,7 +666,7 @@ func TestVerboseFlagBanner(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, providerEnv(p), "-v", "-p", "hi")
+	stdout, stderr, code := run(t, providerEnv(t, p), "-v", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -643,7 +682,7 @@ func TestDebugFlagBanner(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, providerEnv(p), "-d", "-p", "hi")
+	stdout, stderr, code := run(t, providerEnv(t, p), "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -659,7 +698,7 @@ func TestNoFlagsStderrEmpty(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+	stdout, stderr, code := run(t, providerEnv(t, p), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -676,7 +715,7 @@ func TestOGDebugEnvEnablesDebug(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_DEBUG=true"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(t, p), "GENIE_DEBUG=true"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -692,7 +731,7 @@ func TestDebugOutputIncludesHTTPDetails(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_DEBUG=1"), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(t, p), "GENIE_DEBUG=1"), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -711,7 +750,11 @@ func TestAPIKeyNeverAppearsInDebugOutput(t *testing.T) {
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
 	apiKey := "super-secret-api-key-abcdef"
-	stdout, stderr, code := run(t, append(providerEnv(p), "OPENCODE_API_KEY="+apiKey, "GENIE_DEBUG=1"), "-p", "hi")
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfig(p)),
+		"OPENCODE_API_KEY=" + apiKey,
+		"GENIE_DEBUG=1",
+	}, "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -727,7 +770,7 @@ func TestDebugFlagOverridesFalseOGDebug(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_DEBUG=false"), "-d", "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(t, p), "GENIE_DEBUG=false"), "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -749,7 +792,7 @@ func TestStdoutUnaffectedByFlags(t *testing.T) {
 		{"-v", "-p", "hi"},
 		{"-d", "-p", "hi"},
 	} {
-		stdout, _, code := run(t, providerEnv(p), args...)
+		stdout, _, code := run(t, providerEnv(t, p), args...)
 		if code != 0 {
 			t.Fatalf("args %v: exit code = %d", args, code)
 		}
@@ -763,7 +806,7 @@ func TestVerboseShowsInfoMessages(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Usage(5, 3, 8), fake.Done},
 	})
-	_, stderr, code := run(t, providerEnv(p), "-v", "-p", "hi")
+	_, stderr, code := run(t, providerEnv(t, p), "-v", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -778,7 +821,7 @@ func TestDebugShowsDebugMessages(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	_, stderr, code := run(t, providerEnv(p), "-d", "-p", "hi")
+	_, stderr, code := run(t, providerEnv(t, p), "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -794,7 +837,7 @@ func TestSessionPersistence(t *testing.T) {
 		Chunks: []string{fake.TextDelta("hello"), fake.Finish("stop"), fake.Done},
 	})
 	sessionDir := t.TempDir()
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_SESSION_DIR="+sessionDir), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(t, p), "GENIE_SESSION_DIR="+sessionDir), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -868,7 +911,7 @@ func TestREPLCrossTurnHistory(t *testing.T) {
 	})
 
 	// Two REPL turns then quit. Each turn produces one chat request.
-	_, stderr, code := runWithStdin(t, "first question\nsecond question\n/quit\n", providerEnv(p))
+	_, stderr, code := runWithStdin(t, "first question\nsecond question\n/quit\n", providerEnv(t, p))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -931,7 +974,7 @@ func TestREPLContextTurnsWindow(t *testing.T) {
 		Chunks: []string{fake.TextDelta("turn reply"), fake.Finish("stop"), fake.Done},
 	})
 
-	env := append(providerEnv(p), "GENIE_CONTEXT_TURNS=1")
+	env := append(providerEnv(t, p), "GENIE_CONTEXT_TURNS=1")
 	_, stderr, code := runWithStdin(t, "first question\nsecond question\nthird question\n/quit\n", env)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -989,7 +1032,7 @@ func TestREPLNewResetsHistory(t *testing.T) {
 		Chunks: []string{fake.TextDelta("turn reply"), fake.Finish("stop"), fake.Done},
 	})
 
-	_, stderr, code := runWithStdin(t, "first question\n/new\nsecond question\n/quit\n", providerEnv(p))
+	_, stderr, code := runWithStdin(t, "first question\n/new\nsecond question\n/quit\n", providerEnv(t, p))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1077,9 +1120,9 @@ func TestToolCallExecutedAndResultFedBack(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	dir := configDir(t, providerConfigAt(srv.URL, "test-model"))
 	stdout, stderr, code := run(t, []string{
-		"GENIE_BASE_URL=" + srv.URL,
-		"GENIE_MODEL=test-model",
+		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "read test.txt")
 	if code != 0 {
@@ -1102,7 +1145,7 @@ func TestToolCallRequestIncludesTools(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := run(t, providerEnv(p), "-p", "hi")
+	stdout, stderr, code := run(t, providerEnv(t, p), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1134,7 +1177,7 @@ func TestToolCallResultPersistsToTranscript(t *testing.T) {
 		},
 	})
 	sessionDir := t.TempDir()
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_SESSION_DIR="+sessionDir), "-p", "hi")
+	stdout, stderr, code := run(t, append(providerEnv(t, p), "GENIE_SESSION_DIR="+sessionDir), "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1153,18 +1196,6 @@ func TestToolCallResultPersistsToTranscript(t *testing.T) {
 }
 
 func TestToolCallDisabledToolError(t *testing.T) {
-	// Use config to disable the read tool.
-	dir := configDir(t, "[tools]\nread = false\n")
-	p := scriptedProvider(t, fake.Behavior{
-		Chunks: []string{
-			fake.ToolCallDelta(0, "call_1", "read", `{"path":"x"}`),
-			fake.Finish("tool_calls"),
-			fake.Done,
-		},
-	})
-	// Need a second response for after the error.
-	p.Close()
-
 	var reqCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqCount++
@@ -1197,10 +1228,10 @@ func TestToolCallDisabledToolError(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// Use config to disable the read tool while declaring the provider.
+	dir := configDir(t, fmt.Sprintf("%s\n[tools]\nread = false\n", providerConfigAt(srv.URL, "test-model")))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"GENIE_BASE_URL=" + srv.URL,
-		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "read x")
 	if code != 0 {
@@ -1222,7 +1253,11 @@ func TestAnthropicWire(t *testing.T) {
 			fake.Done,
 		},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_WIRE=anthropic"), "-p", "hi")
+	dir := configDir(t, fmt.Sprintf("provider = \"anthropic\"\n\n[providers.anthropic]\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"test-model\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1246,7 +1281,11 @@ func TestResponsesAPIWire(t *testing.T) {
 			fake.Done,
 		},
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_WIRE=responses"), "-p", "hi")
+	dir := configDir(t, fmt.Sprintf("provider = \"responses\"\n\n[providers.responses]\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"test-model\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1271,7 +1310,11 @@ func TestGoogleWire(t *testing.T) {
 		},
 		ContextWindow: 1_000_000,
 	})
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_WIRE=google", "GENIE_MODEL=gemini-test"), "-p", "hi")
+	dir := configDir(t, fmt.Sprintf("provider = \"google\"\n\n[providers.google]\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"gemini-test\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1293,7 +1336,10 @@ func TestGoogleWire(t *testing.T) {
 	}
 }
 
-func TestWireAutoDetectionClaudeToAnthropic(t *testing.T) {
+// TestClaudeModelOnDeclaredAnthropicProvider: a claude-* model no longer
+// implies a wire — the declared anthropic provider's own wire serves /messages
+// (this replaces the old model-prefix auto-detection test).
+func TestClaudeModelOnDeclaredAnthropicProvider(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{
 			fake.AnthropicMessageStart(),
@@ -1302,9 +1348,9 @@ func TestWireAutoDetectionClaudeToAnthropic(t *testing.T) {
 			fake.Done,
 		},
 	})
+	dir := configDir(t, fmt.Sprintf("provider = \"anthropic\"\n\n[providers.anthropic]\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"claude-3-sonnet\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
-		"GENIE_BASE_URL=" + p.URL,
-		"GENIE_MODEL=claude-3-sonnet",
+		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1318,11 +1364,13 @@ func TestWireAutoDetectionClaudeToAnthropic(t *testing.T) {
 		t.Fatalf("requests = %d, want 1", len(reqs))
 	}
 	if reqs[0].Path != "/messages" {
-		t.Errorf("request path = %q, want /messages (auto-detected anthropic)", reqs[0].Path)
+		t.Errorf("request path = %q, want /messages (declared anthropic provider)", reqs[0].Path)
 	}
 }
 
-func TestWireAutoDetectionGeminiToGoogle(t *testing.T) {
+// TestGeminiModelOnDeclaredGoogleProvider: a gemini-* model now reaches the
+// google wire only because the provider declares it — no model-prefix guess.
+func TestGeminiModelOnDeclaredGoogleProvider(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{
 			fake.GoogleTextDelta("detected"),
@@ -1331,9 +1379,9 @@ func TestWireAutoDetectionGeminiToGoogle(t *testing.T) {
 		},
 		ContextWindow: 1_000_000,
 	})
+	dir := configDir(t, fmt.Sprintf("provider = \"google\"\n\n[providers.google]\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"gemini-flash\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
-		"GENIE_BASE_URL=" + p.URL,
-		"GENIE_MODEL=gemini-flash",
+		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1353,11 +1401,14 @@ func TestWireAutoDetectionGeminiToGoogle(t *testing.T) {
 		t.Fatalf("no chat POST among requests: %+v", reqs)
 	}
 	if !strings.HasPrefix(chat.Path, "/models/") {
-		t.Errorf("chat path = %q, want /models/... (auto-detected google)", chat.Path)
+		t.Errorf("chat path = %q, want /models/... (declared google provider)", chat.Path)
 	}
 }
 
-func TestExplicitWireOverrideInConfig(t *testing.T) {
+// TestDeclaredWireWinsOverModelPrefix: the declared provider's wire serves the
+// request even when the model's prefix suggests a different wire. The old
+// GENIE_WIRE config override (and model-prefix auto-detection) is gone.
+func TestDeclaredWireWinsOverModelPrefix(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{
 			fake.AnthropicMessageStart(),
@@ -1366,10 +1417,9 @@ func TestExplicitWireOverrideInConfig(t *testing.T) {
 			fake.Done,
 		},
 	})
-	dir := configDir(t, fmt.Sprintf("base_url = %q\nwire = \"anthropic\"\n", p.URL))
+	dir := configDir(t, fmt.Sprintf("provider = \"anthropic\"\n\n[providers.anthropic]\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"gpt-4o\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
 		"XDG_CONFIG_HOME=" + dir,
-		"GENIE_MODEL=test-model",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1387,13 +1437,17 @@ func TestExplicitWireOverrideInConfig(t *testing.T) {
 	}
 }
 
-func TestUnknownModelFallsBackToOpenAI(t *testing.T) {
+// TestEnvProviderSelectsProvider: GENIE_PROVIDER names a declared provider and
+// boots on it (env > file for the selection key, mirroring the old env-override
+// role of GENIE_PROVIDER when it routed through plugins).
+func TestEnvProviderSelectsProvider(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
+	dir := configDir(t, fmt.Sprintf("[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
 	stdout, stderr, code := run(t, []string{
-		"GENIE_BASE_URL=" + p.URL,
-		"GENIE_MODEL=unknown-model",
+		"XDG_CONFIG_HOME=" + dir,
+		"GENIE_PROVIDER=zen",
 		"OPENCODE_API_KEY=test-key",
 	}, "-p", "hi")
 	if code != 0 {
@@ -1402,28 +1456,15 @@ func TestUnknownModelFallsBackToOpenAI(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	reqs := p.Requests()
-	if len(reqs) != 1 {
-		t.Fatalf("requests = %d, want 1", len(reqs))
-	}
-	if reqs[0].Path != "/chat/completions" {
-		t.Errorf("request path = %q, want /chat/completions (fallback)", reqs[0].Path)
-	}
+	assertRequestModel(t, p, "test-model", "Bearer test-key")
 }
 
-func TestOGProviderEnvRoutesThroughPlugin(t *testing.T) {
-	p := scriptedProvider(t, fake.Behavior{
-		Chunks: []string{
-			fake.AnthropicMessageStart(),
-			fake.AnthropicTextDelta("via env"),
-			fake.AnthropicMessageDelta("end_turn"),
-			fake.Done,
-		},
-	})
-	// GENIE_PROVIDER would normally name a loaded plugin, but with no plugins
-	// installed it should error.
-	stdout, stderr, code := run(t, append(providerEnv(p), "GENIE_PROVIDER=copilot"), "-p", "hi")
-	assertCleanFailure(t, stdout, stderr, code, "provider")
+// TestUnknownProviderFailsStartup: a provider that no table declares fails at
+// startup with an error naming it — no silent routing, no plugin fallback.
+func TestUnknownProviderFailsStartup(t *testing.T) {
+	dir := configDir(t, "provider = \"copilot\"\n")
+	stdout, stderr, code := run(t, []string{"XDG_CONFIG_HOME=" + dir}, "-p", "hi")
+	assertCleanFailure(t, stdout, stderr, code, "copilot")
 }
 
 // --- Non-interactive completion (genie-dea) ---
@@ -1432,7 +1473,7 @@ func TestStdinPipingReadsPrompt(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("got it"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := runWithStdin(t, "what is 2+2?", providerEnv(p), "-p")
+	stdout, stderr, code := runWithStdin(t, "what is 2+2?", providerEnv(t, p), "-p")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1465,7 +1506,7 @@ func TestStdinPipingMultiline(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	stdout, stderr, code := runWithStdin(t, "line one\nline two\nline three", providerEnv(p), "-p")
+	stdout, stderr, code := runWithStdin(t, "line one\nline two\nline three", providerEnv(t, p), "-p")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
@@ -1541,8 +1582,7 @@ func TestStdinPipingAnswerToStdoutToolFramingToStderr(t *testing.T) {
 	defer srv.Close()
 
 	stdout, stderr, code := runWithStdin(t, "read test.txt", []string{
-		"GENIE_BASE_URL=" + srv.URL,
-		"GENIE_MODEL=test-model",
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
 		"OPENCODE_API_KEY=test-key",
 	}, "-p")
 	if code != 0 {
@@ -1594,8 +1634,7 @@ func TestLedgerPersistedInHeadlessMode(t *testing.T) {
 	sessionDir := t.TempDir()
 	workDir := t.TempDir()
 	stdout, stderr, code := runInDir(t, workDir, []string{
-		"GENIE_BASE_URL=" + srv.URL,
-		"GENIE_MODEL=test-model",
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
 		"OPENCODE_API_KEY=test-key",
 		"GENIE_SESSION_DIR=" + sessionDir,
 	}, "-p", "write output.txt")
@@ -1639,7 +1678,7 @@ func TestExitCode0OnSuccess(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	_, _, code := run(t, providerEnv(p), "-p", "hi")
+	_, _, code := run(t, providerEnv(t, p), "-p", "hi")
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
@@ -1649,7 +1688,7 @@ func TestExitCode1OnProviderError(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Error: &fake.Error{Status: 500, Body: `{"error":{"message":"internal error"}}`},
 	})
-	_, _, code := run(t, providerEnv(p), "-p", "hi")
+	_, _, code := run(t, providerEnv(t, p), "-p", "hi")
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
@@ -1667,7 +1706,7 @@ func TestStdinPipingWithExplicitDash(t *testing.T) {
 		Chunks: []string{fake.TextDelta("piped"), fake.Finish("stop"), fake.Done},
 	})
 	// -p - is treated as -p (read from stdin); the "-" is not a value.
-	stdout, _, code := runWithStdin(t, "hello via dash", providerEnv(p), "-p", "-")
+	stdout, _, code := runWithStdin(t, "hello via dash", providerEnv(t, p), "-p", "-")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -1698,12 +1737,9 @@ func TestContextUsageLoggedAgainstBudget(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	cfg := `
-[context.windows]
-"test-model" = 1000
-`
+	cfg := fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n\n[context.windows]\n\"test-model\" = 1000\n", p.URL)
 	dir := configDir(t, cfg)
-	env := append(providerEnv(p), "GENIE_CONFIG_DIR="+dir)
+	env := []string{"XDG_CONFIG_HOME=" + dir, "OPENCODE_API_KEY=test-key"}
 	stdout, stderr, code := run(t, env, "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -1738,15 +1774,9 @@ func TestContextBudgetTokensOverrideWins(t *testing.T) {
 	p := scriptedProvider(t, fake.Behavior{
 		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
 	})
-	cfg := `
-[context]
-budget_tokens = 123
-
-[context.windows]
-"test-model" = 1000
-`
+	cfg := fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n\n[context]\nbudget_tokens = 123\n\n[context.windows]\n\"test-model\" = 1000\n", p.URL)
 	dir := configDir(t, cfg)
-	env := append(providerEnv(p), "GENIE_CONFIG_DIR="+dir)
+	env := []string{"XDG_CONFIG_HOME=" + dir, "OPENCODE_API_KEY=test-key"}
 	_, stderr, code := run(t, env, "-d", "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -1754,4 +1784,29 @@ budget_tokens = 123
 	if !strings.Contains(stderr, "budget=123") {
 		t.Errorf("stderr = %q, want budget=123 (absolute budget_tokens wins)", stderr)
 	}
+}
+
+// TestStartsOnActiveProvidersDefaultModel is the og-z1m.3 acceptance at the
+// binary seam: of two declared providers, the selected one's own default model
+// is what starts — never another provider's model, never a global fallback.
+func TestStartsOnActiveProvidersDefaultModel(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfg := fmt.Sprintf("provider = \"other\"\n\n"+
+		"[providers.zen]\nbase_url = %q\nmodel = \"zen-model\"\n\n"+
+		"[providers.other]\nwire = \"openai\"\nbase_url = %q\napi_key_env = \"OPENCODE_API_KEY\"\nmodel = \"other-model\"\n",
+		p.URL, p.URL)
+	dir := configDir(t, cfg)
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	assertRequestModel(t, p, "other-model", "Bearer test-key")
 }

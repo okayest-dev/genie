@@ -124,11 +124,21 @@ func allToolNames(t Tools) []string {
 	return names
 }
 
+// HasExplicitModel reports whether the agent declares its own model rather
+// than inheriting the harness global. Resolution fills Model with cfg.Model
+// when a def leaves it unset, so a non-empty Model is only an explicit
+// declaration when it also differs from that global sentinel. This is the
+// "explicit-only" override rule (og-z1m.3): a request may leave the active
+// provider's default model only for a model an agent names outright.
+func (a *ResolvedAgent) HasExplicitModel(globalModel string) bool {
+	return a != nil && a.Model != "" && a.Model != globalModel
+}
+
 // AgentReg holds discovered agent definitions. Created by scanning
 // agent directories; entries are parsed on first access.
 type AgentReg struct {
-	globalDir string            // ~/.config/genie/agents/
-	localDir  string            // .genie/agents/ in cwd
+	globalDir string               // ~/.config/genie/agents/
+	localDir  string               // .genie/agents/ in cwd
 	cache     map[string]*AgentDef // name → parsed def
 }
 
