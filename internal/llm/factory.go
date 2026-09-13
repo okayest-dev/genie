@@ -2,8 +2,10 @@ package llm
 
 import "fmt"
 
-// Factory creates a Client from a baseURL and apiKey.
-type Factory func(baseURL, apiKey string) Client
+// Factory creates a Client from a provider's baseURL, apiKey and opts. The
+// opts carry wire-specific settings per provider; a wire that takes none
+// ignores them.
+type Factory func(baseURL, apiKey string, opts map[string]any) Client
 
 var registry = map[Wire]Factory{}
 
@@ -35,5 +37,5 @@ func NewClient(wire Wire, baseURL, apiKey string) (Client, error) {
 	if !ok {
 		return nil, fmt.Errorf("llm: wire %q not registered", wire)
 	}
-	return f(baseURL, apiKey), nil
+	return f(baseURL, apiKey, nil), nil
 }

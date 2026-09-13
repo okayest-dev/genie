@@ -20,7 +20,7 @@ import (
 const anthropicVersion = "2023-06-01"
 
 func init() {
-	llm.RegisterWire(llm.WireAnthropic, func(baseURL, apiKey string) llm.Client {
+	llm.RegisterWire(llm.WireAnthropic, func(baseURL, apiKey string, _ map[string]any) llm.Client {
 		return NewClient(baseURL, apiKey)
 	})
 }

@@ -18,7 +18,7 @@ import (
 )
 
 func init() {
-	llm.RegisterWire(llm.WireOpenAIResponses, func(baseURL, apiKey string) llm.Client {
+	llm.RegisterWire(llm.WireOpenAIResponses, func(baseURL, apiKey string, _ map[string]any) llm.Client {
 		return NewClient(baseURL, apiKey)
 	})
 }
