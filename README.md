@@ -85,11 +85,17 @@ Precedence: **defaults < config file < environment variables**.
 ### Config file
 
 ```toml
-model = "big-pickle"
-base_url = "https://opencode.ai/zen/v1"
+# The active provider, named from the [providers] tables below. Everything the
+# harness boots on — wire, endpoint, key env, default model — comes from that
+# provider's table, so usually you only set this and a base_url/api_key_env.
+provider = "zen"
+
+# The legacy top-level connection keys (model, base_url, wire, gateway) still
+# parse but no longer shape the startup client (og-z1m.3) — the active
+# provider's table does. They're removed in og-z1m.8.
+# model = "big-pickle"
+# base_url = "https://opencode.ai/zen/v1"
 api_key_env = "OPENCODE_API_KEY"
-# wire = "openai"            # auto-detect from model prefix
-# provider = "copilot"       # route through a wire plugin (e.g. copilot, bedrock)
 # instruction_file = ""      # path to agent instruction file
 # session_dir = ""           # defaults to ~/.config/genie/sessions
 bash_timeout = 120
@@ -132,7 +138,8 @@ bash = true
 # opts        = { cost = 2 }                            # wire-specific
 #
 # A provider missing a default model, or naming an unknown wire, fails at
-# startup; duplicate provider tables are rejected.
+# startup; duplicate provider tables are rejected. Selecting a provider that
+# has no table (e.g. an uninstalled wire plugin) also fails at startup.
 ```
 
 The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. See [docs/agent-definitions.md](docs/agent-definitions.md).
@@ -141,12 +148,8 @@ The default skill discovery stack is, in priority order (lowest wins): `./.genie
 
 | Variable | Description |
 |----------|-------------|
-| `GENIE_MODEL` | Model ID |
-| `GENIE_BASE_URL` | Provider base URL |
+| `GENIE_PROVIDER` | Selects the active provider by name (beats the config file's `provider` key) |
 | `GENIE_API_KEY_ENV` | Name of env var holding the API key |
-| `GENIE_WIRE` | Wire protocol override |
-| `GENIE_PROVIDER` | Route through a wire plugin by name |
-| `GENIE_GATEWAY` | Gateway URL override |
 | `GENIE_INSTRUCTION_FILE` | Path to agent instruction file |
 | `GENIE_SESSION_DIR` | Session storage directory |
 | `GENIE_BASH_TIMEOUT` | Bash command timeout (seconds) |
@@ -155,6 +158,8 @@ The default skill discovery stack is, in priority order (lowest wins): `./.genie
 | `GENIE_SKILL_DIR` | Skill discovery directory (replaces all skill dirs) |
 | `GENIE_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
 | `GENIE_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
+
+Legacy env vars (`GENIE_MODEL`, `GENIE_BASE_URL`, `GENIE_WIRE`, `GENIE_GATEWAY`) still parse but no longer shape the startup client (og-z1m.3), which now comes entirely from the active provider's table; they're removed in og-z1m.8.
 
 ### Debug and verbose modes
 
@@ -168,16 +173,7 @@ Verbose shows config resolution, instruction assembly, turn lifecycle, and token
 
 ## Wire protocols
 
-Genie auto-detects the wire protocol from the model ID prefix:
-
-| Prefix | Wire |
-|--------|------|
-| `claude-*` | Anthropic messages |
-| `gpt-*` | OpenAI Responses API |
-| `gemini-*` | Google generateContent |
-| everything else | OpenAI chat/completions |
-
-Override with `wire = "openai"` (or `anthropic`, `responses`, `google`) in config or `GENIE_WIRE` env var.
+The active provider names its wire explicitly (`[providers.<name>] wire`, defaulting to the shipped provider's wire — `zen` is OpenAI-compatible `openai`). Wire selection no longer happens by model-prefix auto-detection or a `GENIE_WIRE` override: a turn starts on the active provider's own wire and model, and there is no global-model fallback.
 
 If a model doesn't support tool calling, the harness retries without tools — letting free/non-tool models still work. In that fallback — and for any other text-only reply — genie also recognises tool invocations the model expresses as fenced code blocks: a block whose info string names a registered tool (e.g. ` ```bash\nmake test\n``` `) is executed like a native tool call, its result fed back, and the turn continues until the model finishes. Fence content that is a JSON object is used verbatim as the tool's arguments; otherwise it is wrapped into the tool's single required string property (e.g. `{"command": "<content>"}` for `bash`).
 
