@@ -113,6 +113,26 @@ bash = true
 
 [context]
 # turns = 0   # prior turns of history carried into each new turn; 0 = all
+
+[providers]
+# Declared providers, keyed by name. A provider is one wire, one endpoint,
+# one default model. Every valid provider ships as a default — one per
+# bundled wire: zen, openai, anthropic, responses, google — so a table for a
+# known name only needs to override the keys you want to change.
+#
+# [providers.zen]
+# base_url = "https://gateway.example/zen/v1"   # override just the endpoint
+#
+# [providers.deepseek]
+# wire        = "openai"
+# base_url    = "https://api.deepseek.com/v1"
+# api_key_env = "DEEPSEEK_API_KEY"
+# model       = "deepseek-chat"
+# models      = ["deepseek-chat", "deepseek-reasoner"]  # optional catalog
+# opts        = { cost = 2 }                            # wire-specific
+#
+# A provider missing a default model, or naming an unknown wire, fails at
+# startup; duplicate provider tables are rejected.
 ```
 
 The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. See [docs/agent-definitions.md](docs/agent-definitions.md).

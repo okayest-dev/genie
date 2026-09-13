@@ -58,6 +58,55 @@ bash_timeout = 120
 # default_agent = "orchestrator"
 ```
 
+## `[providers.*]` — declared providers
+
+Providers are declared as nested tables under a `[providers]` section, keyed
+by provider name. A provider is the config unit the harness boots on: one
+wire, one endpoint, one default model.
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `<name>.wire` | string | the bundled in-process wire that serves the provider: `openai` \| `anthropic` \| `responses` \| `google` (required for a new provider) |
+| `<name>.base_url` | string | the provider's endpoint for that wire |
+| `<name>.api_key_env` | string | env var holding the API key; a wire with its own auth takes none |
+| `<name>.model` | string | the provider's default model (required) |
+| `<name>.models` | array of strings | optional catalog override; absent, the catalog comes from the wire's model listing |
+| `<name>.opts` | map | wire-specific settings |
+
+Every valid provider ships as a config default, so onboarding is pick a
+provider (and set a key if you need to). A file table for a known name merges
+over the shipped default — only the non-empty keys you set change, matching the
+rest of the config surface where an empty value means "unset". The shipped defaults:
+
+| Provider | Wire | Base URL | Key env | Default model |
+|----------|------|----------|---------|---------------|
+| `zen` | `openai` | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` | `big-pickle` |
+| `openai` | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o` |
+| `anthropic` | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` |
+| `responses` | `responses` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o` |
+| `google` | `google` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` | `gemini-2.5-pro` |
+
+Validation at load: a provider missing a default model, missing a wire, or
+naming an unknown wire fails startup with a clear error; duplicate provider
+tables are rejected by the TOML parser. The verbose startup log (the config
+dump) lists every provider as `name:wire:model`.
+
+```toml
+# Select the active provider (default: none — the harness picks on startup).
+# provider = "zen"
+
+[providers.zen]
+base_url = "https://gateway.example/zen/v1"   # override just the endpoint
+
+[providers.deepseek]
+wire        = "openai"
+base_url    = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+model       = "deepseek-chat"
+models      = ["deepseek-chat", "deepseek-reasoner"]
+opts        = { cost = 2 }
+```
+
 ## `[tools]` — per-tool toggles
 
 | Key | Type | Default | Env var | Meaning |
