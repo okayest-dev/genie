@@ -19,7 +19,7 @@ import (
 )
 
 func init() {
-	llm.RegisterWire(llm.WireGoogle, func(baseURL, apiKey string) llm.Client {
+	llm.RegisterWire(llm.WireGoogle, func(baseURL, apiKey string, _ map[string]any) llm.Client {
 		return NewClient(baseURL, apiKey)
 	})
 }
