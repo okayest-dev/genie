@@ -155,11 +155,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Resolve the boot client and first model from the active provider through
-	// the registry. The startup client no longer comes from flat-key wire/base_url
-	// selection, from a plugin, or from a model-prefix route: the provider named
-	// by the selection key is the only path (og-z1m.3).
+	// the registry. With the provider key unset, an interactive run prompts to
+	// pick from the declared set and a one-shot -p run falls back to the first
+	// declared provider (with a warning); zero declared providers is a startup
+	// error (og-z1m.4). The startup client never comes from flat-key wire/base_url
+	// selection, from a plugin, or from a model-prefix route: the resolved
+	// provider is the only path.
 	reg := registryFromConfig(cfg)
-	client, runModel, err := resolveStartup(reg, cfg.Provider)
+	provider, err := selectStartupProvider(reg, cfg.Provider, *prompt == "", os.Stdin, stdout, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	client, runModel, err := resolveStartup(reg, provider)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1

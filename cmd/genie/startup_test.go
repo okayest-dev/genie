@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"iter"
 	"strings"
 	"testing"
@@ -93,9 +95,10 @@ func TestResolveStartupBuildsActiveProviderClient(t *testing.T) {
 }
 
 // TestResolveStartupErrorsAsTable: every startup-resolution failure must
-// surface as a clean error naming its cause — an unset selection names the
-// provider requirement, an unknown provider and an unregistered wire name
-// themselves. There is no silent global fallback (og-z1m.3).
+// surface as a clean error naming its cause — an unknown provider and an
+// unregistered wire name themselves. There is no silent global fallback
+// (og-z1m.3). Interpreting an unset selection is selectStartupProvider's job,
+// not resolveStartup's (og-z1m.4).
 func TestResolveStartupErrorsAsTable(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -103,12 +106,6 @@ func TestResolveStartupErrorsAsTable(t *testing.T) {
 		specs      map[string]llm.ProviderSpec
 		wantStderr string
 	}{
-		{
-			name:       "unset provider names the requirement",
-			provider:   "",
-			specs:      map[string]llm.ProviderSpec{"zen": {Wire: "openai", Model: "big-pickle"}},
-			wantStderr: "no active provider",
-		},
 		{
 			name:       "unknown provider names itself",
 			provider:   "nothing",
@@ -152,5 +149,149 @@ func TestRegistryFromConfigResolvesDefaults(t *testing.T) {
 	}
 	if client == nil {
 		t.Fatal("resolveStartup returned a nil client")
+	}
+}
+
+// TestSelectStartupProviderExplicitWins: an explicitly selected provider is
+// returned as-is in both modes — no prompt, no fallback, no warning.
+func TestSelectStartupProviderExplicitWins(t *testing.T) {
+	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+		"zen": {Wire: "openai", Model: "big-pickle"},
+	})
+	for _, interactive := range []bool{true, false} {
+		var stderr bytes.Buffer
+		picked, err := selectStartupProvider(r, "zen", interactive, strings.NewReader(""), io.Discard, &stderr)
+		if err != nil {
+			t.Fatalf("interactive=%v: selectStartupProvider: %v", interactive, err)
+		}
+		if picked != "zen" {
+			t.Errorf("interactive=%v: picked = %q, want %q", interactive, picked, "zen")
+		}
+		if stderr.String() != "" {
+			t.Errorf("interactive=%v: stderr = %q, want empty", interactive, stderr.String())
+		}
+	}
+}
+
+// TestSelectStartupProviderInteractivePrompts: with the selection key unset,
+// an interactive run prompts for a pick from the declared set and returns it.
+func TestSelectStartupProviderInteractivePrompts(t *testing.T) {
+	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+		"zen": {Wire: "openai", Model: "big-pickle"},
+	})
+	var stdout bytes.Buffer
+	picked, err := selectStartupProvider(r, "", true, strings.NewReader("zen\n"), &stdout, io.Discard)
+	if err != nil {
+		t.Fatalf("selectStartupProvider: %v", err)
+	}
+	if picked != "zen" {
+		t.Errorf("picked = %q, want %q", picked, "zen")
+	}
+	if !strings.Contains(stdout.String(), "Available providers:") {
+		t.Errorf("stdout = %q, want the provider list", stdout.String())
+	}
+}
+
+// TestSelectStartupProviderOneShotFallsBackToFirstDeclared pins the one-shot
+// -p rule: with no selection, the run starts on the first declared provider —
+// the registry's deterministic sorted order — and warns on stderr naming it.
+func TestSelectStartupProviderOneShotFallsBackToFirstDeclared(t *testing.T) {
+	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+		"zen":   {Wire: "openai", Model: "zen-model"},
+		"alpha": {Wire: "openai", Model: "alpha-model"},
+		"mid":   {Wire: "openai", Model: "mid-model"},
+	})
+	var stderr bytes.Buffer
+	picked, err := selectStartupProvider(r, "", false, nil, io.Discard, &stderr)
+	if err != nil {
+		t.Fatalf("selectStartupProvider: %v", err)
+	}
+	if picked != "alpha" {
+		t.Errorf("picked = %q, want the first declared provider %q", picked, "alpha")
+	}
+	if !strings.Contains(stderr.String(), "no provider selected") || !strings.Contains(stderr.String(), "alpha") {
+		t.Errorf("stderr = %q, want a warning naming the fallback provider", stderr.String())
+	}
+}
+
+// TestSelectStartupProviderZeroProvidersError: with no declared providers at
+// all, startup fails in both modes with an error naming the requirement. The
+// shipped defaults make this unreachable through config alone, so it is pinned
+// at the unit seam on an empty registry.
+func TestSelectStartupProviderZeroProvidersError(t *testing.T) {
+	r := llm.NewRegistry(map[string]llm.ProviderSpec{})
+	for _, interactive := range []bool{true, false} {
+		_, err := selectStartupProvider(r, "", interactive, strings.NewReader(""), io.Discard, io.Discard)
+		if err == nil {
+			t.Fatalf("interactive=%v: selectStartupProvider should error with no declared providers", interactive)
+		}
+		for _, want := range []string{"no active provider", "provider"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("interactive=%v: error = %v, want it to mention %q", interactive, err, want)
+			}
+		}
+	}
+}
+
+// TestPromptProviderChoiceListsAndPicks: the prompt lists every declared
+// provider, asks for a selection, and a valid name boots off the pick.
+func TestPromptProviderChoiceListsAndPicks(t *testing.T) {
+	names := []string{"alpha", "mid", "zen"}
+	var stdout bytes.Buffer
+	picked, err := promptProviderChoice(names, strings.NewReader("mid\n"), &stdout)
+	if err != nil {
+		t.Fatalf("promptProviderChoice: %v", err)
+	}
+	if picked != "mid" {
+		t.Errorf("picked = %q, want %q", picked, "mid")
+	}
+	out := stdout.String()
+	for _, want := range []string{"Available providers:", "  alpha", "  mid", "  zen", "Select provider:"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout = %q, want it to contain %q", out, want)
+		}
+	}
+}
+
+// TestPromptProviderChoiceRetriesUnknown: an unknown name is flagged and the
+// list re-prompts until a declared name lands.
+func TestPromptProviderChoiceRetriesUnknown(t *testing.T) {
+	var stdout bytes.Buffer
+	picked, err := promptProviderChoice([]string{"zen"}, strings.NewReader("nope\nzen\n"), &stdout)
+	if err != nil {
+		t.Fatalf("promptProviderChoice: %v", err)
+	}
+	if picked != "zen" {
+		t.Errorf("picked = %q, want %q after an unknown retry", picked, "zen")
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "no such provider: nope") {
+		t.Errorf("stdout = %q, want a 'no such provider' line", out)
+	}
+	if strings.Count(out, "Available providers:") != 2 {
+		t.Errorf("stdout = %q, want the list shown twice (one per prompt)", out)
+	}
+}
+
+// TestPromptProviderChoiceAbortsAtEOF: when stdin is exhausted, re-prompting
+// is pointless — the prompt returns a clean error instead of spinning.
+func TestPromptProviderChoiceAbortsAtEOF(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		input      string
+		wantStderr string
+	}{
+		{name: "empty input", input: "", wantStderr: "no provider selected"},
+		{name: "unknown at eof", input: "nope", wantStderr: "no such provider"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := promptProviderChoice([]string{"zen"}, strings.NewReader(tc.input), io.Discard)
+			if err == nil {
+				t.Fatal("promptProviderChoice should error at EOF")
+			}
+			if !strings.Contains(err.Error(), tc.wantStderr) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantStderr)
+			}
+		})
 	}
 }
