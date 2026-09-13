@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -845,6 +846,332 @@ func TestSkillsEnvReplacesDefaults(t *testing.T) {
 	}
 	if len(cfg.Skills.Dirs) != 1 || cfg.Skills.Dirs[0] != "/env/skills" {
 		t.Errorf("Skills.Dirs = %v, want [/env/skills]", cfg.Skills.Dirs)
+	}
+}
+
+// providersFile is a config file declaring several providers: one overlaying
+// a shipped default (zen), one restating another shipped default (anthropic),
+// and one brand-new provider with a full spec.
+const providersFile = `
+provider = "zen"
+
+[providers.zen]
+base_url = "https://gateway.example/zen/v1"
+
+[providers.anthropic]
+wire  = "anthropic"
+model = "claude-sonnet-4-5"
+
+[providers.deepseek]
+wire        = "openai"
+base_url    = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+model       = "deepseek-chat"
+models      = ["deepseek-chat", "deepseek-reasoner"]
+opts        = { cost = 2 }
+`
+
+// TestProvidersParseFromFileAndDump verifies AC1: a config declaring several
+// providers parses, and the config dump lists each provider with its wire and
+// default model.
+func TestProvidersParseFromFileAndDump(t *testing.T) {
+	// The config dump is the "config loaded" log; capture it from the parse.
+	buf := captureInfo(t)
+	cfg, err := Parse([]byte(providersFile), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// zen overlays the shipped default: base_url overridden, wire/model/key
+	// inherited.
+	zen := cfg.Providers["zen"]
+	if zen.Wire != "openai" {
+		t.Errorf("zen.Wire = %q, want openai (inherited from shipped default)", zen.Wire)
+	}
+	if zen.BaseURL != "https://gateway.example/zen/v1" {
+		t.Errorf("zen.BaseURL = %q, want the file override", zen.BaseURL)
+	}
+	if zen.Model != "big-pickle" {
+		t.Errorf("zen.Model = %q, want big-pickle (inherited default)", zen.Model)
+	}
+	if zen.APIKeyEnv != "OPENCODE_API_KEY" {
+		t.Errorf("zen.APIKeyEnv = %q, want OPENCODE_API_KEY", zen.APIKeyEnv)
+	}
+
+	// anthropic restates the shipped default; base_url and key inherit.
+	anth := cfg.Providers["anthropic"]
+	if anth.Wire != "anthropic" || anth.Model != "claude-sonnet-4-5" {
+		t.Errorf("anthropic = %+v, want wire=anthropic model=claude-sonnet-4-5", anth)
+	}
+	if anth.BaseURL != "https://api.anthropic.com" {
+		t.Errorf("anthropic.BaseURL = %q, want shipped default", anth.BaseURL)
+	}
+
+	// deepseek is a brand-new provider carrying its full spec.
+	ds := cfg.Providers["deepseek"]
+	if ds.Wire != "openai" || ds.BaseURL != "https://api.deepseek.com/v1" ||
+		ds.APIKeyEnv != "DEEPSEEK_API_KEY" || ds.Model != "deepseek-chat" {
+		t.Errorf("deepseek = %+v, want the declared spec", ds)
+	}
+	if len(ds.Models) != 2 || ds.Models[0] != "deepseek-chat" || ds.Models[1] != "deepseek-reasoner" {
+		t.Errorf("deepseek.Models = %v, want the two declared models", ds.Models)
+	}
+	if len(ds.Opts) != 1 || ds.Opts["cost"] != int64(2) {
+		t.Errorf("deepseek.Opts = %v, want {cost: 2}", ds.Opts)
+	}
+
+	// The config dump lists each provider with its wire and default model.
+	out := buf.String()
+	for _, want := range []string{
+		"zen:openai:big-pickle",
+		"anthropic:anthropic:claude-sonnet-4-5",
+		"deepseek:openai:deepseek-chat",
+		"google:google:gemini-2.5-pro",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("config dump missing provider %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestShippedProviderDefaults verifies AC4: defaults exist for zen, a generic
+// openai-compatible provider, anthropic, responses and google, each with
+// usable default values.
+func TestShippedProviderDefaults(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Providers) != 5 {
+		t.Fatalf("len(Providers) = %d, want 5 shipped defaults", len(cfg.Providers))
+	}
+	for name, p := range cfg.Providers {
+		if p.Wire == "" {
+			t.Errorf("%s: no wire", name)
+		}
+		if !validWire[p.Wire] {
+			t.Errorf("%s: wire %q is not a known wire", name, p.Wire)
+		}
+		if p.BaseURL == "" {
+			t.Errorf("%s: no base_url", name)
+		}
+		if p.APIKeyEnv == "" {
+			t.Errorf("%s: no api_key_env", name)
+		}
+		if p.Model == "" {
+			t.Errorf("%s: no default model", name)
+		}
+	}
+	// The zen default must match the flat defaults it carries today.
+	zen := cfg.Providers["zen"]
+	if zen.Wire != "openai" || zen.BaseURL != defaultBaseURL ||
+		zen.APIKeyEnv != defaultAPIKeyEnv || zen.Model != defaultModel {
+		t.Errorf("zen = %+v, want the flat-key defaults", zen)
+	}
+}
+
+// TestProviderMissingDefaultModelFails verifies AC2: a provider declared
+// without a default model fails config load with a clear error.
+func TestProviderMissingDefaultModelFails(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+	}{
+		{name: "no model key", file: "[providers.mine]\nwire = \"openai\"\n"},
+		{name: "empty model", file: "[providers.mine]\nwire = \"openai\"\nmodel = \"\"\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", nil)
+			if err == nil {
+				t.Fatal("Parse accepted a provider with no default model; want an error")
+			}
+			if !strings.Contains(err.Error(), "missing default model") {
+				t.Errorf("error = %q, want a clear missing-default-model error", err)
+			}
+		})
+	}
+}
+
+// TestProviderMissingWireFails: a brand-new provider that names no wire cannot
+// be served and fails load.
+func TestProviderMissingWireFails(t *testing.T) {
+	_, err := Parse([]byte("[providers.mine]\nmodel = \"x\"\n"), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted a provider with no wire; want an error")
+	}
+	if !strings.Contains(err.Error(), "missing wire") {
+		t.Errorf("error = %q, want a clear missing-wire error", err)
+	}
+}
+
+// TestProviderUnknownWireFails verifies AC2: a provider naming an unknown wire
+// fails config load with a clear error.
+func TestProviderUnknownWireFails(t *testing.T) {
+	_, err := Parse([]byte("[providers.mine]\nwire = \"bogus\"\nmodel = \"x\"\n"), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted a provider with an unknown wire; want an error")
+	}
+	if !strings.Contains(err.Error(), `provider "mine"`) || !strings.Contains(err.Error(), "unknown wire") {
+		t.Errorf("error = %q, want a clear unknown-wire error", err)
+	}
+}
+
+// TestProviderDuplicateNameRejected verifies AC3: duplicate provider tables
+// are rejected at parse time.
+func TestProviderDuplicateNameRejected(t *testing.T) {
+	file := `[providers.zen]
+model = "m1"
+
+[providers.zen]
+model = "m2"
+`
+	_, err := Parse([]byte(file), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted duplicate provider tables; want an error")
+	}
+	if !strings.Contains(err.Error(), "already been defined") {
+		t.Errorf("error = %q, want the TOML duplicate-key error", err)
+	}
+}
+
+// TestProviderOverlaysShippedDefault: a file table for a shipped provider name
+// merges over the default; only the keys it sets change.
+func TestProviderOverlaysShippedDefault(t *testing.T) {
+	cfg, err := Parse([]byte("[providers.openai]\nmodel = \"gpt-5\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	p := cfg.Providers["openai"]
+	if p.Model != "gpt-5" {
+		t.Errorf("openai.Model = %q, want gpt-5 (file override)", p.Model)
+	}
+	if p.Wire != "openai" || p.BaseURL != "https://api.openai.com/v1" || p.APIKeyEnv != "OPENAI_API_KEY" {
+		t.Errorf("openai = %+v, want wire/base_url/api_key_env inherited from the shipped default", p)
+	}
+}
+
+// TestProviderUnknownKeyRejected: a typo inside a provider table is caught by
+// the fail-fast unknown-key rule.
+func TestProviderUnknownKeyRejected(t *testing.T) {
+	_, err := Parse([]byte("[providers.mine]\nwiree = \"openai\"\nmodel = \"x\"\n"), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted an unknown provider key; want an error")
+	}
+	if !strings.Contains(err.Error(), "unknown key") {
+		t.Errorf("error = %q, want an unknown-key error", err)
+	}
+}
+
+// TestProviderSchemaHasNoSingletonKnobs verifies AC5 on the surface as built:
+// every key a provider table accepts is a genuine knob with more than one
+// valid value. Each knob is exercised with two different values — if both
+// resolve identically, the key can only ever hold one value, which is a
+// singleton setting that belongs hardcoded in code, not exposed as a knob.
+// Singleton settings (the active provider, a provider's wire hosting) live in
+// the top-level selector, never as a fixed-value table key.
+func TestProviderSchemaHasNoSingletonKnobs(t *testing.T) {
+	newProvider := func(file string) Provider {
+		cfg, err := Parse([]byte(file), "/home/u", nil)
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		return cfg.Providers["mine"]
+	}
+	tests := []struct {
+		key     string
+		file    string // first valid value
+		variant string // a different valid value
+		value   func(Provider) any
+	}{
+		{
+			key: "wire",
+			file: `[providers.mine]
+wire = "anthropic"
+model = "m"
+`,
+			variant: `[providers.mine]
+wire = "google"
+model = "m"
+`,
+			value: func(p Provider) any { return p.Wire },
+		},
+		{
+			key: "base_url",
+			file: `[providers.mine]
+wire = "openai"
+base_url = "https://a.example"
+model = "m"
+`,
+			variant: `[providers.mine]
+wire = "openai"
+base_url = "https://b.example"
+model = "m"
+`,
+			value: func(p Provider) any { return p.BaseURL },
+		},
+		{
+			key: "api_key_env",
+			file: `[providers.mine]
+wire = "openai"
+api_key_env = "A_KEY"
+model = "m"
+`,
+			variant: `[providers.mine]
+wire = "openai"
+api_key_env = "B_KEY"
+model = "m"
+`,
+			value: func(p Provider) any { return p.APIKeyEnv },
+		},
+		{
+			key: "model",
+			file: `[providers.mine]
+wire = "openai"
+model = "model-a"
+`,
+			variant: `[providers.mine]
+wire = "openai"
+model = "model-b"
+`,
+			value: func(p Provider) any { return p.Model },
+		},
+		{
+			key: "models",
+			file: `[providers.mine]
+wire = "openai"
+model = "m"
+models = ["a"]
+`,
+			variant: `[providers.mine]
+wire = "openai"
+model = "m"
+models = ["b"]
+`,
+			value: func(p Provider) any { return p.Models },
+		},
+		{
+			key: "opts",
+			file: `[providers.mine]
+wire = "openai"
+model = "m"
+opts = { retries = 3 }
+`,
+			variant: `[providers.mine]
+wire = "openai"
+model = "m"
+opts = { retries = 9 }
+`,
+			value: func(p Provider) any { return p.Opts },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.key, func(t *testing.T) {
+			v1 := tc.value(newProvider(tc.file))
+			v2 := tc.value(newProvider(tc.variant))
+			if reflect.DeepEqual(v1, v2) {
+				t.Errorf("key %q resolved to %v for two different values; a key that can only ever hold one value is a singleton setting, not a knob", tc.key, v1)
+			}
+		})
 	}
 }
 

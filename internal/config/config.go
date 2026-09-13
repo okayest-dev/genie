@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -41,6 +42,35 @@ const (
 
 	configFileName = "config.toml"
 )
+
+// defaultProviders are the shipped config defaults: every valid provider a
+// fresh install can boot on, one per bundled wire, each carrying whatever can
+// be defaulted — a known base_url, the conventional api_key_env name, and a
+// sane default model. Onboarding is pick a provider (and set a key if you need
+// to). A file [providers.*] table overlays the same-name default, so a user
+// overrides only what they set.
+var defaultProviders = map[string]Provider{
+	"zen": {
+		Wire: "openai", BaseURL: defaultBaseURL,
+		APIKeyEnv: defaultAPIKeyEnv, Model: defaultModel,
+	},
+	"openai": {
+		Wire: "openai", BaseURL: "https://api.openai.com/v1",
+		APIKeyEnv: "OPENAI_API_KEY", Model: "gpt-4o",
+	},
+	"anthropic": {
+		Wire: "anthropic", BaseURL: "https://api.anthropic.com",
+		APIKeyEnv: "ANTHROPIC_API_KEY", Model: "claude-sonnet-4-5",
+	},
+	"responses": {
+		Wire: "responses", BaseURL: "https://api.openai.com/v1",
+		APIKeyEnv: "OPENAI_API_KEY", Model: "gpt-4o",
+	},
+	"google": {
+		Wire: "google", BaseURL: "https://generativelanguage.googleapis.com/v1beta",
+		APIKeyEnv: "GEMINI_API_KEY", Model: "gemini-2.5-pro",
+	},
+}
 
 // Tools holds the four per-tool toggles. All default to enabled; a disabled
 // tool is omitted from the tools array sent to the provider.
@@ -108,8 +138,38 @@ type Skills struct {
 	Disable []string
 }
 
+// Provider is one declared provider, named by its [providers.<name>] table
+// key. A provider is the config unit the harness boots on and switches
+// between: one wire, one endpoint, one default model.
+//
+// The surface is exactly six keys — wire, base_url, api_key_env, model,
+// models, opts — each a multi-valued knob. Singleton settings (which provider
+// is active, which wire hosts a provider) live in code or the top-level
+// selector, never as a fixed-value config key, so a user cannot configure them
+// wrong.
+type Provider struct {
+	// Wire names the bundled in-process wire that serves the provider.
+	Wire string
+	// BaseURL is the provider's endpoint for that wire.
+	BaseURL string
+	// APIKeyEnv names the env var the API key lives in. A wire with its own
+	// auth leaves it empty.
+	APIKeyEnv string
+	// Model is the provider's default model and is required. The active
+	// provider always has a model.
+	Model string
+	// Models optionally overrides the catalog; absent, the catalog comes
+	// from the wire's model listing.
+	Models []string
+	// Opts passes wire-specific settings.
+	Opts map[string]any
+}
+
 // Config is the resolved harness configuration.
 type Config struct {
+	// Providers is the set of declared providers keyed by name, seeded with
+	// the shipped defaults for every bundled wire.
+	Providers map[string]Provider
 	// Model is the session's model id (default big-pickle).
 	Model string
 	// BaseURL is the provider's wire base (default OpenCode Zen).
@@ -177,6 +237,20 @@ type fileConfig struct {
 	Context         contextFile   `toml:"context"`
 	Lifecycle       lifecycleFile `toml:"lifecycle"`
 	DefaultAgent    string        `toml:"default_agent"`
+	Providers       providerFiles `toml:"providers"`
+}
+
+// providerFiles is the TOML schema for [providers.*]: nested tables keyed by
+// provider name, each carrying the Provider surface.
+type providerFiles map[string]providerFile
+
+type providerFile struct {
+	Wire      string         `toml:"wire"`
+	BaseURL   string         `toml:"base_url"`
+	APIKeyEnv string         `toml:"api_key_env"`
+	Model     string         `toml:"model"`
+	Models    []string       `toml:"models"`
+	Opts      map[string]any `toml:"opts"`
 }
 
 type toolsFile struct {
@@ -329,6 +403,9 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		if fc.Context.NetDrop != nil {
 			cfg.Context.NetDrop = *fc.Context.NetDrop
 		}
+		if len(fc.Providers) > 0 {
+			applyProviders(&cfg, fc.Providers)
+		}
 		if len(fc.Lifecycle.Plugins.Order) > 0 {
 			cfg.Lifecycle.PluginsOrder = fc.Lifecycle.Plugins.Order
 		}
@@ -346,11 +423,15 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 	if cfg.Wire != "" && !validWire[cfg.Wire] {
 		return nil, fmt.Errorf("config: unknown wire %q", cfg.Wire)
 	}
+	if err := validateProviders(cfg.Providers); err != nil {
+		return nil, err
+	}
 
 	slog.Info("config loaded",
 		"model", cfg.Model,
 		"base_url", cfg.BaseURL,
 		"provider", cfg.Provider,
+		"providers", providerSummary(cfg.Providers),
 		"instruction_file", cfg.InstructionFile,
 		"session_dir", cfg.SessionDir,
 		"default_agent", cfg.DefaultAgent,
@@ -405,6 +486,7 @@ func Load() (*Config, error) {
 
 func defaults(userConfigDir string) Config {
 	return Config{
+		Providers:               cloneProviders(defaultProviders),
 		Model:                   defaultModel,
 		BaseURL:                 defaultBaseURL,
 		APIKeyEnv:               defaultAPIKeyEnv,
@@ -446,6 +528,88 @@ func applyTools(dst *Tools, src toolsFile) {
 	if src.Bash != nil {
 		dst.Bash = *src.Bash
 	}
+}
+
+// applyProviders overlays the file's [providers.*] tables on the shipped
+// defaults (defaults < file). A table for a known name merges over the
+// default: only the keys the file sets change, so overriding base_url keeps
+// the default wire, key holder and model.
+func applyProviders(cfg *Config, src providerFiles) {
+	for name, fp := range src {
+		p := cfg.Providers[name]
+		if fp.Wire != "" {
+			p.Wire = fp.Wire
+		}
+		if fp.BaseURL != "" {
+			p.BaseURL = fp.BaseURL
+		}
+		if fp.APIKeyEnv != "" {
+			p.APIKeyEnv = fp.APIKeyEnv
+		}
+		if fp.Model != "" {
+			p.Model = fp.Model
+		}
+		if len(fp.Models) > 0 {
+			p.Models = fp.Models
+		}
+		if len(fp.Opts) > 0 {
+			p.Opts = fp.Opts
+		}
+		cfg.Providers[name] = p
+	}
+}
+
+// cloneProviders copies the shipped default map so file overlays never mutate
+// the shared package-level defaults.
+func cloneProviders(src map[string]Provider) map[string]Provider {
+	out := make(map[string]Provider, len(src))
+	for name, p := range src {
+		out[name] = p
+	}
+	return out
+}
+
+// validateProviders enforces that every provider in the resolved set can serve
+// a model: it names a known wire and carries a default model. Errors name the
+// provider and are reported in sorted order for determinism.
+func validateProviders(providers map[string]Provider) error {
+	for _, name := range sortedProviderNames(providers) {
+		p := providers[name]
+		switch {
+		case p.Wire == "":
+			return fmt.Errorf("config: provider %q: missing wire", name)
+		case !validWire[p.Wire]:
+			return fmt.Errorf("config: provider %q: unknown wire %q", name, p.Wire)
+		case p.Model == "":
+			return fmt.Errorf("config: provider %q: missing default model", name)
+		}
+	}
+	return nil
+}
+
+// providerSummary is the config-dump listing of every provider: a sorted,
+// comma-joined "name:wire:model" string, e.g.
+// "google:google:gemini-2.5-pro,zen:openai:big-pickle". Each provider appears
+// once with the wire that serves it and its default model.
+func providerSummary(providers map[string]Provider) string {
+	names := sortedProviderNames(providers)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		p := providers[name]
+		parts = append(parts, fmt.Sprintf("%s:%s:%s", name, p.Wire, p.Model))
+	}
+	return strings.Join(parts, ",")
+}
+
+// sortedProviderNames returns the provider names in sorted order, keeping
+// validation errors and the config dump deterministic.
+func sortedProviderNames(providers map[string]Provider) []string {
+	names := make([]string, 0, len(providers))
+	for name := range providers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // applyEnv overlays the six env overrides on top of the config file. An env
