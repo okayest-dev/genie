@@ -36,13 +36,14 @@ var streamResync = 30 * time.Second
 // ReservedSlashNames are built-in REPL slash commands that plugins may not
 // shadow. A plugin whose display name matches one of these is rejected at load.
 var ReservedSlashNames = map[string]bool{
-	"help":    true,
-	"quit":    true,
-	"exit":    true,
-	"new":     true,
-	"changes": true,
-	"model":   true,
-	"agent":   true,
+	"help":     true,
+	"quit":     true,
+	"exit":     true,
+	"new":      true,
+	"changes":  true,
+	"provider": true,
+	"model":    true,
+	"agent":    true,
 }
 
 type Plugin struct {

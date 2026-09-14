@@ -767,7 +767,7 @@ done
 }
 
 func TestManagerReservedNameRejected(t *testing.T) {
-	reservedNames := []string{"help", "quit", "exit", "new", "changes", "model", "agent"}
+	reservedNames := []string{"help", "quit", "exit", "new", "changes", "provider", "model", "agent"}
 	for _, name := range reservedNames {
 		t.Run(name, func(t *testing.T) {
 			tmpDir := t.TempDir()

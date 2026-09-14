@@ -53,7 +53,8 @@ The `read` and `bash` tools run in your working directory. Watch the tool frames
 | Press **Ctrl+C** mid-turn | A running turn cancels and returns to the prompt; nothing partial is left in the conversation |
 | `genie -p "explain this repo in one paragraph"` | One-shot, scriptable mode — answer to stdout, exit code 0 |
 | `genie -v` | Verbose flow to stderr: config resolution, instruction assembly, token usage |
-| `/model` | The provider's model catalog; `/model <id>` switches mid-session |
+| `/model` | The current provider's model catalog; `/model <id>` switches mid-session |
+| `/provider` | Switches the provider mid-session; the next turn runs on that provider's default model, transcript intact |
 | `/help` | The full command surface, including plugin commands when you have plugins |
 
 ## Project instructions: `AGENTS.md`

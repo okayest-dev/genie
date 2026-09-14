@@ -63,4 +63,4 @@ Plugins degrade gracefully. A hook or tool call that errors is skipped and the f
 - **Pings**: the host pings live plugins every 30 seconds; a missed ping marks the plugin inactive.
 - **Shutdown**: the host sends `shutdown`, waits 2 seconds, then SIGTERM, waits 2 more seconds, then SIGKILL.
 - **Max plugins**: 16 loaded concurrently; extra plugins are skipped with a warning.
-- **Name collisions**: plugin tools collide with built-in tools → plugin's tool is dropped (built-in wins). Plugin name matching a built-in slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `agent`) → plugin rejected at load.
+- **Name collisions**: plugin tools collide with built-in tools → plugin's tool is dropped (built-in wins). Plugin name matching a built-in slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `provider`, `agent`) → plugin rejected at load.

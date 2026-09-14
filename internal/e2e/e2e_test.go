@@ -1859,3 +1859,185 @@ func TestStartsOnActiveProvidersDefaultModel(t *testing.T) {
 	}
 	assertRequestModel(t, p, "other-model", "Bearer test-key")
 }
+
+// TestProviderSwitchMidSessionKeepsTranscript verifies a mid-session /provider
+// switch: the client is rebuilt against the new provider (key, default model),
+// the same session and transcript continue, and an unknown name names the
+// available set without touching the session.
+func TestProviderSwitchMidSessionKeepsTranscript(t *testing.T) {
+	zen := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("zen reply"), fake.Finish("stop"), fake.Done},
+	})
+	other := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("other reply"), fake.Finish("stop"), fake.Done},
+	})
+
+	dir := configDir(t, fmt.Sprintf(`
+provider = "zen"
+
+[providers.zen]
+base_url = %q
+model = "zen-model"
+
+[providers.openai]
+base_url = %q
+api_key_env = "OTHER_KEY"
+model = "other-model"
+`, zen.URL, other.URL))
+
+	stdout, stderr, code := runInDirWithStdin(t, dir, "hello zen\n/provider openai\nhello other\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=zen-key",
+		"OTHER_KEY=other-key",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "provider: openai (model: other-model)") {
+		t.Errorf("stdout = %q, want switch message", stdout)
+	}
+	if !strings.Contains(stdout, "other reply") {
+		t.Errorf("stdout = %q, want the post-switch turn streamed", stdout)
+	}
+
+	// The post-switch turn went to the new provider with its key and default
+	// model; the old provider saw only its pre-switch turn.
+	oreqs := other.Requests()
+	if len(oreqs) != 1 {
+		t.Fatalf("openai (other) requests = %d, want 1", len(oreqs))
+	}
+	if oreqs[0].Auth != "Bearer other-key" {
+		t.Errorf("other auth = %q, want the new provider's key", oreqs[0].Auth)
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(oreqs[0].Body), &body); err != nil {
+		t.Fatalf("decode other request: %v", err)
+	}
+	if body.Model != "other-model" {
+		t.Errorf("other request model = %q, want the new provider's default other-model", body.Model)
+	}
+	if got := len(zen.Requests()); got != 1 {
+		t.Errorf("zen requests = %d, want 1 (only the pre-switch turn)", got)
+	}
+
+	// The transcript continues across the switch: the new provider's turn
+	// request carries the whole conversation, both prompts and the zen reply.
+	msgs := decodeTurnMessages(t, oreqs[0].Body)
+	var sawZenTurn, sawZenReply, sawOtherTurn bool
+	for _, m := range msgs {
+		switch {
+		case m.Role == "user" && m.Content == "hello zen":
+			sawZenTurn = true
+		case m.Role == "assistant" && m.Content == "zen reply":
+			sawZenReply = true
+		case m.Role == "user" && m.Content == "hello other":
+			sawOtherTurn = true
+		}
+	}
+	if !sawZenTurn || !sawZenReply || !sawOtherTurn {
+		t.Errorf("other turn request does not carry the whole transcript: %+v", msgs)
+	}
+}
+
+// TestProviderUnknownNamesAvailableSet verifies an unknown /provider name
+// prints an error naming the available set and a later turn still runs on the
+// boot provider.
+func TestProviderUnknownNamesAvailableSet(t *testing.T) {
+	zen := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("zen reply"), fake.Finish("stop"), fake.Done},
+	})
+
+	dir := configDir(t, fmt.Sprintf(`
+provider = "zen"
+
+[providers.zen]
+base_url = %q
+model = "zen-model"
+`, zen.URL))
+
+	stdout, stderr, code := runInDirWithStdin(t, dir, "/provider nosuch\nhi\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=k",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "no such provider: nosuch") || !strings.Contains(stdout, "(available: anthropic, google, openai, responses, zen)") {
+		t.Errorf("stdout = %q, want an error naming the available set", stdout)
+	}
+	if !strings.Contains(stdout, "zen reply") {
+		t.Errorf("stdout = %q, want the turn to run after the failed switch", stdout)
+	}
+	if got := len(zen.Requests()); got != 1 {
+		t.Errorf("zen requests = %d, want 1 (failed switch must not rebuild the client)", got)
+	}
+}
+
+// TestProviderAndModelCommands drives the /provider and /model surface
+// end-to-end against declared catalogs (no provider server involved): the
+// listing marks the current provider, /model shows only the active provider's
+// catalog, and after a switch the current marker follows the new provider's
+// default model.
+func TestProviderAndModelCommands(t *testing.T) {
+	dir := configDir(t, `
+provider = "zen"
+
+[providers.zen]
+base_url = "http://127.0.0.1:1"
+model = "zen-default"
+models = ["zen-default", "zen-1"]
+
+[providers.openai]
+base_url = "http://127.0.0.1:1"
+model = "openai-default"
+models = ["openai-default", "openai-1"]
+`)
+
+	stdout, stderr, code := runInDirWithStdin(t, dir, "/provider\n/model\n/provider openai\n/model\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=k",
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	out := stdout
+	if !strings.Contains(out, "Available providers:") {
+		t.Errorf("stdout = %q, want providers listing", out)
+	}
+	if !strings.Contains(out, "* zen") || !strings.Contains(out, "  openai") {
+		t.Errorf("stdout = %q, want zen marked current and openai unmarked", out)
+	}
+	if !strings.Contains(out, "Current: zen") {
+		t.Errorf("stdout = %q, want 'Current: zen'", out)
+	}
+
+	// The pre-switch /model lists only zen's catalog.
+	preSwitch := out[:strings.Index(out, "provider: openai")]
+	if !strings.Contains(preSwitch, "zen-1") {
+		t.Errorf("stdout = %q, want zen's catalog on the first /model", out)
+	}
+	if strings.Contains(preSwitch, "openai-1") {
+		t.Errorf("stdout = %q, must not list openai's catalog before the switch", out)
+	}
+
+	if !strings.Contains(out, "provider: openai (model: openai-default)") {
+		t.Errorf("stdout = %q, want switch message", out)
+	}
+
+	// After the switch, /model lists only openai's catalog and marks openai's
+	// default — the active provider's model, never a stale global.
+	idx := strings.Index(out, "provider: openai")
+	after := out[idx:]
+	if !strings.Contains(after, "openai-1") {
+		t.Errorf("post-switch /model = %q, want openai's catalog", after)
+	}
+	if !strings.Contains(after, "* openai-default") {
+		t.Errorf("post-switch /model = %q, want openai's default marked current", after)
+	}
+	if strings.Contains(after, "zen-") {
+		t.Errorf("post-switch /model = %q, must not list the old provider's catalog", after)
+	}
+}

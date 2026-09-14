@@ -632,7 +632,7 @@ Environment variable override: `GENIE_PLUGIN_DIR`
 
 - **Tool collision**: Plugin tools that collide with built-in tool names are silently dropped (built-in wins). A warning is logged.
 - **Wire collision**: Plugin wires that collide with registered wire names are rejected with a warning. Core wires are never overridden.
-- **Built-in slash name collision**: A plugin whose display name matches a built-in REPL slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `agent`) is rejected at startup with a warning and skipped — the built-in wins. Plugin command names (`/<plugin> <command>`) share the plugin's namespace and never collide with built-ins.
+- **Built-in slash name collision**: A plugin whose display name matches a built-in REPL slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `provider`, `agent`) is rejected at startup with a warning and skipped — the built-in wins. Plugin command names (`/<plugin> <command>`) share the plugin's namespace and never collide with built-ins.
 
 ## Logging
 
