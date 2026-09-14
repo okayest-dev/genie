@@ -1510,10 +1510,12 @@ func TestEnvProviderSelectsProvider(t *testing.T) {
 
 // TestUnknownProviderFailsStartup: a provider that no table declares fails at
 // startup with an error naming it — no silent routing, no plugin fallback.
+// The name must not be a shipped default; "copilot" became one with the
+// in-tree bundled wire.
 func TestUnknownProviderFailsStartup(t *testing.T) {
-	dir := configDir(t, "provider = \"copilot\"\n")
+	dir := configDir(t, "provider = \"no-such-provider\"\n")
 	stdout, stderr, code := run(t, []string{"XDG_CONFIG_HOME=" + dir}, "-p", "hi")
-	assertCleanFailure(t, stdout, stderr, code, "copilot")
+	assertCleanFailure(t, stdout, stderr, code, "no-such-provider")
 }
 
 // --- Non-interactive completion (genie-dea) ---
@@ -1964,7 +1966,7 @@ model = "zen-model"
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
-	if !strings.Contains(stdout, "no such provider: nosuch") || !strings.Contains(stdout, "(available: anthropic, google, openai, responses, zen)") {
+	if !strings.Contains(stdout, "no such provider: nosuch") || !strings.Contains(stdout, "(available: anthropic, copilot, google, openai, responses, zen)") {
 		t.Errorf("stdout = %q, want an error naming the available set", stdout)
 	}
 	if !strings.Contains(stdout, "zen reply") {
