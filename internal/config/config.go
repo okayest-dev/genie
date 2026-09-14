@@ -27,6 +27,7 @@ var validWire = map[string]bool{
 	"responses": true,
 	"google":    true,
 	"copilot":   true,
+	"bedrock":   true,
 }
 
 // Defaults for every configurable scalar.
@@ -79,6 +80,15 @@ var defaultProviders = map[string]Provider{
 		// opts.domain.
 		Wire:  "copilot",
 		Model: "gpt-4o",
+	},
+	"bedrock": {
+		// Bedrock authenticates through the AWS SDK standard credential chain
+		// (env vars, shared config, SSO, assume-role, credential_process) —
+		// no api_key_env, no base_url (the SDK resolves the regional
+		// endpoint). A specific AWS profile or region is selected with
+		// opts.profile / opts.region; absent, the chain's defaults apply.
+		Wire:  "bedrock",
+		Model: "anthropic.claude-sonnet-4-6",
 	},
 }
 

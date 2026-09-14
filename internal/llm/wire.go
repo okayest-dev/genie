@@ -11,6 +11,7 @@ const (
 	WireOpenAIResponses Wire = "responses"
 	WireGoogle          Wire = "google"
 	WireCopilot         Wire = "copilot"
+	WireBedrock         Wire = "bedrock"
 )
 
 // DetectWire returns the wire for a given model ID by prefix matching.

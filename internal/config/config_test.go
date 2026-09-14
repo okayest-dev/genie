@@ -935,17 +935,18 @@ func TestProvidersParseFromFileAndDump(t *testing.T) {
 }
 
 // TestShippedProviderDefaults verifies AC4: defaults exist for zen, a generic
-// openai-compatible provider, anthropic, responses, google and copilot, each
-// with usable default values. Copilot is the wire-with-its-own-auth exception:
-// it carries no base_url (its API base comes from the token exchange) and no
-// api_key_env (auth goes through its credential store, ADR-0002).
+// openai-compatible provider, anthropic, responses, google, copilot and
+// bedrock, each with usable default values. Copilot and bedrock are the
+// wires-with-their-own-auth exceptions: they carry no base_url and no
+// api_key_env (copilot uses its credential store, ADR-0002; bedrock the AWS
+// SDK credential chain).
 func TestShippedProviderDefaults(t *testing.T) {
 	cfg, err := Parse(nil, "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(cfg.Providers) != 6 {
-		t.Fatalf("len(Providers) = %d, want 6 shipped defaults", len(cfg.Providers))
+	if len(cfg.Providers) != 7 {
+		t.Fatalf("len(Providers) = %d, want 7 shipped defaults", len(cfg.Providers))
 	}
 	for name, p := range cfg.Providers {
 		if p.Wire == "" {
@@ -954,11 +955,12 @@ func TestShippedProviderDefaults(t *testing.T) {
 		if !validWire[p.Wire] {
 			t.Errorf("%s: wire %q is not a known wire", name, p.Wire)
 		}
-		if name == "copilot" {
+		switch name {
+		case "copilot", "bedrock":
 			if p.APIKeyEnv != "" {
-				t.Errorf("copilot: api_key_env = %q, want empty (credential-store auth)", p.APIKeyEnv)
+				t.Errorf("%s: api_key_env = %q, want empty (own-auth wire)", name, p.APIKeyEnv)
 			}
-		} else {
+		default:
 			if p.BaseURL == "" {
 				t.Errorf("%s: no base_url", name)
 			}
@@ -981,6 +983,12 @@ func TestShippedProviderDefaults(t *testing.T) {
 	cop := cfg.Providers["copilot"]
 	if cop.Wire != "copilot" || cop.Model == "" {
 		t.Errorf("copilot = %+v, want wire=copilot with a default model", cop)
+	}
+	// Bedrock's default block is likewise usable out of the box: a wire and a
+	// model; auth flows through the AWS SDK credential chain.
+	bed := cfg.Providers["bedrock"]
+	if bed.Wire != "bedrock" || bed.Model == "" {
+		t.Errorf("bedrock = %+v, want wire=bedrock with a default model", bed)
 	}
 }
 

@@ -21,7 +21,7 @@ A missing config file is **pure defaults**; malformed TOML and unknown keys fail
 defaults < config file < environment variables
 ```
 
-An env var that is set but empty leaves the file value in place. The API key never lives in the config file — it is always read from the environment variable named by `api_key_env` (default `OPENCODE_API_KEY`).
+An env var that is set but empty leaves the file value in place. The API key never lives in the config file — it is always read from the environment variable named by `api_key_env` (default `OPENCODE_API_KEY`). The one exception is the copilot provider, which takes no `api_key_env` at all and authenticates through genie's own credential store instead (see [The copilot credential store](#the-copilot-credential-store)).
 
 ## Top-level keys
 
@@ -30,7 +30,7 @@ An env var that is set but empty leaves the file value in place. The API key nev
 | `model` | string | `big-pickle` | `GENIE_MODEL` | model ID for the session |
 | `base_url` | string | `https://opencode.ai/zen/v1` | `GENIE_BASE_URL` | provider wire base URL |
 | `api_key_env` | string | `OPENCODE_API_KEY` | `GENIE_API_KEY_ENV` | name of the env var holding the API key |
-| `wire` | string | `""` (auto-detect) | `GENIE_WIRE` | wire protocol override: `openai`, `anthropic`, `responses`, `google` |
+| `wire` | string | `""` (auto-detect) | `GENIE_WIRE` | wire protocol override: `openai`, `anthropic`, `responses`, `google`, `copilot`, `bedrock` |
 | `provider` | string | `""` | `GENIE_PROVIDER` | route all requests through a loaded wire plugin by name |
 | `gateway` | string | `""` | `GENIE_GATEWAY` | URL override for the provider gateway (replaces `base_url`) |
 | `instruction_file` | string | `""` (none) | `GENIE_INSTRUCTION_FILE` | extra agent-instruction file, loaded after the built-in default |
@@ -66,7 +66,7 @@ wire, one endpoint, one default model.
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `<name>.wire` | string | the bundled in-process wire that serves the provider: `openai` \| `anthropic` \| `responses` \| `google` (required for a new provider) |
+| `<name>.wire` | string | the bundled in-process wire that serves the provider: `openai` \| `anthropic` \| `responses` \| `google` \| `copilot` \| `bedrock` (required for a new provider) |
 | `<name>.base_url` | string | the provider's endpoint for that wire |
 | `<name>.api_key_env` | string | env var holding the API key; a wire with its own auth takes none |
 | `<name>.model` | string | the provider's default model (required) |
@@ -85,6 +85,17 @@ rest of the config surface where an empty value means "unset". The shipped defau
 | `anthropic` | `anthropic` | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` |
 | `responses` | `responses` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `gpt-4o` |
 | `google` | `google` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` | `gemini-2.5-pro` |
+| `copilot` | `copilot` | (from the token exchange) | none — credential store | `gpt-4o` |
+| `bedrock` | `bedrock` | (SDK-resolved regional endpoint) | none — AWS SDK chain | `anthropic.claude-sonnet-4-6` |
+
+The copilot and bedrock rows are the deliberate exceptions to the key-env
+rule: they take no `base_url` and no `api_key_env`, because auth flows through
+their own channels — copilot's credential store
+([below](#the-copilot-credential-store)), and bedrock's AWS SDK standard
+credential chain (env vars, shared config, SSO, assume-role,
+`credential_process`). Bedrock's endpoint is resolved by the SDK from the
+region; select a specific profile or region with `opts.profile` /
+`opts.region`, absent which the chain's defaults apply.
 
 Validation at load: a provider missing a default model, missing a wire, or
 naming an unknown wire fails startup with a clear error; duplicate provider
@@ -106,6 +117,50 @@ model       = "deepseek-chat"
 models      = ["deepseek-chat", "deepseek-reasoner"]
 opts        = { cost = 2 }
 ```
+
+#### The copilot credential store
+
+The copilot provider authenticates through a genie-owned credential store rather than an environment variable. The store is a host-keyed JSON file at:
+
+```
+$XDG_DATA_HOME/genie/copilot/credentials.json
+```
+
+(typically `~/.local/share/genie/copilot/credentials.json`; directory `0700`, file `0600`):
+
+```json
+{
+  "version": 1,
+  "hosts": {
+    "github.com": {
+      "oauth_token": "gho_...",
+      "user": "login_name",
+      "updated_at": "2026-09-06T12:00:00Z"
+    }
+  }
+}
+```
+
+Each `hosts` key is a GitHub host. Its `oauth_token` is the durable GitHub
+OAuth token the GitHub device flow grants; the wire exchanges it for a
+short-lived Copilot JWT on each request (held in memory only, never written
+to disk). Select the host the wire talks to with `opts.domain` on the
+provider table — default `github.com`, a GitHub Enterprise tenant like
+`tenant.ghe.com` for a GHE login (whose host key must match the tenant's
+hostname):
+
+```toml
+provider = "copilot"
+
+[providers.copilot]
+opts = { domain = "tenant.ghe.com" }
+```
+
+A built-in `auth login` device-flow command is planned but not yet shipped;
+today the store is provisioned externally (e.g. by the standalone copilot
+plugin's `auth` subcommand, which writes the same file). A missing, malformed,
+version-mismatched, or host-less store fails auth with a typed error rather
+than falling back to a shared key.
 
 ## `[tools]` — per-tool toggles
 
@@ -142,7 +197,7 @@ See [installing and using plugins](plugins/using.md) for the plugin layouts and 
 ```toml
 [plugins]
 dir = "~/.config/genie/plugins"
-enable = ["bedrock"]        # explicit allowlist (empty = all)
+enable = ["my-plugin"]      # explicit allowlist (empty = all)
 disable = ["broken-plugin"] # denylist (takes precedence)
 # wire_stream_timeout = 600 # seconds; per-call timeout for wire/stream RPCs
 ```
