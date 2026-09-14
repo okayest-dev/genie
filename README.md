@@ -33,6 +33,8 @@ genie
 
 You get an interactive `genie>` prompt. Type naturally — the model can read, write, edit files, and run shell commands.
 
+Selecting a different provider that ships by default needs no key: the `copilot` provider authenticates through genie's own credential store instead of an environment variable (see [Providers and copilot auth](#configuration)).
+
 If no provider is configured, genie lists the declared providers on first start and asks you to pick one.
 
 ## Usage
@@ -131,8 +133,9 @@ bash = true
 [providers]
 # Declared providers, keyed by name. A provider is one wire, one endpoint,
 # one default model. Every valid provider ships as a default — one per
-# bundled wire: zen, openai, anthropic, responses, google — so a table for a
-# known name only needs to override the keys you want to change.
+# bundled wire: zen, openai, anthropic, responses, google, copilot, bedrock
+# — so a table for a known name only needs to override the keys you want to
+# change.
 #
 # [providers.zen]
 # base_url = "https://gateway.example/zen/v1"   # override just the endpoint
@@ -144,6 +147,19 @@ bash = true
 # model       = "deepseek-chat"
 # models      = ["deepseek-chat", "deepseek-reasoner"]  # optional catalog
 # opts        = { cost = 2 }                            # wire-specific
+#
+# [providers.copilot]
+# # Copilot needs no api_key_env: the wire authenticates through genie's own
+# # credential store. opts.domain points at a GitHub Enterprise tenant; the
+# # default is github.com.
+# opts        = { domain = "tenant.ghe.com" }
+#
+# [providers.bedrock]
+# # Bedrock needs no api_key_env: the wire authenticates through the AWS SDK
+# # standard credential chain (env vars, shared config, SSO, assume-role,
+# # credential_process). opts.profile selects an AWS profile and opts.region
+# # the region; absent, the chain's defaults apply.
+# opts        = { profile = "my-role", region = "us-east-1" }
 #
 # A provider missing a default model, or naming an unknown wire, fails at
 # startup; duplicate provider tables are rejected. Selecting a provider that
@@ -285,16 +301,14 @@ capabilities = ["tools", "wires"]
 
 ### External provider plugins
 
-Genie's built-in providers cover OpenAI, Anthropic, and Google. For other providers, use external wire plugins:
+Genie's built-in providers cover OpenAI, Anthropic, Google, and Copilot (in-tree). The remaining bundled provider plugin is Bedrock:
 
 | Plugin | Provider | Install |
 |--------|----------|---------|
 | **bedrock** | AWS Bedrock (SigV4, ConverseStream) | `curl -fsSL https://github.com/okayest-dev/genie-bedrock/releases/latest/download/bedrock-linux-amd64 -o ~/.config/genie/plugins/bedrock/bedrock && chmod +x ~/.config/genie/plugins/bedrock/bedrock` |
-| **copilot** | GitHub Copilot (OAuth, OpenAI-compatible) | `curl -fsSL https://github.com/okayest-dev/genie-copilot/releases/latest/download/copilot-linux-amd64 -o ~/.config/genie/plugins/copilot/copilot && chmod +x ~/.config/genie/plugins/copilot/copilot` |
 
 Each plugin repo contains full setup, config, and usage docs:
 - Bedrock: <https://github.com/okayest-dev/genie-bedrock>
-- Copilot: <https://github.com/okayest-dev/genie-copilot>
 
 ### Plugin enable/disable
 

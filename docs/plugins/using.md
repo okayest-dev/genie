@@ -6,21 +6,7 @@ Plugins are executables that extend Genie. This guide is for *using* them — in
 
 No package manager today. You install a plugin by downloading (or building) its executable and placing it in the plugin directory. The plugin's own release page tells you where to get the binary and what it needs.
 
-Plugin releases are published per-plugin. For example, the two provider plugins bundled by the Genie project are released from their own repos and installed with a one-liner:
-
-```
-# Bedrock (AWS SigV4, ConverseStream)
-curl -fsSL https://github.com/okayest-dev/genie-bedrock/releases/latest/download/bedrock-linux-amd64 \
-  -o ~/.config/genie/plugins/bedrock/bedrock && chmod +x ~/.config/genie/plugins/bedrock/bedrock
-
-# Copilot (GitHub OAuth, OpenAI-compatible)
-curl -fsSL https://github.com/okayest-dev/genie-copilot/releases/latest/download/copilot-linux-amd64 \
-  -o ~/.config/genie/plugins/copilot/copilot && chmod +x ~/.config/genie/plugins/copilot/copilot
-```
-
-Each plugin repo carries its own setup, config, and usage docs:
-- Bedrock: <https://github.com/okayest-dev/genie-bedrock>
-- Copilot: <https://github.com/okayest-dev/genie-copilot>
+Plugin releases are published per-plugin. The Genie project's two former provider plugins — Bedrock and Copilot — now ship in-tree as bundled providers: Bedrock wires through the AWS SDK credential chain and Copilot through genie's own credential store (see [configuration](../configuration.md)). Neither needs a plugin install.
 
 ## The plugin directory
 

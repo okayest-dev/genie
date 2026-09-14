@@ -88,7 +88,7 @@ Genie tracks the model's context window, budgets your conversation against it (d
 The three big customization levers:
 
 1. **[Configuration](configuration.md)** — one TOML file, every knob with an env var and a default. Change the model, disable a tool, point at a different provider, keep less history.
-2. **[Plugins](plugins/using.md)** — drop an executable in `~/.config/genie/plugins/` to add tools, providers, REPL commands, or hooks. The bundled provider plugins (Bedrock, Copilot) install with a one-liner. Writing your own is a small, well-defined protocol — [the authoring guide](plugins/authoring.md) walks it end to end.
+2. **[Plugins](plugins/using.md)** — drop an executable in `~/.config/genie/plugins/` to add tools, providers, REPL commands, or hooks. The former bundled provider plugins (Bedrock, Copilot) are now built-in providers. Writing your own is a small, well-defined protocol — [the authoring guide](plugins/authoring.md) walks it end to end.
 3. **[Agents](agent-definitions.md)** — package a model + instruction + tool set under a name (`orchestrator`, `feature-speccing`, …) and switch with `/agent`, `@name`, or `-a`.
 
 A suggested starting config to see the surface:
