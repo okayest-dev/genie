@@ -74,6 +74,21 @@ var (
 	ErrPluginInactive = errors.New("plugin not active")
 )
 
+// providerRegistry is the narrow slice of the llm provider registry the REPL
+// needs: enumerate declared providers, resolve a provider's default model and
+// catalog, and rebuild a client for a mid-session switch. The concrete
+// *llm.Registry satisfies it; tests script a fake.
+type providerRegistry interface {
+	// Names returns the declared provider names in deterministic order.
+	Names() []string
+	// Catalog returns a provider's model catalog in order.
+	Catalog(ctx context.Context, name string) ([]llm.Model, error)
+	// DefaultModel returns a provider's default model.
+	DefaultModel(name string) (string, error)
+	// Client builds the provider's client.
+	Client(name string) (llm.Client, error)
+}
+
 // Config holds the dependencies for running the REPL.
 type Config struct {
 	Client       llm.Client
@@ -86,9 +101,23 @@ type Config struct {
 	AgentReg     *config.AgentReg
 	DefaultAgent *config.ResolvedAgent
 	BashTimeout  time.Duration
+	// Provider is the name of the provider the harness booted on; the initial
+	// value of the session's provider, tracked in replState and switched by
+	// /provider.
+	Provider string
+	// Providers is the provider registry used to list providers, resolve
+	// catalogs, and rebuild clients for a mid-session /provider switch. When
+	// nil, /provider reports no providers and /model falls back to the
+	// wrapped client's own catalog.
+	Providers providerRegistry
 	// CtxOpts are the ContextManager options (turns window, counter,
-	// resolver) applied wherever a context-wrapped client is constructed.
+	// resolver, hooks) applied wherever a context-wrapped client is constructed.
 	CtxOpts []contextmgr.Option
+	// RebuildOpts, when non-nil, returns the ContextManager options for a
+	// freshly built provider client (e.g. re-sourcing modelinfo from the new
+	// client per ADR-0004). When nil, CtxOpts are reused for a /provider
+	// switch.
+	RebuildOpts func(client llm.Client) []contextmgr.Option
 	// AgentOpts are the agent.RunTurn options (e.g. the lifecycle-hooks seam
 	// via agent.WithHooks) applied to every turn.
 	AgentOpts []agent.Option
@@ -109,11 +138,17 @@ func contextTurns(cfg *Config) int {
 	return cfg.Cfg.Context.Turns
 }
 
-// contextOptions builds the full ContextManager option list: the config's
-// turns window plus any counter/resolver options supplied by main.
-func contextOptions(cfg *Config) []contextmgr.Option {
-	opts := append([]contextmgr.Option{contextmgr.WithTurns(contextTurns(cfg))}, cfg.CtxOpts...)
-	return opts
+// wrapClient builds the context-wrapped client for a base client and session.
+// The option set comes from CtxOpts, or from RebuildOpts when set — a
+// /provider switch hands the freshly built client to RebuildOpts so modelinfo
+// is re-sourced from the new provider, not the old one (ADR-0004).
+func wrapClient(cfg *Config, base llm.Client, sess *session.Session) llm.Client {
+	opts := cfg.CtxOpts
+	if cfg.RebuildOpts != nil {
+		opts = cfg.RebuildOpts(base)
+	}
+	merged := append([]contextmgr.Option{contextmgr.WithTurns(contextTurns(cfg))}, opts...)
+	return contextmgr.New(base, sess, merged...)
 }
 
 // replState holds mutable agent state for the duration of a REPL session.
@@ -121,7 +156,13 @@ type replState struct {
 	currentAgent  *config.ResolvedAgent
 	previousAgent *config.ResolvedAgent
 	instruction   string
-	// client is the context-wrapped Client (around cfg.Client) bound to the
+	// provider is the session's active provider name, switched by /provider.
+	provider string
+	// baseClient is the raw (unwrapped) client of the active provider, so a
+	// provider switch — and /new after one — keeps building on the live
+	// provider instead of reverting to the boot client.
+	baseClient llm.Client
+	// client is the context-wrapped Client (around baseClient) bound to the
 	// current session. It owns history injection so each turn's request
 	// carries earlier turns' messages.
 	client llm.Client
@@ -138,7 +179,9 @@ func Run(ctx context.Context, cfg *Config) error {
 
 	state := &replState{
 		currentAgent: cfg.DefaultAgent,
-		client:       contextmgr.New(cfg.Client, sess, contextOptions(cfg)...),
+		baseClient:   cfg.Client,
+		client:       wrapClient(cfg, cfg.Client, sess),
+		provider:     cfg.Provider,
 	}
 	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
@@ -322,6 +365,8 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		fmt.Fprintln(cfg.Stdout, "  /new              start a new session")
 		fmt.Fprintln(cfg.Stdout, "  /changes          list change batches")
 		fmt.Fprintln(cfg.Stdout, "  /changes <id>     show change details")
+		fmt.Fprintln(cfg.Stdout, "  /provider         list available providers")
+		fmt.Fprintln(cfg.Stdout, "  /provider <name>  switch to a named provider")
 		fmt.Fprintln(cfg.Stdout, "  /model            list available models")
 		fmt.Fprintln(cfg.Stdout, "  /model <id>       switch to a different model")
 		fmt.Fprintln(cfg.Stdout, "  /agent            list available agents")
@@ -343,7 +388,8 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 			fmt.Fprintf(cfg.Stderr, "session: %s\n", (*sess).ID)
 			// Rebind the context client to the new session so history
 			// injection follows the current session, not the discarded one.
-			state.client = contextmgr.New(cfg.Client, *sess, contextOptions(cfg)...)
+			// The provider (and its model) is untouched by /new.
+			state.client = wrapClient(cfg, state.baseClient, *sess)
 		}
 
 	case "/changes":
@@ -353,12 +399,26 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		}
 		handleChanges(args, cfg, (*sess).ID, cfg.Stdout)
 
+	case "/provider":
+		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+			// List providers.
+			listProviders(cfg, state)
+		} else {
+			// Switch provider.
+			switchProvider(ctx, strings.TrimSpace(parts[1]), cfg, state, *sess)
+		}
+
 	case "/model":
 		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
 			// List models.
-			models, err := state.client.ListModels(ctx)
+			models, err := activeCatalog(ctx, cfg, state)
 			if err != nil {
+				// Degrade: show the active provider's default model. Streaming
+				// still runs on it.
 				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
+				fmt.Fprintln(cfg.Stdout, "Available models:")
+				fmt.Fprintf(cfg.Stdout, "* %s\n", cfg.Model)
+				fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Model)
 				return false
 			}
 			fmt.Fprintln(cfg.Stdout, "Available models:")
@@ -373,7 +433,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		} else {
 			// Switch model.
 			target := strings.TrimSpace(parts[1])
-			models, err := state.client.ListModels(ctx)
+			models, err := activeCatalog(ctx, cfg, state)
 			if err != nil {
 				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
 				return false
@@ -457,6 +517,78 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 	}
 
 	return false
+}
+
+// activeCatalog returns the active provider's model catalog: the declared
+// catalog from the registry when one is present (the authoritative provider
+// surface), else the wrapped client's own listing (registry-less repls).
+func activeCatalog(ctx context.Context, cfg *Config, state *replState) ([]llm.Model, error) {
+	if cfg.Providers != nil {
+		return cfg.Providers.Catalog(ctx, state.provider)
+	}
+	return state.client.ListModels(ctx)
+}
+
+// listProviders prints the declared providers and marks the session's current
+// one. A registry-less config reports no providers.
+func listProviders(cfg *Config, state *replState) {
+	if cfg.Providers == nil {
+		fmt.Fprintln(cfg.Stdout, "no providers configured")
+		return
+	}
+	names := cfg.Providers.Names()
+	if len(names) == 0 {
+		fmt.Fprintln(cfg.Stdout, "no providers configured")
+		return
+	}
+	fmt.Fprintln(cfg.Stdout, "Available providers:")
+	for _, name := range names {
+		marker := "  "
+		if name == state.provider {
+			marker = "* "
+		}
+		fmt.Fprintf(cfg.Stdout, "%s%s\n", marker, name)
+	}
+	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", state.provider)
+}
+
+// switchProvider switches the session to the named provider, rebuilding its
+// client from the registry, re-wrapping it over the same session (the
+// transcript continues; a switch never starts a new session), and resetting
+// the session model to the new provider's default. An unknown name prints the
+// available set and leaves the session untouched.
+func switchProvider(ctx context.Context, target string, cfg *Config, state *replState, sess *session.Session) {
+	if cfg.Providers == nil {
+		fmt.Fprintln(cfg.Stdout, "no providers configured")
+		return
+	}
+	names := cfg.Providers.Names()
+	found := false
+	for _, name := range names {
+		if name == target {
+			found = true
+			break
+		}
+	}
+	if !found {
+		fmt.Fprintf(cfg.Stdout, "no such provider: %s (available: %s)\n", target, strings.Join(names, ", "))
+		return
+	}
+	model, err := cfg.Providers.DefaultModel(target)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+		return
+	}
+	client, err := cfg.Providers.Client(target)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+		return
+	}
+	state.provider = target
+	state.baseClient = client
+	state.client = wrapClient(cfg, client, sess)
+	cfg.Model = model
+	fmt.Fprintf(cfg.Stdout, "provider: %s (model: %s)\n", target, cfg.Model)
 }
 
 // handlePluginCommand routes /<plugin> ... to the plugin command source. It

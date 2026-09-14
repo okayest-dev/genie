@@ -46,8 +46,10 @@ At the `genie>` prompt, lines starting with `/` are slash commands.
 | `/new` | Start a fresh session (with its own transcript and ledger) |
 | `/changes` | List the current session's change batches (id, time, line delta, touched files) |
 | `/changes <id>` | Show a batch's stored unified diffs |
-| `/model` | List the provider's model catalog (`*` marks the current model) |
-| `/model <id>` | Switch the session's model; unknown ids leave the model untouched |
+| `/model` | List the current provider's model catalog (`*` marks the current model) |
+| `/model <id>` | Switch the session's model within the current provider's catalog; unknown ids leave the model untouched |
+| `/provider` | List declared providers (`*` marks the current one) |
+| `/provider <id>` | Switch providers mid-session: the client is rebuilt against that provider, the model resets to its default, and the next turn continues on the same session and transcript. Unknown ids print an error naming the available set |
 | `/agent` | List available agent definitions with their model and tool set |
 | `/agent <name>` | Switch to a named agent |
 | `@<name> <prompt>` | Run one turn with a named agent, then revert (one-shot switch) |

@@ -62,8 +62,10 @@ With no provider selected, `-p` runs on the first declared provider and prints a
 | `/help` | Show available commands |
 | `/quit`, `/exit` | Exit the REPL |
 | `/new` | Start a new session |
-| `/model` | List available models |
-| `/model <id>` | Switch to a different model |
+| `/provider` | List providers (`*` marks the current one) |
+| `/provider <id>` | Switch providers mid-session; the next turn runs on that provider's default model and the transcript continues |
+| `/model` | List the current provider's model catalog (`*` marks the current model) |
+| `/model <id>` | Switch to a different model within the current provider's catalog |
 
 Ctrl+C cancels a running turn. Ctrl+C at the prompt exits.
 
@@ -202,7 +204,7 @@ Wire plugins speak the genie wire plugin protocol (version 1; the schema in `pro
 
 A command plugin advertises `commands: true` in its handshake and answers `commands/list` (cached at load) with `{name, description, usage}` entries. The REPL routes two-token input `/<plugin> <command> …` to the plugin via `commands/run`, passing the raw argument string. Bare `/<plugin>` invokes the plugin's optional `commands/help`, falling back to its flat listing. `/help` includes a flat Plugin-commands section enumerating each plugin's command (name + description). Misses surface as `unknown command: /foo (try /help)`, `copilot: no such command: nope`, or `plugin copilot is not active`. A command's `text` is printed, or compact JSON of its `data` when `text` is empty. Command RPC shares the tool-call budget (5s timeout) and failure rules; interactive work (like a device-flow login) completes inside the plugin's own process.
 
-Command names are single-token within a plugin (whitespace or a leading slash is dropped with a warning; duplicate names resolve last-wins). A plugin whose own name matches a built-in slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `agent`) is rejected at load with a warning — the built-in wins.
+Command names are single-token within a plugin (whitespace or a leading slash is dropped with a warning; duplicate names resolve last-wins). A plugin whose own name matches a built-in slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `provider`, `agent`) is rejected at load with a warning — the built-in wins.
 
 ### Lifecycle hooks
 

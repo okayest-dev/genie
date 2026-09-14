@@ -3,11 +3,15 @@ package repl
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"iter"
 	"strings"
 	"testing"
 
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
+	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/session"
 )
 
 func TestSlashHelp(t *testing.T) {
@@ -291,5 +295,303 @@ func TestCurrentModelExplicitOnly(t *testing.T) {
 
 	if got := currentModel(providerDefault, nil); got != "other-model" {
 		t.Errorf("no agent: currentModel = %q, want provider default %q", got, "other-model")
+	}
+}
+
+// fakeLLMClient is a stub llm.Client whose ListModels is scripted. Stream is
+// a no-op (no turn runs in these tests).
+type fakeLLMClient struct {
+	models []llm.Model
+	err    error
+}
+
+func (c *fakeLLMClient) ListModels(context.Context) ([]llm.Model, error) {
+	return c.models, c.err
+}
+
+func (c *fakeLLMClient) Stream(context.Context, llm.Request) (iter.Seq[llm.Event], error) {
+	return func(yield func(llm.Event) bool) {}, nil
+}
+
+// registryClient is the llm.Client lookup the fake registry satisfies.
+type registryClient = llm.Client
+
+// fakeRegistry scripts the provider surface the REPL needs: the declared
+// names, each provider's default model, its catalog, and the client a switch
+// rebuilds.
+type fakeRegistry struct {
+	names       []string
+	defaults    map[string]string
+	clients     map[string]registryClient
+	catalogs    map[string][]llm.Model
+	catalogErrs map[string]error
+}
+
+func (f *fakeRegistry) Names() []string { return f.names }
+
+func (f *fakeRegistry) DefaultModel(name string) (string, error) {
+	if m, ok := f.defaults[name]; ok {
+		return m, nil
+	}
+	return "", fmt.Errorf("registry: no such provider %q", name)
+}
+
+func (f *fakeRegistry) Client(name string) (llm.Client, error) {
+	c, ok := f.clients[name]
+	if !ok {
+		return nil, fmt.Errorf("registry: no such provider %q", name)
+	}
+	return c, nil
+}
+
+func (f *fakeRegistry) Catalog(_ context.Context, name string) ([]llm.Model, error) {
+	if err := f.catalogErrs[name]; err != nil {
+		return nil, err
+	}
+	c, ok := f.catalogs[name]
+	if !ok {
+		return nil, fmt.Errorf("registry: no such provider %q", name)
+	}
+	return c, nil
+}
+
+// newProviderState builds a Config, replState and session for slash-command
+// tests, booting the state's context-wrapped client on provider's fake client.
+func newProviderState(t *testing.T, reg *fakeRegistry, provider, model string) (*Config, *replState, *session.Session, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	cfg := &Config{
+		Providers:  reg,
+		Provider:   provider,
+		Model:      model,
+		Stdin:      strings.NewReader(""),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+		SessionDir: t.TempDir(),
+	}
+	sess, err := session.New(cfg.SessionDir)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	client, err := reg.Client(provider)
+	if err != nil {
+		t.Fatalf("boot client: %v", err)
+	}
+	state := &replState{provider: provider, baseClient: client, client: wrapClient(cfg, client, sess)}
+	return cfg, state, sess, &stdout, &stderr
+}
+
+// runSlash drives one slash command through the handler and asserts it did not
+// request an exit.
+func runSlash(t *testing.T, cfg *Config, state *replState, sess *session.Session, line string) {
+	t.Helper()
+	if handleSlashCommand(context.Background(), line, cfg, state, &sess) {
+		t.Fatalf("command %q requested exit", line)
+	}
+}
+
+// twoProviderReg scripts alpha (default alpha-model, catalog [alpha-model,
+// alpha-1, alpha-2]) and beta (default beta-model, catalog [beta-model,
+// beta-1, beta-2]) as openai-ish fake clients so every part of the switch
+// path is observable.
+func twoProviderReg() *fakeRegistry {
+	return &fakeRegistry{
+		names:    []string{"alpha", "beta"},
+		defaults: map[string]string{"alpha": "alpha-model", "beta": "beta-model"},
+		clients: map[string]registryClient{
+			"alpha": &fakeLLMClient{models: []llm.Model{{ID: "alpha-1"}, {ID: "alpha-2"}}},
+			"beta":  &fakeLLMClient{models: []llm.Model{{ID: "beta-1"}, {ID: "beta-2"}}},
+		},
+		catalogs: map[string][]llm.Model{
+			"alpha": {{ID: "alpha-model"}, {ID: "alpha-1"}, {ID: "alpha-2"}},
+			"beta":  {{ID: "beta-model"}, {ID: "beta-1"}, {ID: "beta-2"}},
+		},
+	}
+}
+
+func TestProviderListMarksCurrent(t *testing.T) {
+	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+	runSlash(t, cfg, state, sess, "/provider")
+
+	out := stdout.String()
+	if !strings.Contains(out, "Available providers:") {
+		t.Errorf("stdout = %q, want providers listing", out)
+	}
+	if !strings.Contains(out, "* alpha") || !strings.Contains(out, "  beta") {
+		t.Errorf("stdout = %q, want alpha marked current and beta unmarked", out)
+	}
+	if !strings.Contains(out, "Current: alpha") {
+		t.Errorf("stdout = %q, want 'Current: alpha'", out)
+	}
+}
+
+func TestProviderSwitchRebuildsClientAndResetsModel(t *testing.T) {
+	cfg, state, sess, stdout, stderr := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+	oldClient := state.client
+
+	runSlash(t, cfg, state, sess, "/provider beta")
+
+	if state.provider != "beta" {
+		t.Errorf("provider = %q, want beta", state.provider)
+	}
+	if cfg.Model != "beta-model" {
+		t.Errorf("model = %q, want beta-default %q", cfg.Model, "beta-model")
+	}
+	if state.client == oldClient {
+		t.Errorf("client not rebuilt after switch")
+	}
+	if !strings.Contains(stdout.String(), "provider: beta (model: beta-model)") {
+		t.Errorf("stdout = %q, want switch message", stdout.String())
+	}
+	stderrStr := stderr.String()
+	if stderrStr != "" {
+		t.Errorf("stderr = %q, want clean switch", stderrStr)
+	}
+
+	// /model after the switch lists the new provider's catalog and marks its
+	// default (the active provider's model), never a stale global value.
+	stdout.Reset()
+	runSlash(t, cfg, state, sess, "/model")
+	out := stdout.String()
+	if !strings.Contains(out, "* beta-2") && !strings.Contains(out, "* beta-model") {
+		t.Errorf("/model = %q, want asterisk on a beta catalog entry or the beta default", out)
+	}
+	if strings.Contains(out, "alpha-") {
+		t.Errorf("/model = %q, must not list the old provider's catalog", out)
+	}
+}
+
+func TestProviderUnknownNamesTheAvailableSet(t *testing.T) {
+	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+	runSlash(t, cfg, state, sess, "/provider gamma")
+
+	out := stdout.String()
+	if !strings.Contains(out, "no such provider: gamma") || !strings.Contains(out, "(available: alpha, beta)") {
+		t.Errorf("stdout = %q, want 'no such provider: gamma (available: alpha, beta)'", out)
+	}
+	if state.provider != "alpha" || cfg.Model != "alpha-model" {
+		t.Errorf("state drifted on failed switch: provider=%q model=%q", state.provider, cfg.Model)
+	}
+}
+
+func TestBareProviderListsWithoutSwitching(t *testing.T) {
+	cfg, state, sess, _, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+	runSlash(t, cfg, state, sess, "/provider beta")
+	runSlash(t, cfg, state, sess, "/provider  ")
+
+	// A bare /provider with only spaces lists; it must not switch.
+	if state.provider != "beta" {
+		t.Errorf("provider = %q, want beta (bare /provider must list, not switch)", state.provider)
+	}
+}
+
+func TestModelListingUsesActiveProviderCatalog(t *testing.T) {
+	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+
+	runSlash(t, cfg, state, sess, "/provider beta")
+	stdout.Reset()
+	runSlash(t, cfg, state, sess, "/model")
+
+	out := stdout.String()
+	if !strings.Contains(out, "beta-1") || !strings.Contains(out, "beta-2") {
+		t.Errorf("/model = %q, want the active (beta) provider's catalog", out)
+	}
+}
+
+func TestModelSwitchValidatedWithinActiveProvider(t *testing.T) {
+	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+
+	// alpha's catalog does not contain beta-2: switching to it must fail.
+	runSlash(t, cfg, state, sess, "/model beta-2")
+	if cfg.Model != "alpha-model" {
+		t.Errorf("model = %q, want untouched after unknown model", cfg.Model)
+	}
+	if !strings.Contains(stdout.String(), "no such model: beta-2") {
+		t.Errorf("stdout = %q, want no-such-model", stdout.String())
+	}
+
+	stdout.Reset()
+	runSlash(t, cfg, state, sess, "/provider beta")
+	runSlash(t, cfg, state, sess, "/model beta-2")
+	if cfg.Model != "beta-2" {
+		t.Errorf("model = %q, want beta-2 after valid switch within beta", cfg.Model)
+	}
+}
+
+func TestProviderSurvivesNewAfterSwitch(t *testing.T) {
+	reg := twoProviderReg()
+
+	cfg, state, sess, _, _ := newProviderState(t, reg, "alpha", "alpha-model")
+	runSlash(t, cfg, state, sess, "/provider beta")
+	if state.provider != "beta" {
+		t.Fatalf("provider = %q, want beta after switch", state.provider)
+	}
+
+	// /new must keep building on the switched provider, not revert to the
+	// boot client: the pre-switch base client and post-switch base client are
+	// distinct fakes, so leaving alpha would change the baseClient's models.
+	before := state.baseClient
+	runSlash(t, cfg, state, sess, "/new alpha")
+	if cfg.Model != "beta-model" {
+		t.Errorf("model = %q, want the switched provider's default preserved", cfg.Model)
+	}
+	if state.provider != "beta" {
+		t.Errorf("provider = %q, want beta preserved across /new", state.provider)
+	}
+	if state.baseClient != before {
+		t.Errorf("/new rebuilt from a different client than the switched provider")
+	}
+}
+
+func TestModelCatalogFailureDegradesToDefaultModel(t *testing.T) {
+	reg := twoProviderReg()
+	reg.catalogErrs = map[string]error{"alpha": fmt.Errorf("catalog down")}
+
+	cfg, state, sess, stdout, stderr := newProviderState(t, reg, "alpha", "alpha-model")
+	runSlash(t, cfg, state, sess, "/model")
+
+	if !strings.Contains(stderr.String(), "Error: fetching model catalog") {
+		t.Errorf("stderr = %q, want catalog fetch error", stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "* alpha-model") {
+		t.Errorf("/model = %q, want the default model listed as current on degradation", out)
+	}
+	if !strings.Contains(out, "Current: alpha-model") {
+		t.Errorf("/model = %q, want 'Current: alpha-model'", out)
+	}
+}
+
+func TestModelMarkerFollowsActiveProviderModel(t *testing.T) {
+	// The current marker must key off the active provider's model (cfg.Model
+	// after a switch), never the stale config global cfg.Cfg.Model.
+	cfg := &Config{
+		Providers:  twoProviderReg(),
+		Provider:   "beta",
+		Model:      "beta-model",
+		Cfg:        &config.Config{Model: "big-pickle"},
+		Stdin:      strings.NewReader(""),
+		Stdout:     &bytes.Buffer{},
+		Stderr:     &bytes.Buffer{},
+		SessionDir: t.TempDir(),
+	}
+	sess, err := session.New(cfg.SessionDir)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	client, err := cfg.Providers.Client("beta")
+	if err != nil {
+		t.Fatalf("boot client: %v", err)
+	}
+	state := &replState{provider: "beta", baseClient: client, client: wrapClient(cfg, client, sess)}
+
+	var stdout bytes.Buffer
+	cfg.Stdout = &stdout
+	runSlash(t, cfg, state, sess, "/model")
+
+	// The stale global model must not be marked: beta's catalog has none of the
+	// global's entries and the marker is on the active provider's model.
+	if strings.Contains(stdout.String(), "* big-pickle") {
+		t.Errorf("/model = %q, marked the stale global model", stdout.String())
 	}
 }

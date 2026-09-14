@@ -202,24 +202,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer pluginMgr.Shutdown()
 
-	// Context window & budget: per-model config overrides first, then
-	// authoritative provider data via the optional ModelInfo probe (lazily
-	// probed once per model and cached for the process lifetime).
-	var infoSource modelinfo.Source
-	if p, ok := client.(llm.ModelInfoProvider); ok {
-		infoSource = p
-	}
-	resolver := modelinfo.New(infoSource, cfg.Context.Windows, modelinfo.Options{
-		BudgetTokens:  cfg.Context.BudgetTokens,
-		BudgetPercent: cfg.Context.BudgetPercent,
-	})
-	// Plugin-reported windows are already in hand; seed without probing.
-	for _, p := range pluginMgr.GetPlugins() {
-		for _, m := range p.Models {
-			resolver.Seed(m.ID, m.ContextWindow)
-		}
-	}
-
 	// Build the plugin context seam from loaded plugins + [context.plugins]. A
 	// single-active conflict (multiple plugins claiming compact/condense without
 	// an explicit active_compact/active_condense choice) is a hard startup error;
@@ -242,16 +224,42 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Order: cfg.Lifecycle.PluginsOrder,
 	}, func(msg string) { fmt.Fprintf(stderr, "lifecycle degraded: %s\n", msg) })
 
+	// Context window & budget: per-model config overrides first, then
+	// authoritative provider data via the optional ModelInfo probe (lazily
+	// probed once per model and cached for the process lifetime).
 	counter := tokens.New()
-	ctxOpts := []contextmgr.Option{
-		contextmgr.WithTurns(cfg.Context.Turns),
-		contextmgr.WithCounter(counter),
-		contextmgr.WithResolver(resolver),
-		contextmgr.WithHooks(ctxSeam),
-		contextmgr.WithOnDegrade(func(msg string) { fmt.Fprintf(stderr, "context degraded: %s\n", msg) }),
-		contextmgr.WithCondenseSize(cfg.Context.CondenseSize),
-		contextmgr.WithNetDrop(cfg.Context.NetDrop),
+
+	// buildContextOpts returns the ContextManager options for a given base
+	// client, sourcing modelinfo from that client: a /provider switch hands
+	// the freshly built client back in, so the resolver is re-sourced against
+	// the new provider rather than serving the old one's model windows
+	// (ADR-0004).
+	buildContextOpts := func(base llm.Client) []contextmgr.Option {
+		var infoSource modelinfo.Source
+		if p, ok := base.(llm.ModelInfoProvider); ok {
+			infoSource = p
+		}
+		resolver := modelinfo.New(infoSource, cfg.Context.Windows, modelinfo.Options{
+			BudgetTokens:  cfg.Context.BudgetTokens,
+			BudgetPercent: cfg.Context.BudgetPercent,
+		})
+		// Plugin-reported windows are already in hand; seed without probing.
+		for _, p := range pluginMgr.GetPlugins() {
+			for _, m := range p.Models {
+				resolver.Seed(m.ID, m.ContextWindow)
+			}
+		}
+		return []contextmgr.Option{
+			contextmgr.WithTurns(cfg.Context.Turns),
+			contextmgr.WithCounter(counter),
+			contextmgr.WithResolver(resolver),
+			contextmgr.WithHooks(ctxSeam),
+			contextmgr.WithOnDegrade(func(msg string) { fmt.Fprintf(stderr, "context degraded: %s\n", msg) }),
+			contextmgr.WithCondenseSize(cfg.Context.CondenseSize),
+			contextmgr.WithNetDrop(cfg.Context.NetDrop),
+		}
 	}
+	ctxOpts := buildContextOpts(client)
 
 	// No -p flag: start the interactive REPL.
 	if *prompt == "" {
@@ -262,6 +270,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		replCfg := &repl.Config{
 			Client:       client,
 			Model:        runModel,
+			Provider:     provider,
+			Providers:    reg,
 			Instruction:  instruction,
 			SessionDir:   cfg.SessionDir,
 			Registry:     runRegistry,
@@ -271,6 +281,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			DefaultAgent: runAgent,
 			BashTimeout:  cfg.BashTimeout,
 			CtxOpts:      ctxOpts,
+			RebuildOpts:  buildContextOpts,
 			AgentOpts:    []agent.Option{agent.WithHooks(lifecycleSeam)},
 			Commands:     &plugin.ManagerCommands{Manager: pluginMgr},
 			Stdin:        os.Stdin,
