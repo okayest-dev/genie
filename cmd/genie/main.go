@@ -20,6 +20,7 @@ import (
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
 	_ "github.com/okayest-dev/genie/internal/llm/anthropic"
+	_ "github.com/okayest-dev/genie/internal/llm/copilot"
 	_ "github.com/okayest-dev/genie/internal/llm/google"
 	_ "github.com/okayest-dev/genie/internal/llm/openai"
 	_ "github.com/okayest-dev/genie/internal/llm/responses"

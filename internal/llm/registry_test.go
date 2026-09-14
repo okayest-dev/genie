@@ -11,6 +11,7 @@ import (
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/llm"
 	_ "github.com/okayest-dev/genie/internal/llm/anthropic"
+	_ "github.com/okayest-dev/genie/internal/llm/copilot"
 	_ "github.com/okayest-dev/genie/internal/llm/google"
 	_ "github.com/okayest-dev/genie/internal/llm/openai"
 	_ "github.com/okayest-dev/genie/internal/llm/responses"
@@ -103,7 +104,7 @@ func TestRegistryClientForEveryBundledWire(t *testing.T) {
 	for _, tc := range tests {
 		wires[tc.wire] = true
 	}
-	for _, wire := range []string{"openai", "anthropic", "responses", "google"} {
+	for _, wire := range []string{"openai", "anthropic", "responses", "google", "copilot"} {
 		if !wires[wire] {
 			t.Errorf("no declared provider on bundled wire %q", wire)
 		}

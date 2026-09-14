@@ -10,6 +10,7 @@ const (
 	WireAnthropic       Wire = "anthropic"
 	WireOpenAIResponses Wire = "responses"
 	WireGoogle          Wire = "google"
+	WireCopilot         Wire = "copilot"
 )
 
 // DetectWire returns the wire for a given model ID by prefix matching.

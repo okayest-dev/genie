@@ -935,15 +935,17 @@ func TestProvidersParseFromFileAndDump(t *testing.T) {
 }
 
 // TestShippedProviderDefaults verifies AC4: defaults exist for zen, a generic
-// openai-compatible provider, anthropic, responses and google, each with
-// usable default values.
+// openai-compatible provider, anthropic, responses, google and copilot, each
+// with usable default values. Copilot is the wire-with-its-own-auth exception:
+// it carries no base_url (its API base comes from the token exchange) and no
+// api_key_env (auth goes through its credential store, ADR-0002).
 func TestShippedProviderDefaults(t *testing.T) {
 	cfg, err := Parse(nil, "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(cfg.Providers) != 5 {
-		t.Fatalf("len(Providers) = %d, want 5 shipped defaults", len(cfg.Providers))
+	if len(cfg.Providers) != 6 {
+		t.Fatalf("len(Providers) = %d, want 6 shipped defaults", len(cfg.Providers))
 	}
 	for name, p := range cfg.Providers {
 		if p.Wire == "" {
@@ -952,11 +954,17 @@ func TestShippedProviderDefaults(t *testing.T) {
 		if !validWire[p.Wire] {
 			t.Errorf("%s: wire %q is not a known wire", name, p.Wire)
 		}
-		if p.BaseURL == "" {
-			t.Errorf("%s: no base_url", name)
-		}
-		if p.APIKeyEnv == "" {
-			t.Errorf("%s: no api_key_env", name)
+		if name == "copilot" {
+			if p.APIKeyEnv != "" {
+				t.Errorf("copilot: api_key_env = %q, want empty (credential-store auth)", p.APIKeyEnv)
+			}
+		} else {
+			if p.BaseURL == "" {
+				t.Errorf("%s: no base_url", name)
+			}
+			if p.APIKeyEnv == "" {
+				t.Errorf("%s: no api_key_env", name)
+			}
 		}
 		if p.Model == "" {
 			t.Errorf("%s: no default model", name)
@@ -967,6 +975,12 @@ func TestShippedProviderDefaults(t *testing.T) {
 	if zen.Wire != "openai" || zen.BaseURL != defaultBaseURL ||
 		zen.APIKeyEnv != defaultAPIKeyEnv || zen.Model != defaultModel {
 		t.Errorf("zen = %+v, want the flat-key defaults", zen)
+	}
+	// Copilot's default block is usable out of the box: a wire, a model, and
+	// no api_key_env — auth flows through the credential store.
+	cop := cfg.Providers["copilot"]
+	if cop.Wire != "copilot" || cop.Model == "" {
+		t.Errorf("copilot = %+v, want wire=copilot with a default model", cop)
 	}
 }
 

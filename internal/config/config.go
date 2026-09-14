@@ -26,6 +26,7 @@ var validWire = map[string]bool{
 	"anthropic": true,
 	"responses": true,
 	"google":    true,
+	"copilot":   true,
 }
 
 // Defaults for every configurable scalar.
@@ -69,6 +70,15 @@ var defaultProviders = map[string]Provider{
 	"google": {
 		Wire: "google", BaseURL: "https://generativelanguage.googleapis.com/v1beta",
 		APIKeyEnv: "GEMINI_API_KEY", Model: "gemini-2.5-pro",
+	},
+	"copilot": {
+		// Copilot authenticates through its own credential store (ADR-0002);
+		// there is no api_key_env, and its API base comes from the token
+		// exchange's endpoints.api rather than a configured base_url. The
+		// active GitHub host defaults to github.com; a GHE tenant sets
+		// opts.domain.
+		Wire:  "copilot",
+		Model: "gpt-4o",
 	},
 }
 
