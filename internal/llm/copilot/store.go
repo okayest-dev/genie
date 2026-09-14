@@ -11,7 +11,9 @@ import (
 )
 
 // credentialsFile is the top-level shape of the host-keyed credential store
-// at $XDG_DATA_HOME/github-copilot/hosts.json (ADR-0002).
+// at $XDG_DATA_HOME/genie/copilot/credentials.json (ADR-0002). Genie owns this
+// file; the wire never stores a derived Copilot JWT here — only the durable
+// GitHub OAuth record, and only what a future `auth login` writes.
 type credentialsFile struct {
 	Version int                  `json:"version"`
 	Hosts   map[string]hostEntry `json:"hosts"`
@@ -25,9 +27,9 @@ type hostEntry struct {
 }
 
 // StorePath returns the default credential store path for a given XDG data dir.
-// This matches the location the external Copilot plugin writes to, per ADR-0002.
+// The store is genie-owned, under genie's own data directory (ADR-0002).
 func StorePath(xdgDataHome string) string {
-	return filepath.Join(xdgDataHome, "github-copilot", "hosts.json")
+	return filepath.Join(xdgDataHome, "genie", "copilot", "credentials.json")
 }
 
 // defaultXDGDataHome returns the platform's XDG data directory, falling back

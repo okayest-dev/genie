@@ -94,17 +94,16 @@ func TestReadStoreWrongVersion(t *testing.T) {
 }
 
 func TestStoreDefaultPath(t *testing.T) {
-	// The default path is $XDG_DATA_HOME/github-copilot/hosts.json, matching
-	// the external Copilot plugin's store (ADR-0002) so an existing install's
-	// credentials are picked up by the bundled wire.
+	// The default path is $XDG_DATA_HOME/genie/copilot/credentials.json:
+	// a genie-owned store under genie's own data directory (ADR-0002).
 	got := StorePath("/tmp/xdg")
-	want := filepath.Join("/tmp/xdg", "github-copilot", "hosts.json")
+	want := filepath.Join("/tmp/xdg", "genie", "copilot", "credentials.json")
 	if got != want {
 		t.Errorf("StorePath(%q) = %q, want %q", "/tmp/xdg", got, want)
 	}
 }
 
-// writeStore writes a credentials file to dir/github-copilot/hosts.json.
+// writeStore writes a credentials file to dir/genie/copilot/credentials.json.
 func writeStore(t *testing.T, dir string, store credentialsFile) {
 	t.Helper()
 	data, err := json.Marshal(store)
