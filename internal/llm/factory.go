@@ -19,7 +19,7 @@ func RegisterWire(name Wire, f Factory) {
 // for unregistered wires.
 func ValidateWire(wire Wire) error {
 	if wire == "" {
-		return nil // empty means auto-detect, always valid
+		return nil // empty means default to openai, always valid
 	}
 	if !ValidWires[wire] {
 		return fmt.Errorf("llm: wire %q not registered", wire)

@@ -256,14 +256,12 @@ func resolveRegistry(cfg *Config, agent *config.ResolvedAgent) *tools.Registry {
 	return cfg.Registry.Subset(agent.Tools)
 }
 
-// currentModel returns the model for the current agent, falling back to
-// config. The config global is the shipped default, not the boot model, so
-// only an agent that declares its own model outright may override: a resolved
-// agent whose Model merely inherited the config global must not clobber the
-// active provider's default (og-z1m.3). The nil Cfg guard keeps repl-only
-// tests (which build Config without a harness Config) on the provider default.
+// currentModel returns the model for the current agent, falling back to the
+// active provider's default. There is no config global (og-z1m.8): an agent
+// declares its own model or it does not, and only a declared model may leave
+// the active provider's default (og-z1m.3).
 func currentModel(cfg *Config, agent *config.ResolvedAgent) string {
-	if cfg.Cfg != nil && agent.HasExplicitModel(cfg.Cfg.Model) {
+	if agent != nil && agent.HasExplicitModel() {
 		return agent.Model
 	}
 	return cfg.Model
@@ -474,7 +472,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 				def, _ := cfg.AgentReg.Get(name)
 				resolved, _ := cfg.AgentReg.GetResolved(name, cfg.Cfg, nil)
 				modelStr := ""
-				if resolved != nil {
+				if resolved != nil && resolved.Model != "" {
 					modelStr = fmt.Sprintf("  model: %s", resolved.Model)
 				}
 				toolsStr := ""
@@ -507,7 +505,11 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		if resolved.Tools != nil {
 			toolsStr = fmt.Sprintf(", tools: %s", strings.Join(resolved.Tools, ", "))
 		}
-		fmt.Fprintf(cfg.Stdout, "switched to %s (model: %s%s)\n", resolved.Name, resolved.Model, toolsStr)
+		modelStr := ""
+		if resolved.Model != "" {
+			modelStr = fmt.Sprintf(" (model: %s)", resolved.Model)
+		}
+		fmt.Fprintf(cfg.Stdout, "switched to %s%s%s\n", resolved.Name, modelStr, toolsStr)
 
 	default:
 		if cfg.Commands != nil && handlePluginCommand(line, cfg) {

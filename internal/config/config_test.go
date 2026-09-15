@@ -21,23 +21,16 @@ func env(kvs ...string) map[string]string {
 }
 
 // pureDefaults is the one known-good literal the tests assert against: every
-// scalar and tool toggle with no config file and no env at all.
+// scalar and tool toggle with no config file and no env at all. There is no
+// top-level global model/base_url/api_key_env/wire/gateway — boot parameters
+// live in each provider's table (og-z1m.8).
 func TestPureDefaults(t *testing.T) {
 	cfg, err := Parse(nil, "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse(nil, ...) returned error: %v", err)
 	}
-	if cfg.Model != "big-pickle" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "big-pickle")
-	}
-	if cfg.BaseURL != "https://opencode.ai/zen/v1" {
-		t.Errorf("BaseURL = %q, want %q", cfg.BaseURL, "https://opencode.ai/zen/v1")
-	}
-	if cfg.APIKeyEnv != "OPENCODE_API_KEY" {
-		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "OPENCODE_API_KEY")
-	}
-	if cfg.APIKey != "" {
-		t.Errorf("APIKey = %q, want empty (no key in env)", cfg.APIKey)
+	if cfg.Provider != "" {
+		t.Errorf("Provider = %q, want empty (unset selector prompts)", cfg.Provider)
 	}
 	if cfg.InstructionFile != "" {
 		t.Errorf("InstructionFile = %q, want empty", cfg.InstructionFile)
@@ -56,12 +49,6 @@ func TestPureDefaults(t *testing.T) {
 			t.Errorf("Tools.%s = false, want true by default", name)
 		}
 	}
-	if cfg.Wire != "" {
-		t.Errorf("Wire = %q, want empty (auto-detect by default)", cfg.Wire)
-	}
-	if cfg.Gateway != "" {
-		t.Errorf("Gateway = %q, want empty by default", cfg.Gateway)
-	}
 	if cfg.Context.Turns != 0 {
 		t.Errorf("Context.Turns = %d, want 0 (unlimited history) by default", cfg.Context.Turns)
 	}
@@ -76,10 +63,10 @@ func TestPureDefaults(t *testing.T) {
 	}
 }
 
-// fullConfig is a config file that sets every v1 key.
-const fullConfig = `model = "cfg-model"
-base_url = "https://example.com/v1"
-api_key_env = "GENIE_MY_KEY"
+// fullConfig is a config file that sets every remaining v1 key (the flat
+// model/base_url/api_key_env/wire/gateway keys no longer exist — a provider's
+// table is the only home for those).
+const fullConfig = `provider = "zen"
 instruction_file = "/abs/AGENTS.md"
 session_dir = "/tmp/sessions"
 bash_timeout = 90
@@ -92,21 +79,12 @@ bash = false
 `
 
 func TestFileBeatsDefaults(t *testing.T) {
-	cfg, err := Parse([]byte(fullConfig), "/home/u", env("GENIE_MY_KEY", "secret-key"))
+	cfg, err := Parse([]byte(fullConfig), "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if cfg.Model != "cfg-model" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "cfg-model")
-	}
-	if cfg.BaseURL != "https://example.com/v1" {
-		t.Errorf("BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/v1")
-	}
-	if cfg.APIKeyEnv != "GENIE_MY_KEY" {
-		t.Errorf("APIKeyEnv = %q, want %q", cfg.APIKeyEnv, "GENIE_MY_KEY")
-	}
-	if cfg.APIKey != "secret-key" {
-		t.Errorf("APIKey = %q, want %q (read from the env var named by api_key_env)", cfg.APIKey, "secret-key")
+	if cfg.Provider != "zen" {
+		t.Errorf("Provider = %q, want %q", cfg.Provider, "zen")
 	}
 	if cfg.InstructionFile != "/abs/AGENTS.md" {
 		t.Errorf("InstructionFile = %q, want %q", cfg.InstructionFile, "/abs/AGENTS.md")
@@ -122,7 +100,7 @@ func TestFileBeatsDefaults(t *testing.T) {
 	}
 }
 
-// TestEnvBeatsFile proves each of the six env overrides wins over a
+// TestEnvBeatsFile proves each of the surviving env overrides wins over a
 // conflicting config-file value.
 func TestEnvBeatsFile(t *testing.T) {
 	tests := []struct {
@@ -132,32 +110,12 @@ func TestEnvBeatsFile(t *testing.T) {
 		check   func(*testing.T, *Config)
 	}{
 		{
-			name:    "GENIE_MODEL",
-			file:    `model = "file-model"`,
-			envVars: env("GENIE_MODEL", "env-model"),
+			name:    "GENIE_PROVIDER",
+			file:    `provider = "file-provider"`,
+			envVars: env("GENIE_PROVIDER", "env-provider"),
 			check: func(t *testing.T, c *Config) {
-				if c.Model != "env-model" {
-					t.Errorf("Model = %q, want %q", c.Model, "env-model")
-				}
-			},
-		},
-		{
-			name:    "GENIE_BASE_URL",
-			file:    `base_url = "https://file.example"`,
-			envVars: env("GENIE_BASE_URL", "https://env.example"),
-			check: func(t *testing.T, c *Config) {
-				if c.BaseURL != "https://env.example" {
-					t.Errorf("BaseURL = %q, want %q", c.BaseURL, "https://env.example")
-				}
-			},
-		},
-		{
-			name:    "GENIE_API_KEY_ENV",
-			file:    `api_key_env = "FILE_KEY"`,
-			envVars: map[string]string{"GENIE_API_KEY_ENV": "ENV_KEY", "ENV_KEY": "env-secret"},
-			check: func(t *testing.T, c *Config) {
-				if c.APIKey != "env-secret" {
-					t.Errorf("APIKey = %q, want %q", c.APIKey, "env-secret")
+				if c.Provider != "env-provider" {
+					t.Errorf("Provider = %q, want %q", c.Provider, "env-provider")
 				}
 			},
 		},
@@ -203,13 +161,56 @@ func TestEnvBeatsFile(t *testing.T) {
 	}
 }
 
-func TestAPIKeyDefaultsToOPENCODE_API_KEY(t *testing.T) {
-	cfg, err := Parse(nil, "/home/u", env("OPENCODE_API_KEY", "default-secret"))
+// TestTopLevelFlatKeysRejected pins og-z1m.8 AC1: the flat top-level keys
+// model/base_url/wire/api_key_env/gateway no longer parse — a config still
+// carrying one fails fast as an unknown key. Their boot parameters now live
+// only in [providers.*] tables.
+func TestTopLevelFlatKeysRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+	}{
+		{name: "model", file: `model = "big-pickle"`},
+		{name: "base_url", file: `base_url = "https://example.com"`},
+		{name: "api_key_env", file: `api_key_env = "MY_KEY"`},
+		{name: "wire", file: `wire = "openai"`},
+		{name: "gateway", file: `gateway = "https://gw.example.com"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", nil)
+			if err == nil {
+				t.Fatalf("Parse accepted a top-level %q key; want an unknown-key error (og-z1m.8)", tc.name)
+			}
+			if !strings.Contains(err.Error(), "unknown key") {
+				t.Errorf("error = %q, want an unknown-key error", err)
+			}
+		})
+	}
+}
+
+// TestEnvOverridesForFlatKeysGone pins og-z1m.8 AC1: the env overrides for the
+// removed flat keys are inert — they are no longer read, so a set-but-inert
+// var leaves the config on pure defaults and is never reported as applied.
+func TestEnvOverridesForFlatKeysGone(t *testing.T) {
+	buf := captureInfo(t)
+	cfg, err := Parse(nil, "/home/u", env(
+		"GENIE_MODEL", "env-model",
+		"GENIE_BASE_URL", "https://env.example",
+		"GENIE_API_KEY_ENV", "ENV_KEY",
+		"GENIE_WIRE", "google",
+		"GENIE_GATEWAY", "https://env-gw.example",
+	))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if cfg.APIKey != "default-secret" {
-		t.Errorf("APIKey = %q, want %q", cfg.APIKey, "default-secret")
+	if cfg.Provider != "" {
+		t.Errorf("Provider = %q, want empty (flat-key env vars must not fire)", cfg.Provider)
+	}
+	out := buf.String()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "env overrides applied") && strings.Contains(line, "GENIE_MODEL") {
+			t.Errorf("env overrides line still lists GENIE_MODEL:\n%s", line)
+		}
 	}
 }
 
@@ -256,7 +257,7 @@ func TestUnknownKeysFailFast(t *testing.T) {
 }
 
 func TestToolsDefaultTrueWhenTableOmitted(t *testing.T) {
-	cfg, err := Parse([]byte("model = \"m\"\n"), "/home/u", nil)
+	cfg, err := Parse([]byte("provider = \"zen\"\n"), "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
@@ -305,13 +306,15 @@ func TestBashTimeoutMustBePositive(t *testing.T) {
 	}
 }
 
+// TestEmptyEnvVarMeansUnset: a set-but-empty env var leaves the file value in
+// place for the surviving selector key.
 func TestEmptyEnvVarMeansUnset(t *testing.T) {
-	cfg, err := Parse([]byte("model = \"file-model\"\n"), "/home/u", env("GENIE_MODEL", ""))
+	cfg, err := Parse([]byte("provider = \"file-provider\"\n"), "/home/u", env("GENIE_PROVIDER", ""))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if cfg.Model != "file-model" {
-		t.Errorf("Model = %q, want %q (empty env var must not override)", cfg.Model, "file-model")
+	if cfg.Provider != "file-provider" {
+		t.Errorf("Provider = %q, want %q (empty env var must not override)", cfg.Provider, "file-provider")
 	}
 }
 
@@ -590,12 +593,12 @@ func captureInfo(t *testing.T) *bytes.Buffer {
 
 func TestParseLogsResolvedConfig(t *testing.T) {
 	buf := captureInfo(t)
-	_, err := Parse([]byte("model = \"cfg-model\"\nbase_url = \"https://example.com\"\n"), "/home/u", nil)
+	_, err := Parse([]byte(providersFile), "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"model=cfg-model", "base_url=https://example.com"} {
+	for _, want := range []string{"provider=zen", "providers=", "zen:openai:big-pickle", "deepseek:openai:deepseek-chat"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log output missing %q:\n%s", want, out)
 		}
@@ -604,18 +607,18 @@ func TestParseLogsResolvedConfig(t *testing.T) {
 
 func TestParseLogsEnvVarsApplied(t *testing.T) {
 	buf := captureInfo(t)
-	_, err := Parse(nil, "/home/u", env("GENIE_MODEL", "env-model"))
+	_, err := Parse(nil, "/home/u", env("GENIE_PROVIDER", "zen"))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "GENIE_MODEL") {
-		t.Errorf("log output missing env var name GENIE_MODEL:\n%s", out)
+	if !strings.Contains(out, "GENIE_PROVIDER") {
+		t.Errorf("log output missing env var name GENIE_PROVIDER:\n%s", out)
 	}
 	// The env var name appears, but its value must not appear in the
 	// "env overrides applied" line.
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "env overrides applied") && strings.Contains(line, "env-model") {
+		if strings.Contains(line, "env overrides applied") && strings.Contains(line, "zen") {
 			t.Errorf("env overrides line must not contain env var value:\n%s", line)
 		}
 	}
@@ -633,83 +636,6 @@ func TestParseDoesNotLogAPIKeyValue(t *testing.T) {
 	}
 }
 
-func TestWireAndGatewayFromFile(t *testing.T) {
-	cfg, err := Parse([]byte(`wire = "anthropic"
-gateway = "https://gateway.example.com"
-`), "/home/u", nil)
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if cfg.Wire != "anthropic" {
-		t.Errorf("Wire = %q, want %q", cfg.Wire, "anthropic")
-	}
-	if cfg.Gateway != "https://gateway.example.com" {
-		t.Errorf("Gateway = %q, want %q", cfg.Gateway, "https://gateway.example.com")
-	}
-}
-
-func TestOGWireEnvBeatsFile(t *testing.T) {
-	cfg, err := Parse([]byte(`wire = "openai"
-`), "/home/u", env("GENIE_WIRE", "google"))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if cfg.Wire != "google" {
-		t.Errorf("Wire = %q, want %q (GENIE_WIRE env should override file)", cfg.Wire, "google")
-	}
-}
-
-func TestOGGatewayEnvBeatsFile(t *testing.T) {
-	cfg, err := Parse([]byte(`gateway = "https://file-gateway.example.com"
-`), "/home/u", env("GENIE_GATEWAY", "https://env-gateway.example.com"))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if cfg.Gateway != "https://env-gateway.example.com" {
-		t.Errorf("Gateway = %q, want %q (GENIE_GATEWAY env should override file)", cfg.Gateway, "https://env-gateway.example.com")
-	}
-}
-
-func TestEmptyOGWireEnvDoesNotOverrideFile(t *testing.T) {
-	cfg, err := Parse([]byte(`wire = "anthropic"
-`), "/home/u", env("GENIE_WIRE", ""))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if cfg.Wire != "anthropic" {
-		t.Errorf("Wire = %q, want %q (empty env must not override)", cfg.Wire, "anthropic")
-	}
-}
-
-func TestEmptyOGGatewayEnvDoesNotOverrideFile(t *testing.T) {
-	cfg, err := Parse([]byte(`gateway = "https://file-gw.example.com"
-`), "/home/u", env("GENIE_GATEWAY", ""))
-	if err != nil {
-		t.Fatalf("Parse: %v", err)
-	}
-	if cfg.Gateway != "https://file-gw.example.com" {
-		t.Errorf("Gateway = %q, want %q (empty env must not override)", cfg.Gateway, "https://file-gw.example.com")
-	}
-}
-
-func TestInvalidWireNameFailsFast(t *testing.T) {
-	_, err := Parse([]byte(`wire = "typo"
-`), "/home/u", nil)
-	if err == nil {
-		t.Fatal("Parse accepted unknown wire name; want an error")
-	}
-}
-
-func TestInvalidWireNameFromEnvFailsFast(t *testing.T) {
-	_, err := Parse(nil, "/home/u", env("GENIE_WIRE", "bogus"))
-	if err == nil {
-		t.Fatal("Parse accepted unknown wire name from env; want an error")
-	}
-}
-
-// TestPluginDirDerivedFromConfigDir verifies that the default plugin directory
-// is derived from the same base directory as the config file. Both should
-// resolve to <configDir>/genie/plugins.
 func TestPluginDirDerivedFromConfigDir(t *testing.T) {
 	cfg, err := Parse(nil, "/home/u/.config", nil)
 	if err != nil {
