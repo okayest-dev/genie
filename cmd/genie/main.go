@@ -176,9 +176,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// A per-agent model override still wins, but only when the agent declares
-	// one outright: a resolved default that merely copied the config global must
-	// not clobber the active provider's own default model.
-	if runAgent.HasExplicitModel(cfg.Model) {
+	// one outright: there is no config global, so an agent with no model of its
+	// own starts the run on the active provider's default.
+	if runAgent.HasExplicitModel() {
 		runModel = runAgent.Model
 	}
 

@@ -1,6 +1,6 @@
 // Package contextmgr implements ContextManager: a transparent llm.Client
-// wrapper that sits outermost in the client chain (around RoutingClient) and
-// owns history injection, token accounting, and the context-management
+// wrapper that sits outermost in the client chain and owns history injection,
+// token accounting, and the context-management
 // policies of the layered context map (ADR-0001): per-message token-count
 // caching keyed by line index, request-time tool-output condensation, and
 // synchronous durable-intent compaction under a budget. From the caller's

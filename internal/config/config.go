@@ -1,8 +1,13 @@
 // Package config loads the harness's v1 configuration: a TOML file at the
-// user config dir overlaid on pure defaults, with six env overrides on top
-// and an API key that lives only in the environment. Precedence is
+// user config dir overlaid on pure defaults, with env overrides on top and
+// API keys that live only in the environment. Precedence is
 // defaults < file < env. A missing config file is pure defaults; malformed
 // TOML and unknown keys fail fast with an error.
+//
+// After og-z1m.8 there are no top-level model/base_url/api_key_env/wire/
+// gateway keys: every boot parameter lives in a [providers.<name>] table, and
+// the only top-level selector key is `provider` (with GENIE_PROVIDER the one
+// surviving env override for it).
 package config
 
 import (
@@ -190,25 +195,11 @@ type Config struct {
 	// Providers is the set of declared providers keyed by name, seeded with
 	// the shipped defaults for every bundled wire.
 	Providers map[string]Provider
-	// Model is the session's model id (default big-pickle).
-	Model string
-	// BaseURL is the provider's wire base (default OpenCode Zen).
-	BaseURL string
-	// APIKeyEnv names the env var the API key lives in; the key itself is
-	// never stored in the config file.
-	APIKeyEnv string
-	// APIKey is the resolved key read from the env var named by APIKeyEnv.
-	APIKey string
-	// Wire selects the wire implementation. Empty means auto-detect from
-	// the model ID prefix.
-	Wire string
-	// Provider names a plugin to route all requests through (e.g.
-	// "copilot"). When set, the harness looks for a loaded wire plugin
-	// with that name and uses it directly. Empty falls back to Wire/model
-	// auto-detection.
+	// Provider is the active provider's name. Empty means unselected: an
+	// interactive run prompts to pick one, a one-shot -p run falls back to the
+	// first declared provider (og-z1m.4). There is no global model — every
+	// model a turn can start on belongs to the active provider.
 	Provider string
-	// Gateway is an optional URL override for the provider gateway.
-	Gateway string
 	// InstructionFile is an optional agent-instruction source loaded after
 	// the built-in default. Unset means none.
 	InstructionFile string
@@ -240,14 +231,12 @@ type Config struct {
 
 // fileConfig is the TOML schema. Tool booleans and bash_timeout are pointers
 // so an omitted key leaves the default; scalars fall back to defaults when
-// empty.
+// empty. The top-level surface holds only singleton selectors and harness
+// paths — model/base_url/wire/api_key_env/gateway belong to a provider's table
+// (og-z1m.8). provider keeps its dual role as the file-set selection and the
+// GENIE_PROVIDER env override.
 type fileConfig struct {
-	Model           string        `toml:"model"`
-	BaseURL         string        `toml:"base_url"`
-	APIKeyEnv       string        `toml:"api_key_env"`
-	Wire            string        `toml:"wire"`
 	Provider        string        `toml:"provider"`
-	Gateway         string        `toml:"gateway"`
 	InstructionFile string        `toml:"instruction_file"`
 	SessionDir      string        `toml:"session_dir"`
 	BashTimeout     *int          `toml:"bash_timeout"` // seconds
@@ -341,23 +330,8 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 			}
 			return nil, fmt.Errorf("config: unknown key(s): %s", strings.Join(keys, ", "))
 		}
-		if fc.Model != "" {
-			cfg.Model = fc.Model
-		}
-		if fc.BaseURL != "" {
-			cfg.BaseURL = fc.BaseURL
-		}
-		if fc.APIKeyEnv != "" {
-			cfg.APIKeyEnv = fc.APIKeyEnv
-		}
-		if fc.Wire != "" {
-			cfg.Wire = fc.Wire
-		}
 		if fc.Provider != "" {
 			cfg.Provider = fc.Provider
-		}
-		if fc.Gateway != "" {
-			cfg.Gateway = fc.Gateway
 		}
 		cfg.InstructionFile = fc.InstructionFile
 		if fc.SessionDir != "" {
@@ -438,18 +412,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 	if err != nil {
 		return nil, err
 	}
-	cfg.APIKey = env[cfg.APIKeyEnv]
 
-	if cfg.Wire != "" && !validWire[cfg.Wire] {
-		return nil, fmt.Errorf("config: unknown wire %q", cfg.Wire)
-	}
 	if err := validateProviders(cfg.Providers); err != nil {
 		return nil, err
 	}
 
 	slog.Info("config loaded",
-		"model", cfg.Model,
-		"base_url", cfg.BaseURL,
 		"provider", cfg.Provider,
 		"providers", providerSummary(cfg.Providers),
 		"instruction_file", cfg.InstructionFile,
@@ -457,9 +425,6 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		"default_agent", cfg.DefaultAgent,
 	)
 	slog.Debug("config resolved",
-		"model", cfg.Model,
-		"base_url", cfg.BaseURL,
-		"api_key_env", cfg.APIKeyEnv,
 		"instruction_file", cfg.InstructionFile,
 		"session_dir", cfg.SessionDir,
 		"bash_timeout_s", int(cfg.BashTimeout.Seconds()),
@@ -507,9 +472,6 @@ func Load() (*Config, error) {
 func defaults(userConfigDir string) Config {
 	return Config{
 		Providers:               cloneProviders(defaultProviders),
-		Model:                   defaultModel,
-		BaseURL:                 defaultBaseURL,
-		APIKeyEnv:               defaultAPIKeyEnv,
 		SessionDir:              filepath.Join(userConfigDir, "genie", "sessions"),
 		BashTimeout:             defaultBashTimeout,
 		Tools:                   Tools{Read: true, Write: true, Edit: true, Bash: true},
@@ -632,34 +594,14 @@ func sortedProviderNames(providers map[string]Provider) []string {
 	return names
 }
 
-// applyEnv overlays the six env overrides on top of the config file. An env
-// var that is set but empty leaves the file value in place. Returns the names
-// of env vars that were applied.
+// applyEnv overlays the env variable overrides on top of the config file. An
+// env var that is set but empty leaves the file value in place. Returns the
+// names of env vars that were applied.
 func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	var applied []string
-	if v := env["GENIE_MODEL"]; v != "" {
-		cfg.Model = v
-		applied = append(applied, "GENIE_MODEL")
-	}
-	if v := env["GENIE_BASE_URL"]; v != "" {
-		cfg.BaseURL = v
-		applied = append(applied, "GENIE_BASE_URL")
-	}
-	if v := env["GENIE_API_KEY_ENV"]; v != "" {
-		cfg.APIKeyEnv = v
-		applied = append(applied, "GENIE_API_KEY_ENV")
-	}
-	if v := env["GENIE_WIRE"]; v != "" {
-		cfg.Wire = v
-		applied = append(applied, "GENIE_WIRE")
-	}
 	if v := env["GENIE_PROVIDER"]; v != "" {
 		cfg.Provider = v
 		applied = append(applied, "GENIE_PROVIDER")
-	}
-	if v := env["GENIE_GATEWAY"]; v != "" {
-		cfg.Gateway = v
-		applied = append(applied, "GENIE_GATEWAY")
 	}
 	if v := env["GENIE_INSTRUCTION_FILE"]; v != "" {
 		cfg.InstructionFile = v

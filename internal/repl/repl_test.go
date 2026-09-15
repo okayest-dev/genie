@@ -275,17 +275,16 @@ func TestHandleChangesInvalidID(t *testing.T) {
 	}
 }
 
-// TestCurrentModelExplicitOnly pins the og-z1m.3 explicit-only heuristic:
-// the runtime model is the active provider's default (cfg.Model) unless an
-// agent declares its own model outright. A resolved agent whose Model merely
-// inherited the config global must not clobber it.
+// TestCurrentModelExplicitOnly pins the og-z1m.3 explicit-only rule on the
+// no-global model (og-z1m.8): the runtime model is the active provider's
+// default (cfg.Model) unless an agent declares its own model outright. An
+// agent with no declared model resolves empty and leaves the default alone.
 func TestCurrentModelExplicitOnly(t *testing.T) {
-	global := &config.Config{Model: "big-pickle"}
-	providerDefault := &Config{Model: "other-model", Cfg: global}
+	providerDefault := &Config{Model: "other-model"}
 
-	inherited := &config.ResolvedAgent{Name: "a", Model: "big-pickle"}
-	if got := currentModel(providerDefault, inherited); got != "other-model" {
-		t.Errorf("inherited agent: currentModel = %q, want provider default %q", got, "other-model")
+	undeclared := &config.ResolvedAgent{Name: "a", Model: ""}
+	if got := currentModel(providerDefault, undeclared); got != "other-model" {
+		t.Errorf("undeclared agent: currentModel = %q, want provider default %q", got, "other-model")
 	}
 
 	declared := &config.ResolvedAgent{Name: "b", Model: "claude-sonnet-4-5"}
@@ -449,7 +448,7 @@ func TestProviderSwitchRebuildsClientAndResetsModel(t *testing.T) {
 	}
 
 	// /model after the switch lists the new provider's catalog and marks its
-	// default (the active provider's model), never a stale global value.
+	// default (the active provider's model).
 	stdout.Reset()
 	runSlash(t, cfg, state, sess, "/model")
 	out := stdout.String()
@@ -559,39 +558,5 @@ func TestModelCatalogFailureDegradesToDefaultModel(t *testing.T) {
 	}
 	if !strings.Contains(out, "Current: alpha-model") {
 		t.Errorf("/model = %q, want 'Current: alpha-model'", out)
-	}
-}
-
-func TestModelMarkerFollowsActiveProviderModel(t *testing.T) {
-	// The current marker must key off the active provider's model (cfg.Model
-	// after a switch), never the stale config global cfg.Cfg.Model.
-	cfg := &Config{
-		Providers:  twoProviderReg(),
-		Provider:   "beta",
-		Model:      "beta-model",
-		Cfg:        &config.Config{Model: "big-pickle"},
-		Stdin:      strings.NewReader(""),
-		Stdout:     &bytes.Buffer{},
-		Stderr:     &bytes.Buffer{},
-		SessionDir: t.TempDir(),
-	}
-	sess, err := session.New(cfg.SessionDir)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	client, err := cfg.Providers.Client("beta")
-	if err != nil {
-		t.Fatalf("boot client: %v", err)
-	}
-	state := &replState{provider: "beta", baseClient: client, client: wrapClient(cfg, client, sess)}
-
-	var stdout bytes.Buffer
-	cfg.Stdout = &stdout
-	runSlash(t, cfg, state, sess, "/model")
-
-	// The stale global model must not be marked: beta's catalog has none of the
-	// global's entries and the marker is on the active provider's model.
-	if strings.Contains(stdout.String(), "* big-pickle") {
-		t.Errorf("/model = %q, marked the stale global model", stdout.String())
 	}
 }

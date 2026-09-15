@@ -119,7 +119,6 @@ func TestParseAgentDefMalformedTOML(t *testing.T) {
 
 func TestResolveAgentDefDefaults(t *testing.T) {
 	cfg := &Config{
-		Model:           "big-pickle",
 		InstructionFile: "/cfg/instr.md",
 		Tools:           Tools{Read: true, Write: true, Edit: false, Bash: true},
 	}
@@ -130,8 +129,10 @@ func TestResolveAgentDefDefaults(t *testing.T) {
 	if resolved.Name != "test" {
 		t.Errorf("Name = %q, want %q", resolved.Name, "test")
 	}
-	if resolved.Model != "big-pickle" {
-		t.Errorf("Model = %q, want %q", resolved.Model, "big-pickle")
+	// There is no global model to inherit: an agent that does not declare one
+	// resolves to an empty Model, leaving the active provider's default in play.
+	if resolved.Model != "" {
+		t.Errorf("Model = %q, want empty (no global model; provider default applies)", resolved.Model)
 	}
 	if resolved.InstructionFile != "/cfg/instr.md" {
 		t.Errorf("InstructionFile = %q, want %q", resolved.InstructionFile, "/cfg/instr.md")
@@ -159,7 +160,6 @@ func TestResolveAgentDefDefaults(t *testing.T) {
 
 func TestResolveAgentDefOverrides(t *testing.T) {
 	cfg := &Config{
-		Model:           "big-pickle",
 		InstructionFile: "/cfg/instr.md",
 		Tools:           Tools{Read: true, Write: true, Edit: true, Bash: true},
 	}
@@ -192,7 +192,7 @@ func TestResolveAgentDefOverrides(t *testing.T) {
 }
 
 func TestResolveAgentDefSkillsInherit(t *testing.T) {
-	cfg := &Config{Model: "big-pickle"}
+	cfg := &Config{}
 	pool := []string{"tdd", "research", "grilling"}
 	def := &AgentDef{Name: "x", Source: "/x.toml"}
 
@@ -210,7 +210,7 @@ func TestResolveAgentDefSkillsInherit(t *testing.T) {
 }
 
 func TestResolveAgentDefSkillsInheritEmptyPool(t *testing.T) {
-	cfg := &Config{Model: "big-pickle"}
+	cfg := &Config{}
 	def := &AgentDef{Name: "x", Source: "/x.toml"}
 
 	resolved := ResolveAgentDef(def, cfg, nil)
@@ -224,7 +224,7 @@ func TestResolveAgentDefSkillsInheritEmptyPool(t *testing.T) {
 }
 
 func TestResolveAgentDefSkillsNone(t *testing.T) {
-	cfg := &Config{Model: "big-pickle"}
+	cfg := &Config{}
 	pool := []string{"tdd", "research"}
 	def := &AgentDef{Name: "x", Source: "/x.toml", Skills: []string{}}
 
@@ -239,7 +239,7 @@ func TestResolveAgentDefSkillsNone(t *testing.T) {
 }
 
 func TestResolveAgentDefSkillsSelect(t *testing.T) {
-	cfg := &Config{Model: "big-pickle"}
+	cfg := &Config{}
 	pool := []string{"tdd", "research", "grilling"}
 	def := &AgentDef{Name: "x", Source: "/x.toml", Skills: []string{"grilling", "tdd"}}
 
@@ -252,7 +252,6 @@ func TestResolveAgentDefSkillsSelect(t *testing.T) {
 
 func TestResolveAgentDefDoesNotMutate(t *testing.T) {
 	cfg := &Config{
-		Model:           "big-pickle",
 		InstructionFile: "/cfg/instr.md",
 		Tools:           Tools{Read: true, Write: true, Edit: true, Bash: true},
 	}
@@ -363,7 +362,6 @@ func TestAgentRegGetResolved(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "coder.toml", `tools = ["read"]`)
 	cfg := &Config{
-		Model:           "big-pickle",
 		InstructionFile: "/cfg/instr.md",
 		Tools:           Tools{Read: true, Write: true, Edit: true, Bash: true},
 	}
@@ -376,8 +374,10 @@ func TestAgentRegGetResolved(t *testing.T) {
 	if resolved.Name != "coder" {
 		t.Errorf("Name = %q, want %q", resolved.Name, "coder")
 	}
-	if resolved.Model != "big-pickle" {
-		t.Errorf("Model = %q, want %q (should inherit config)", resolved.Model, "big-pickle")
+	// coder.toml declares tools but no model: no global exists to inherit, so
+	// Model resolves empty and the active provider's default stays in play.
+	if resolved.Model != "" {
+		t.Errorf("Model = %q, want empty (no declared model, no global)", resolved.Model)
 	}
 	if len(resolved.Tools) != 1 || resolved.Tools[0] != "read" {
 		t.Errorf("Tools = %v, want [read]", resolved.Tools)
@@ -390,7 +390,7 @@ func TestAgentRegGetResolved(t *testing.T) {
 func TestAgentRegGetResolvedSkillsInherit(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "coder.toml", `model = "fast"`)
-	cfg := &Config{Model: "big-pickle"}
+	cfg := &Config{}
 	pool := []string{"tdd", "research"}
 
 	reg := NewAgentReg(dir, t.TempDir())
@@ -406,7 +406,7 @@ func TestAgentRegGetResolvedSkillsInherit(t *testing.T) {
 func TestAgentRegGetResolvedUnknownSkill(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "coder.toml", `skills = ["ghost", "tdd"]`)
-	cfg := &Config{Model: "big-pickle"}
+	cfg := &Config{}
 
 	reg := NewAgentReg(dir, t.TempDir())
 	_, err := reg.GetResolved("coder", cfg, []string{"tdd", "research"})
@@ -421,7 +421,7 @@ func TestAgentRegGetResolvedUnknownSkill(t *testing.T) {
 func TestAgentRegGetResolvedValidSkills(t *testing.T) {
 	dir := t.TempDir()
 	writeAgentFile(t, dir, "coder.toml", `skills = ["tdd", "research"]`)
-	cfg := &Config{Model: "big-pickle"}
+	cfg := &Config{}
 
 	reg := NewAgentReg(dir, t.TempDir())
 	resolved, err := reg.GetResolved("coder", cfg, []string{"tdd", "research", "grilling"})
@@ -462,24 +462,22 @@ func writeAgentFile(t *testing.T, dir, name, content string) {
 	}
 }
 
-// TestHasExplicitModel pins the explicit-only override rule: resolution fills
-// ResolvedAgent.Model with the harness global, so only a model that differs
-// from that sentinel counts as an explicit declaration (og-z1m.3).
+// TestHasExplicitModel pins the explicit-only override rule: there is no
+// config global (og-z1m.8), resolution leaves an undeclared model empty, so a
+// non-empty Model is always an explicit declaration (og-z1m.3).
 func TestHasExplicitModel(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		agent  *ResolvedAgent
-		global string
-		want   bool
+		name  string
+		agent *ResolvedAgent
+		want  bool
 	}{
-		{name: "nil agent", agent: nil, global: "big-pickle", want: false},
-		{name: "inherited model is not explicit", agent: &ResolvedAgent{Model: "big-pickle"}, global: "big-pickle", want: false},
-		{name: "declared model is explicit", agent: &ResolvedAgent{Model: "claude-sonnet-4-5"}, global: "big-pickle", want: true},
-		{name: "no model", agent: &ResolvedAgent{}, global: "big-pickle", want: false},
+		{name: "nil agent", agent: nil, want: false},
+		{name: "declared model is explicit", agent: &ResolvedAgent{Model: "claude-sonnet-4-5"}, want: true},
+		{name: "no model", agent: &ResolvedAgent{}, want: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.agent.HasExplicitModel(tc.global); got != tc.want {
-				t.Errorf("HasExplicitModel(%q) = %v, want %v", tc.global, got, tc.want)
+			if got := tc.agent.HasExplicitModel(); got != tc.want {
+				t.Errorf("HasExplicitModel() = %v, want %v", got, tc.want)
 			}
 		})
 	}

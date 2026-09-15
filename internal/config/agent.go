@@ -16,7 +16,7 @@ import (
 type AgentDef struct {
 	Name            string   // derived from filename stem
 	Source          string   // absolute path to the .toml file
-	Model           string   // empty = inherit config model
+	Model           string   // empty = no model (active provider's default applies)
 	InstructionFile string   // empty = inherit config instruction_file
 	Tools           []string // nil = inherit all; non-nil = exact set
 	InheritAgentsMD *bool    // nil = true (inherit); explicit false = don't
@@ -32,8 +32,10 @@ type fileAgentDef struct {
 	Skills          []string `toml:"skills"`
 }
 
-// ResolvedAgent is an AgentDef with all fields resolved against harness
-// config defaults. No zero-value fields remain — every field is usable as-is.
+// ResolvedAgent is an AgentDef resolved against harness config defaults. The
+// only field that may stay empty is Model — an agent that does not declare
+// one leaves it unset so the runtime uses the active provider's default
+// model; every other field is usable as-is.
 type ResolvedAgent struct {
 	Name            string
 	Source          string
@@ -71,10 +73,13 @@ func ParseAgentDef(data []byte, name, sourcePath string) (*AgentDef, error) {
 	}, nil
 }
 
-// ResolveAgentDef fills in zero-value fields from harness config.
+// ResolveAgentDef resolves an AgentDef against harness config defaults.
 // availableSkills is the discovered skill pool; an absent Skills field on the
-// def inherits it, an explicit set (possibly empty) overrides it. The result
-// is a new ResolvedAgent; the original def, cfg, and pool are not mutated.
+// def inherits it, an explicit set (possibly empty) overrides it. There is no
+// global model to inherit: an agent that does not declare a model ends up
+// with an empty Model, and the runtime starts the turn on the active
+// provider's default. The result is a new ResolvedAgent; the original def,
+// cfg, and pool are not mutated.
 func ResolveAgentDef(def *AgentDef, cfg *Config, availableSkills []string) ResolvedAgent {
 	skills := []string{}
 	if def.Skills != nil {
@@ -85,14 +90,11 @@ func ResolveAgentDef(def *AgentDef, cfg *Config, availableSkills []string) Resol
 	r := ResolvedAgent{
 		Name:            def.Name,
 		Source:          def.Source,
-		Model:           cfg.Model,
+		Model:           def.Model,
 		InstructionFile: cfg.InstructionFile,
 		Tools:           allToolNames(cfg.Tools),
 		InheritAgentsMD: true,
 		Skills:          skills,
-	}
-	if def.Model != "" {
-		r.Model = def.Model
 	}
 	if def.InstructionFile != "" {
 		r.InstructionFile = def.InstructionFile
@@ -125,13 +127,13 @@ func allToolNames(t Tools) []string {
 }
 
 // HasExplicitModel reports whether the agent declares its own model rather
-// than inheriting the harness global. Resolution fills Model with cfg.Model
-// when a def leaves it unset, so a non-empty Model is only an explicit
-// declaration when it also differs from that global sentinel. This is the
-// "explicit-only" override rule (og-z1m.3): a request may leave the active
-// provider's default model only for a model an agent names outright.
-func (a *ResolvedAgent) HasExplicitModel(globalModel string) bool {
-	return a != nil && a.Model != "" && a.Model != globalModel
+// than leaving the runtime on the active provider's default. Resolution does
+// not fill Model from any global, so a non-empty Model is always an explicit
+// declaration. This is the "explicit-only" override rule (og-z1m.3): a
+// request may leave the active provider's default model only for a model an
+// agent names outright.
+func (a *ResolvedAgent) HasExplicitModel() bool {
+	return a != nil && a.Model != ""
 }
 
 // AgentReg holds discovered agent definitions. Created by scanning
