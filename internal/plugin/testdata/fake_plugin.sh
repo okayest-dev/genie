@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fake plugin for testing - implements NDJSON-RPC over stdio
-# This plugin provides a "greet" tool and a "test-wire" wire
+# This plugin provides a "greet" tool
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ handle_request() {
 
     case "$method" in
         "capabilities/list")
-            write_response '{"jsonrpc":"2.0","result":{"tools":true,"wires":true,"providers":false,"version":1},"id":'"$id"'}'
+            write_response '{"jsonrpc":"2.0","result":{"tools":true,"providers":false,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             write_response '{"jsonrpc":"2.0","result":{"tools":[{"name":"greet","description":"A greeting tool from plugin","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Name to greet"}},"required":["name"]}}]},"id":'"$id"'}'
@@ -35,16 +35,6 @@ handle_request() {
             else
                 write_response '{"jsonrpc":"2.0","error":{"code":-32602,"message":"Unknown tool: '"$tool_name"'"},"id":'"$id"'}'
             fi
-            ;;
-        "wire/init")
-            write_response '{"jsonrpc":"2.0","result":{"ok":true},"id":'"$id"'}'
-            ;;
-        "wire/list_models")
-            write_response '{"jsonrpc":"2.0","result":{"models":[{"id":"fake-gpt-4","name":"Fake GPT-4"},{"id":"fake-claude-3","name":"Fake Claude 3"}]},"id":'"$id"'}'
-            ;;
-        "wire/stream")
-            # Just return a simple response for testing
-            write_response '{"jsonrpc":"2.0","result":{"choices":[{"delta":{"content":"Plugin wire response"}}]},"id":'"$id"'}'
             ;;
         "ping")
             write_response '{"jsonrpc":"2.0","result":{"pong":true},"id":'"$id"'}'

@@ -185,18 +185,14 @@ bash = true
 | `plugins.dir` | string | `~/.config/genie/plugins` | `GENIE_PLUGIN_DIR` | directory where plugin executables are discovered |
 | `plugins.enable` | array of strings | `[]` (all) | — | allowlist of plugin names to load |
 | `plugins.disable` | array of strings | `[]` | — | denylist of plugin names to skip (wins over `enable`) |
-| `plugins.wire_stream_timeout` | integer (seconds) | `600` | `GENIE_PLUGIN_WIRE_STREAM_TIMEOUT` | per-call timeout for a streaming completion RPC |
 
 See [installing and using plugins](plugins/using.md) for the plugin layouts and discovery rules.
-
-`wire_stream_timeout` exists because LLM completions routinely exceed the 5s request timeout used for quick RPCs (tool calls, pings, context hooks). When a stream call does time out, genie waits a short grace period for the late completion to arrive so the codec resyncs — the plugin is only marked inactive if it never answers.
 
 ```toml
 [plugins]
 dir = "~/.config/genie/plugins"
 enable = ["my-plugin"]      # explicit allowlist (empty = all)
 disable = ["broken-plugin"] # denylist (takes precedence)
-# wire_stream_timeout = 600 # seconds; per-call timeout for streaming completion RPCs
 ```
 
 ## `[context]` — context management
@@ -263,7 +259,6 @@ The complete set of knobs that can be set from the environment:
 | `GENIE_SESSION_DIR` | `session_dir` | session storage directory |
 | `GENIE_BASH_TIMEOUT` | `bash_timeout` | seconds, positive integer |
 | `GENIE_PLUGIN_DIR` | `plugins.dir` | plugin discovery directory |
-| `GENIE_PLUGIN_WIRE_STREAM_TIMEOUT` | `plugins.wire_stream_timeout` | seconds, positive integer |
 | `GENIE_DEFAULT_AGENT` | `default_agent` | agent name |
 | `GENIE_CONTEXT_TURNS` | `context.turns` | non-negative integer |
 | `GENIE_CONTEXT_BUDGET_TOKENS` | `context.budget_tokens` | positive integer |

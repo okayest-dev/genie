@@ -246,7 +246,7 @@ Each command definition contains:
 
 **Direction**: Host → Plugin
 
-**Purpose**: Execute a command. Arguments are delivered as the raw string the user typed after the command token; the plugin owns its own sub-command parsing (e.g. `/copilot auth login --host tenant.ghe.com` reports `name: "auth"`, `arguments: "login --host tenant.ghe.com"`). The call must return promptly: interactive work (a device-flow login) completes asynchronously inside the plugin's own process, driven by the same request-scoped rules as wire auth.
+**Purpose**: Execute a command. Arguments are delivered as the raw string the user typed after the command token; the plugin owns its own sub-command parsing (e.g. `/copilot auth login --host tenant.ghe.com` reports `name: "auth"`, `arguments: "login --host tenant.ghe.com"`). The call must return promptly: interactive work (a device-flow login) completes asynchronously inside the plugin's own process, driven by the same request-scoped credential rules as the in-tree providers.
 
 **Request**:
 ```json

@@ -196,8 +196,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Load plugins.
-	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, runRegistry,
-		plugin.WithStreamTimeout(cfg.PluginWireStreamTimeout))
+	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, runRegistry)
 	if err := pluginMgr.LoadPlugins(); err != nil {
 		fmt.Fprintf(stderr, "Error loading plugins: %v\n", err)
 		return 1
@@ -245,12 +244,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 			BudgetTokens:  cfg.Context.BudgetTokens,
 			BudgetPercent: cfg.Context.BudgetPercent,
 		})
-		// Plugin-reported windows are already in hand; seed without probing.
-		for _, p := range pluginMgr.GetPlugins() {
-			for _, m := range p.Models {
-				resolver.Seed(m.ID, m.ContextWindow)
-			}
-		}
 		return []contextmgr.Option{
 			contextmgr.WithTurns(cfg.Context.Turns),
 			contextmgr.WithCounter(counter),

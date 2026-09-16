@@ -53,18 +53,12 @@ func NewHandler(caps Capabilities) *Handler {
 }
 {{ range .Handler.Methods }}
 func (h *Handler) {{ .Name }}({{ range $i, $p := .Params }}{{ if $i }}, {{ end }}{{ $p.Name }} {{ $p.Type }}{{ end }}) {
-{{- if eq .Name "SetModels" }}
-	h.models = models
-{{- else if eq .Name "OnInit" }}
-	h.onInit = fn
-{{- else if eq .Name "OnCommandsList" }}
+{{- if eq .Name "OnCommandsList" }}
 	h.onCommandsList = fn
 {{- else if eq .Name "OnCommandsRun" }}
 	h.onCommandsRun = fn
 {{- else if eq .Name "OnCommandsHelp" }}
 	h.onCommandsHelp = fn
-{{- else if eq .Name "OnStream" }}
-	h.onStream = fn
 {{- else if eq .Name "OnBeforeRequest" }}
 	h.onBeforeRequest = fn
 {{- else if eq .Name "OnAfterResponse" }}
@@ -113,15 +107,7 @@ func (h *Handler) handleRequest(req *Request) {
 		h.writeError(req.ID, MethodNotFound, "method not found")
 {{- else }}
 	case {{ .Method }}:
-		{{- if contains .Action "onInit" }}
-		if h.onInit != nil {
-			if err := h.onInit(); err != nil {
-				h.writeError(req.ID, InternalError, err.Error())
-				return
-			}
-		}
-		h.writeResult(req.ID, WireInitResult{OK: true})
-		{{- else if contains .Action "onCommandsList" }}
+		{{- if contains .Action "onCommandsList" }}
 		if h.onCommandsList == nil {
 			h.writeError(req.ID, MethodNotFound, "commands/list not implemented")
 			return
@@ -164,19 +150,6 @@ func (h *Handler) handleRequest(req *Request) {
 			return
 		}
 		h.writeResult(req.ID, out)
-		{{- else if contains .Action "WireListModels" }}
-		h.writeResult(req.ID, WireListModelsResult{Models: h.models})
-		{{- else if contains .Action "onStream" }}
-		if h.onStream == nil {
-			h.writeError(req.ID, MethodNotFound, "wire/stream not implemented")
-			return
-		}
-		result, err := h.onStream(req.Params)
-		if err != nil {
-			h.writeError(req.ID, InternalError, err.Error())
-			return
-		}
-		h.writeRawResult(req.ID, result)
 		{{- else if contains .Action "onBeforeRequest" }}
 		if h.onBeforeRequest == nil {
 			h.writeError(req.ID, MethodNotFound, "context/before_request not implemented")
@@ -339,15 +312,6 @@ func (h *Handler) writeResult(id any, result any) {
 	resp := Response{
 		JSONRPC: "2.0",
 		Result:  data,
-		ID:      id,
-	}
-	h.writer.Encode(resp)
-}
-
-func (h *Handler) writeRawResult(id any, raw json.RawMessage) {
-	resp := Response{
-		JSONRPC: "2.0",
-		Result:  raw,
 		ID:      id,
 	}
 	h.writer.Encode(resp)

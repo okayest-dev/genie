@@ -21,12 +21,6 @@ constants:
     value: "commands/run"
   - name: MethodCommandsHelp
     value: "commands/help"
-  - name: MethodWireInit
-    value: "wire/init"
-  - name: MethodWireStream
-    value: "wire/stream"
-  - name: MethodWireListModels
-    value: "wire/list_models"
   - name: MethodContextBeforeRequest
     value: "context/before_request"
   - name: MethodContextAfterResponse
@@ -110,9 +104,6 @@ types:
       - name: Tools
         json: tools
         type: bool
-      - name: Wires
-        json: wires
-        type: bool
       - name: Providers
         json: providers
         type: bool
@@ -149,32 +140,6 @@ types:
       - name: Version
         json: version
         type: int
-
-  - name: WireInitResult
-    fields:
-      - name: OK
-        json: ok
-        type: bool
-
-  - name: ModelDef
-    fields:
-      - name: ID
-        json: id
-        type: string
-      - name: Name
-        json: name
-        type: string
-        omitempty: true
-      - name: ContextWindow
-        json: context_window
-        type: int
-        omitempty: true
-
-  - name: WireListModelsResult
-    fields:
-      - name: Models
-        json: models
-        type: "[]ModelDef"
 
   - name: ToolDef
     fields:
@@ -453,18 +418,12 @@ handler:
         type: "*json.Encoder"
       - name: caps
         type: Capabilities
-      - name: models
-        type: "[]ModelDef"
-      - name: onInit
-        type: "func() error"
       - name: onCommandsList
         type: "func() ([]CommandDef, error)"
       - name: onCommandsRun
         type: "func(name, arguments string) (CommandsRunResult, error)"
       - name: onCommandsHelp
         type: "func(name string) (CommandsHelpResult, error)"
-      - name: onStream
-        type: "func(request json.RawMessage) (json.RawMessage, error)"
       - name: onBeforeRequest
         type: "func(request ContextRequest) (ContextRequest, error)"
       - name: onAfterResponse
@@ -485,18 +444,6 @@ handler:
         type: "func(error, phase, partial string) (LifecycleTurnErrorResult, error)"
 
   methods:
-    - name: SetModels
-      receiver: "*Handler"
-      params:
-        - name: models
-          type: "[]ModelDef"
-
-    - name: OnInit
-      receiver: "*Handler"
-      params:
-        - name: fn
-          type: "func() error"
-
     - name: OnCommandsList
       receiver: "*Handler"
       params:
@@ -514,12 +461,6 @@ handler:
       params:
         - name: fn
           type: "func(name string) (CommandsHelpResult, error)"
-
-    - name: OnStream
-      receiver: "*Handler"
-      params:
-        - name: fn
-          type: "func(request json.RawMessage) (json.RawMessage, error)"
 
     - name: OnBeforeRequest
       receiver: "*Handler"
@@ -597,14 +538,6 @@ handler:
         - name: result
           type: any
 
-    - name: writeRawResult
-      receiver: "*Handler"
-      params:
-        - name: id
-          type: any
-        - name: raw
-          type: json.RawMessage
-
     - name: writeError
       receiver: "*Handler"
       params:
@@ -624,18 +557,12 @@ handler:
   dispatch:
     - method: MethodCapabilitiesList
       action: "writeResult with caps"
-    - method: MethodWireInit
-      action: "call onInit, write WireInitResult{OK: true}"
     - method: MethodCommandsList
       action: "call onCommandsList, write CommandsListResult"
     - method: MethodCommandsRun
       action: "call onCommandsRun, write result"
     - method: MethodCommandsHelp
       action: "call onCommandsHelp, write result"
-    - method: MethodWireListModels
-      action: "writeResult with WireListModelsResult{Models: models}"
-    - method: MethodWireStream
-      action: "call onStream with params, write raw result"
     - method: MethodContextBeforeRequest
       action: "call onBeforeRequest, write ContextBeforeRequestResult"
     - method: MethodContextAfterResponse

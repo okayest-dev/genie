@@ -17,9 +17,6 @@ const (
 	MethodCommandsList           = "commands/list"
 	MethodCommandsRun            = "commands/run"
 	MethodCommandsHelp           = "commands/help"
-	MethodWireInit               = "wire/init"
-	MethodWireStream             = "wire/stream"
-	MethodWireListModels         = "wire/list_models"
 	MethodContextBeforeRequest   = "context/before_request"
 	MethodContextAfterResponse   = "context/after_response"
 	MethodContextCompact         = "context/compact"
@@ -83,7 +80,6 @@ func NewSuccessResponse(id any, result any) (*Response, error) {
 
 type Capabilities struct {
 	Tools     bool `json:"tools"`
-	Wires     bool `json:"wires"`
 	Providers bool `json:"providers"`
 	// Commands registers user-typed slash commands the plugin exposes in the
 	// REPL as /<plugin> <command>, discovered via commands/list and driven via
@@ -108,7 +104,7 @@ type Capabilities struct {
 // HasAny reports whether the plugin declares at least one capability. A plugin
 // that declares none is a protocol/validation error.
 func (c *Capabilities) HasAny() bool {
-	return c.Tools || c.Wires || c.Providers || c.Commands || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
+	return c.Tools || c.Providers || c.Commands || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
 		c.LifecycleRequestBuilt || c.LifecycleToolBefore || c.LifecycleToolAfter || c.LifecycleResponseReady || c.LifecycleTurnError
 }
 
@@ -118,7 +114,6 @@ type PresenceMask int
 
 const (
 	PresenceTools PresenceMask = 1 << iota
-	PresenceWires
 	PresenceProviders
 	PresenceCommands
 	PresenceBeforeRequest
@@ -137,9 +132,6 @@ func (c *Capabilities) Mask() PresenceMask {
 	var m PresenceMask
 	if c.Tools {
 		m |= PresenceTools
-	}
-	if c.Wires {
-		m |= PresenceWires
 	}
 	if c.Providers {
 		m |= PresenceProviders
@@ -201,7 +193,7 @@ type ContentItem struct {
 	Text string `json:"text"`
 }
 
-// CommandDef is one slash command a wire plugin registers over the commands
+// CommandDef is one slash command a plugin registers over the commands
 // capability, addressed in the REPL as /<plugin> <name>. Usage is free-text,
 // the contract for the command's arguments, not a structured schema.
 type CommandDef struct {
@@ -241,19 +233,6 @@ type CommandsHelpParams struct {
 // CommandsHelpResult is the curated help text for the requested plugin/command.
 type CommandsHelpResult struct {
 	Text string `json:"text"`
-}
-
-type WireInitParams struct {
-	Config map[string]any `json:"config"`
-}
-
-type WireInitResult struct {
-	OK bool `json:"ok"`
-}
-
-
-type WireListModelsResult struct {
-	Models []ModelDef `json:"models"`
 }
 
 // ContextMessage is the canonical message shape passed to and returned from a
@@ -391,14 +370,6 @@ type LifecycleTurnErrorParams struct {
 // already-failing turn for downstream hooks/harness.
 type LifecycleTurnErrorResult struct {
 	Fatal bool `json:"fatal,omitempty"`
-}
-
-type ModelDef struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
-	// ContextWindow is the model's authoritative context window in tokens as
-	// reported by the model-provider plugin. Zero means unknown.
-	ContextWindow int `json:"context_window,omitempty"`
 }
 
 var (

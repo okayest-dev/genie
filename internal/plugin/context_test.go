@@ -125,7 +125,7 @@ func TestContextSeamUnknownActiveErrors(t *testing.T) {
 }
 
 func TestContextSeamInactiveCapabilityErrors(t *testing.T) {
-	plugins := []*Plugin{mkPlugin("a", Capabilities{Wires: true})}
+	plugins := []*Plugin{mkPlugin("a", Capabilities{Tools: true})}
 	_, err := NewContextSeam(plugins, ContextConfig{ActiveCompact: "a"}, nil)
 	if err == nil {
 		t.Fatal("expected error when active plugin lacks the compact capability")
