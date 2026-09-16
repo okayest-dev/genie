@@ -20,9 +20,6 @@ const (
 	MethodCommandsList = "commands/list"
 	MethodCommandsRun = "commands/run"
 	MethodCommandsHelp = "commands/help"
-	MethodWireInit = "wire/init"
-	MethodWireStream = "wire/stream"
-	MethodWireListModels = "wire/list_models"
 	MethodContextBeforeRequest = "context/before_request"
 	MethodContextAfterResponse = "context/after_response"
 	MethodContextCompact = "context/compact"
@@ -68,7 +65,6 @@ type Error struct {
 
 type Capabilities struct {
 	Tools bool `json:"tools"`
-	Wires bool `json:"wires"`
 	Providers bool `json:"providers"`
 	Commands bool `json:"commands"`
 	BeforeRequest bool `json:"context_before"`
@@ -81,20 +77,6 @@ type Capabilities struct {
 	LifecycleResponseReady bool `json:"lifecycle_response_ready"`
 	LifecycleTurnError bool `json:"lifecycle_turn_error"`
 	Version int `json:"version"`
-}
-
-type WireInitResult struct {
-	OK bool `json:"ok"`
-}
-
-type ModelDef struct {
-	ID string `json:"id"`
-	Name string `json:"name,omitempty"`
-	ContextWindow int `json:"context_window,omitempty"`
-}
-
-type WireListModelsResult struct {
-	Models []ModelDef `json:"models"`
 }
 
 type ToolDef struct {
@@ -235,12 +217,9 @@ type Handler struct {
 	scanner *bufio.Scanner
 	writer *json.Encoder
 	caps Capabilities
-	models []ModelDef
-	onInit func() error
 	onCommandsList func() ([]CommandDef, error)
 	onCommandsRun func(name, arguments string) (CommandsRunResult, error)
 	onCommandsHelp func(name string) (CommandsHelpResult, error)
-	onStream func(request json.RawMessage) (json.RawMessage, error)
 	onBeforeRequest func(request ContextRequest) (ContextRequest, error)
 	onAfterResponse func(request ContextRequest, usage Usage) (Usage, error)
 	onCompact func(request ContextRequest) (ContextRequest, error)
@@ -261,14 +240,6 @@ func NewHandler(caps Capabilities) *Handler {
 	}
 }
 
-func (h *Handler) SetModels(models []ModelDef) {
-	h.models = models
-}
-
-func (h *Handler) OnInit(fn func() error) {
-	h.onInit = fn
-}
-
 func (h *Handler) OnCommandsList(fn func() ([]CommandDef, error)) {
 	h.onCommandsList = fn
 }
@@ -279,10 +250,6 @@ func (h *Handler) OnCommandsRun(fn func(name, arguments string) (CommandsRunResu
 
 func (h *Handler) OnCommandsHelp(fn func(name string) (CommandsHelpResult, error)) {
 	h.onCommandsHelp = fn
-}
-
-func (h *Handler) OnStream(fn func(request json.RawMessage) (json.RawMessage, error)) {
-	h.onStream = fn
 }
 
 func (h *Handler) OnBeforeRequest(fn func(request ContextRequest) (ContextRequest, error)) {
@@ -344,14 +311,6 @@ func (h *Handler) handleRequest(req *Request) {
 	switch req.Method {
 	case MethodCapabilitiesList:
 		h.writeResult(req.ID, h.caps)
-	case MethodWireInit:
-		if h.onInit != nil {
-			if err := h.onInit(); err != nil {
-				h.writeError(req.ID, InternalError, err.Error())
-				return
-			}
-		}
-		h.writeResult(req.ID, WireInitResult{OK: true})
 	case MethodCommandsList:
 		if h.onCommandsList == nil {
 			h.writeError(req.ID, MethodNotFound, "commands/list not implemented")
@@ -395,19 +354,6 @@ func (h *Handler) handleRequest(req *Request) {
 			return
 		}
 		h.writeResult(req.ID, out)
-	case MethodWireListModels:
-		h.writeResult(req.ID, WireListModelsResult{Models: h.models})
-	case MethodWireStream:
-		if h.onStream == nil {
-			h.writeError(req.ID, MethodNotFound, "wire/stream not implemented")
-			return
-		}
-		result, err := h.onStream(req.Params)
-		if err != nil {
-			h.writeError(req.ID, InternalError, err.Error())
-			return
-		}
-		h.writeRawResult(req.ID, result)
 	case MethodContextBeforeRequest:
 		if h.onBeforeRequest == nil {
 			h.writeError(req.ID, MethodNotFound, "context/before_request not implemented")
@@ -567,15 +513,6 @@ func (h *Handler) writeResult(id any, result any) {
 	resp := Response{
 		JSONRPC: "2.0",
 		Result:  data,
-		ID:      id,
-	}
-	h.writer.Encode(resp)
-}
-
-func (h *Handler) writeRawResult(id any, raw json.RawMessage) {
-	resp := Response{
-		JSONRPC: "2.0",
-		Result:  raw,
 		ID:      id,
 	}
 	h.writer.Encode(resp)

@@ -70,7 +70,7 @@ func (m *Manifest) HasCapability(cap string) bool {
 }
 
 func (m *Manifest) Validate() error {
-	validCaps := map[string]bool{"tools": true, "wires": true, "providers": true}
+	validCaps := map[string]bool{"tools": true, "providers": true}
 	for _, c := range m.Capabilities {
 		if !validCaps[c] {
 			return fmt.Errorf("unknown capability: %s", c)

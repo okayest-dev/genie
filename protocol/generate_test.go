@@ -50,9 +50,6 @@ func TestGenerateMethodConstants(t *testing.T) {
 
 	expected := []string{
 		`MethodCapabilitiesList = "capabilities/list"`,
-		`MethodWireInit = "wire/init"`,
-		`MethodWireStream = "wire/stream"`,
-		`MethodWireListModels = "wire/list_models"`,
 		`MethodContextBeforeRequest = "context/before_request"`,
 		`MethodContextAfterResponse = "context/after_response"`,
 		`MethodContextCompact = "context/compact"`,
@@ -67,6 +64,18 @@ func TestGenerateMethodConstants(t *testing.T) {
 	for _, want := range expected {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing method constant: %s", want)
+		}
+	}
+
+	// The subprocess wire seam is gone from the protocol: the wire/stream
+	// methods must not be generated (og-z1m.7).
+	for _, gone := range []string{
+		`MethodWireInit = "wire/init"`,
+		`MethodWireStream = "wire/stream"`,
+		`MethodWireListModels = "wire/list_models"`,
+	} {
+		if strings.Contains(src, gone) {
+			t.Errorf("wire method constant must not be generated: %s", gone)
 		}
 	}
 }
@@ -97,9 +106,6 @@ func TestGenerateTypes(t *testing.T) {
 		"type Response struct",
 		"type Error struct",
 		"type Capabilities struct",
-		"type WireInitResult struct",
-		"type ModelDef struct",
-		"type WireListModelsResult struct",
 		"type CommandDef struct",
 		"type CommandsListResult struct",
 		"type CommandsRunParams struct",
@@ -114,8 +120,14 @@ func TestGenerateTypes(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(src, "ContextWindow int `json:\"context_window,omitempty\"`") {
-		t.Error("missing ModelDef.ContextWindow field")
+	for _, gone := range []string{
+		"type WireInitResult struct",
+		"type ModelDef struct",
+		"type WireListModelsResult struct",
+	} {
+		if strings.Contains(src, gone) {
+			t.Errorf("wire type must not be generated: %s", gone)
+		}
 	}
 }
 
@@ -126,12 +138,9 @@ func TestGenerateHandler(t *testing.T) {
 	handlerParts := []string{
 		"type Handler struct",
 		"func NewHandler(caps Capabilities) *Handler",
-		"func (h *Handler) SetModels(",
-		"func (h *Handler) OnInit(",
 		"func (h *Handler) OnCommandsList(",
 		"func (h *Handler) OnCommandsRun(",
 		"func (h *Handler) OnCommandsHelp(",
-		"func (h *Handler) OnStream(",
 		"func (h *Handler) OnBeforeRequest(",
 		"func (h *Handler) OnAfterResponse(",
 		"func (h *Handler) OnCompact(",
@@ -139,13 +148,22 @@ func TestGenerateHandler(t *testing.T) {
 		"func (h *Handler) Run() error",
 		"func (h *Handler) handleRequest(",
 		"func (h *Handler) writeResult(",
-		"func (h *Handler) writeRawResult(",
 		"func (h *Handler) writeError(",
 	}
 
 	for _, want := range handlerParts {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing handler part: %s", want)
+		}
+	}
+
+	for _, gone := range []string{
+		"func (h *Handler) SetModels(",
+		"func (h *Handler) OnInit(",
+		"func (h *Handler) OnStream(",
+	} {
+		if strings.Contains(src, gone) {
+			t.Errorf("wire handler method must not be generated: %s", gone)
 		}
 	}
 }
@@ -156,12 +174,9 @@ func TestGenerateDispatch(t *testing.T) {
 
 	cases := []string{
 		"case MethodCapabilitiesList:",
-		"case MethodWireInit:",
 		"case MethodCommandsList:",
 		"case MethodCommandsRun:",
 		"case MethodCommandsHelp:",
-		"case MethodWireListModels:",
-		"case MethodWireStream:",
 		"case MethodPing:",
 		"case MethodShutdown:",
 		"default:",
@@ -170,6 +185,16 @@ func TestGenerateDispatch(t *testing.T) {
 	for _, want := range cases {
 		if !strings.Contains(src, want) {
 			t.Errorf("missing dispatch case: %s", want)
+		}
+	}
+
+	for _, gone := range []string{
+		"case MethodWireInit:",
+		"case MethodWireListModels:",
+		"case MethodWireStream:",
+	} {
+		if strings.Contains(src, gone) {
+			t.Errorf("wire dispatch case must not be generated: %s", gone)
 		}
 	}
 }

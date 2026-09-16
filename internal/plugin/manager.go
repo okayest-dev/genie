@@ -22,16 +22,7 @@ const (
 	PingInterval   = 30 * time.Second
 	ShutdownGrace  = 2 * time.Second
 	ShutdownForce  = 2 * time.Second
-	// StreamTimeout is the timeout applied to a wire plugin's wire/stream
-	// completion RPC. Completions legitimately take longer than the 5s
-	// RequestTimeout used for quick RPCs (tool calls, pings, hooks).
-	StreamTimeout = 10 * time.Minute
 )
-
-// streamResync is how long StreamWire waits for the late completion response
-// of a timed-out stream before deactivating the plugin, so the codec pipeline
-// resyncs instead of the next RPC swallowing a stale response.
-var streamResync = 30 * time.Second
 
 // ReservedSlashNames are built-in REPL slash commands that plugins may not
 // shadow. A plugin whose display name matches one of these is rejected at load.
@@ -47,59 +38,47 @@ var ReservedSlashNames = map[string]bool{
 }
 
 type Plugin struct {
-	Name          string
-	Path          string
-	Manifest      *Manifest
-	Capabilities  Capabilities
-	Tools         []ToolDef
-	Commands      []CommandDef
-	Models        []ModelDef
-	Cmd           *exec.Cmd
-	Codec         *Codec
-	streamTimeout time.Duration
-	mu            sync.Mutex
-	Active        bool
-	Cancel        context.CancelFunc
-	Done          chan struct{}
-	wg            sync.WaitGroup
+	Name         string
+	Path         string
+	Manifest     *Manifest
+	Capabilities Capabilities
+	Tools        []ToolDef
+	Commands     []CommandDef
+	Cmd          *exec.Cmd
+	Codec        *Codec
+	mu           sync.Mutex
+	Active       bool
+	Cancel       context.CancelFunc
+	Done         chan struct{}
+	wg           sync.WaitGroup
 }
 
 type Manager struct {
-	plugins       map[string]*Plugin
-	pluginOrder   []string
-	pluginsMu     sync.RWMutex
-	toolReg       *tools.Registry
-	wireRegistry  map[llm.Wire]llm.Factory
-	pluginDir     string
-	enableList    []string
-	disableList   []string
-	streamTimeout time.Duration
-	wg            sync.WaitGroup
-	ctx           context.Context
-	cancel        context.CancelFunc
+	plugins     map[string]*Plugin
+	pluginOrder []string
+	pluginsMu   sync.RWMutex
+	toolReg     *tools.Registry
+	pluginDir   string
+	enableList  []string
+	disableList []string
+	wg          sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // Option configures a Manager.
 type Option func(*Manager)
 
-// WithStreamTimeout sets the per-call timeout a wire plugin's wire/stream
-// completion RPC may run for before genie starts treating it as hung.
-func WithStreamTimeout(d time.Duration) Option {
-	return func(m *Manager) { m.streamTimeout = d }
-}
-
 func NewManager(pluginDir string, enableList, disableList []string, toolReg *tools.Registry, opts ...Option) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
-		plugins:       make(map[string]*Plugin),
-		toolReg:       toolReg,
-		wireRegistry:  make(map[llm.Wire]llm.Factory),
-		pluginDir:     pluginDir,
-		enableList:    enableList,
-		disableList:   disableList,
-		streamTimeout: StreamTimeout,
-		ctx:           ctx,
-		cancel:        cancel,
+		plugins:     make(map[string]*Plugin),
+		toolReg:     toolReg,
+		pluginDir:   pluginDir,
+		enableList:  enableList,
+		disableList: disableList,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -232,15 +211,14 @@ func (m *Manager) loadPlugin(path string) error {
 	ctx, cancel := context.WithCancel(m.ctx)
 	codec := NewCodec(stdout, stdin)
 	p := &Plugin{
-		Name:          name,
-		Path:          path,
-		Manifest:      manifest,
-		Cmd:           cmd,
-		Codec:         codec,
-		streamTimeout: m.streamTimeout,
-		Active:        true,
-		Cancel:        cancel,
-		Done:          make(chan struct{}),
+		Name:     name,
+		Path:     path,
+		Manifest: manifest,
+		Cmd:      cmd,
+		Codec:    codec,
+		Active:   true,
+		Cancel:   cancel,
+		Done:     make(chan struct{}),
 	}
 
 	m.pluginsMu.Lock()
@@ -281,14 +259,7 @@ func (m *Manager) loadPlugin(path string) error {
 		}
 	}
 
-	if p.Capabilities.Wires {
-		if err := p.loadWires(); err != nil {
-			p.Close()
-			return fmt.Errorf("load wires: %w", err)
-		}
-	}
-
-	slog.Info("plugin loaded", "name", name, "tools", len(p.Tools), "commands", len(p.Commands), "wires", p.Capabilities.Wires)
+	slog.Info("plugin loaded", "name", name, "tools", len(p.Tools), "commands", len(p.Commands))
 	return nil
 }
 
@@ -417,69 +388,6 @@ func normalizeCommands(defs []CommandDef) []CommandDef {
 
 func isSingleToken(name string) bool {
 	return name != "" && !strings.HasPrefix(name, "/") && !strings.ContainsAny(name, " \t\n")
-}
-
-func (p *Plugin) loadWires() error {
-	req := &Request{
-		JSONRPC: "2.0",
-		Method:  MethodWireInit,
-		Params:  mustMarshal(map[string]any{"config": map[string]any{}}),
-		ID:      3,
-	}
-	if err := p.Codec.WriteRequest(req); err != nil {
-		return err
-	}
-
-	resp, err := p.Codec.ReadResponse()
-	if err != nil {
-		return err
-	}
-	if resp.Error != nil {
-		return fmt.Errorf("wire/init: %w", resp.Error)
-	}
-
-	var result WireInitResult
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return fmt.Errorf("parse wire/init: %w", err)
-	}
-	if !result.OK {
-		return fmt.Errorf("wire/init failed")
-	}
-
-	models, err := p.listModels()
-	if err != nil {
-		slog.Warn("wire/list_models failed, continuing without models", "plugin", p.Name, "error", err)
-	} else {
-		p.Models = models
-		slog.Info("plugin models loaded", "plugin", p.Name, "models", len(models))
-	}
-
-	return nil
-}
-
-func (p *Plugin) listModels() ([]ModelDef, error) {
-	req := &Request{
-		JSONRPC: "2.0",
-		Method:  MethodWireListModels,
-		ID:      4,
-	}
-	if err := p.Codec.WriteRequest(req); err != nil {
-		return nil, err
-	}
-
-	resp, err := p.Codec.ReadResponse()
-	if err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("wire/list_models: %w", resp.Error)
-	}
-
-	var result WireListModelsResult
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, fmt.Errorf("parse wire/list_models: %w", err)
-	}
-	return result.Models, nil
 }
 
 func (m *Manager) registerPluginTools(p *Plugin) error {
@@ -742,65 +650,9 @@ func (p *Plugin) CallCommand(name, args string) (*CommandsRunResult, error) {
 	}
 }
 
-func (p *Plugin) StreamWire(request json.RawMessage) (json.RawMessage, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if !p.Active {
-		return nil, fmt.Errorf("plugin %s is not active", p.Name)
-	}
-
-	req := &Request{
-		JSONRPC: "2.0",
-		Method:  MethodWireStream,
-		Params:  request,
-		ID:      time.Now().UnixNano(),
-	}
-	if err := p.Codec.WriteRequest(req); err != nil {
-		return nil, err
-	}
-
-	timeout := p.streamTimeout
-	if timeout <= 0 {
-		timeout = StreamTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	respCh := make(chan *Response, 1)
-	go func() {
-		resp, _ := p.Codec.ReadResponse()
-		respCh <- resp
-	}()
-
-	select {
-	case <-ctx.Done():
-		// The completion outran the stream timeout. Don't deactivate yet:
-		// give it a short grace window for the late response to arrive so the
-		// codec pipeline resyncs, instead of the next RPC swallowing a stale
-		// response. Only mark the plugin inactive if it never answers.
-		select {
-		case <-respCh:
-			return nil, fmt.Errorf("wire stream timeout")
-		case <-time.After(streamResync):
-			p.Active = false
-			return nil, fmt.Errorf("wire stream timeout (%s), plugin marked inactive", timeout)
-		}
-	case resp := <-respCh:
-		if resp == nil {
-			p.Active = false
-			return nil, fmt.Errorf("plugin closed connection")
-		}
-		if resp.Error != nil {
-			return nil, fmt.Errorf("wire stream error: %s", resp.Error.Message)
-		}
-		return resp.Result, nil
-	}
-}
-
 // callContext performs a single context-hook RPC round-trip with the plugin
 // and returns the raw result for the caller to decode. It holds the plugin's
-// mutex so a hook cannot interleave with a tool call or stream.
+// mutex so a hook cannot interleave with a tool call.
 func (p *Plugin) callContext(method string, params any) (json.RawMessage, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1015,25 +867,6 @@ func (m *Manager) RegisterToolFactory(factory func() tools.Tool) {
 	if factory != nil {
 		m.toolReg.Register(factory())
 	}
-}
-
-func (m *Manager) RegisterWire(name llm.Wire, factory llm.Factory) error {
-	if _, ok := m.wireRegistry[name]; ok {
-		return fmt.Errorf("wire %q already registered", name)
-	}
-	m.wireRegistry[name] = factory
-	llm.RegisterWire(name, factory)
-	return nil
-}
-
-func (m *Manager) GetWireRegistry() map[llm.Wire]llm.Factory {
-	m.pluginsMu.RLock()
-	defer m.pluginsMu.RUnlock()
-	result := make(map[llm.Wire]llm.Factory, len(m.wireRegistry))
-	for k, v := range m.wireRegistry {
-		result[k] = v
-	}
-	return result
 }
 
 func (m *Manager) Shutdown() {

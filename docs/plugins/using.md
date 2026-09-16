@@ -83,12 +83,9 @@ The three miss messages you'll see and what they mean:
 
 Plugins are sandboxed by failure. A plugin that crashes or hangs is marked inactive and everything it provides degrades to a clear error rather than blocking your session. The harness never respawns a failed plugin.
 
-Streaming-completion calls are the one deliberate exception: the stream completion timeout (`[plugins] wire_stream_timeout`, default 10 minutes — see [configuration](../configuration.md)) gives streaming work much longer than the normal 5-second RPC budget. A completion that outlives even that doesn't kill the plugin — genie waits a short grace period for the late response, and only marks the plugin inactive if it never answers.
-
 | Symptom | Cause | Remedy |
 |---------|-------|--------|
 | `plugin X is not active` | plugin crashed or timed out this session | fix/update the plugin, restart genie |
-| `wire stream timeout` | a completion outran `[plugins] wire_stream_timeout` | raise `wire_stream_timeout`; plugin stays usable |
 | `unknown command: /X` | not a loaded plugin | check `[plugins] enable`; check the name |
 | plugin tools/commands missing | plugin hidden from discovery | `chmod +x` the executable; use a supported layout; check the 16-plugin cap |
 | logs look garbled | plugin wrote to stdout | plugins must log to stderr only |
