@@ -16,17 +16,17 @@ The default discovery directory is `~/.config/genie/plugins/` (XDG-aware). Every
 
 ```
 ~/.config/genie/plugins/
-  bedrock/
-    bedrock           # executable
-    config.toml       # optional, plugin-specific
+  my-plugin/
+    my-plugin          # executable
+    config.toml        # optional, plugin-specific
 ```
 
 **Flat layout (backward compatible)** — binaries and optional manifests side by side:
 
 ```
 ~/.config/genie/plugins/
-  bedrock             # executable
-  bedrock.toml        # optional manifest
+  my-plugin            # executable
+  my-plugin.toml       # optional manifest
 ```
 
 Discovery rules: the host scans the directory for executables, skips directories-as-binaries, hidden files, and non-executables, and loads at most 16. You don't need a manifest — a plugin with no manifest is probed over the protocol instead.
@@ -38,7 +38,7 @@ All of this lives in the `[plugins]` table of `config.toml`:
 ```toml
 [plugins]
 dir = "~/.config/genie/plugins"    # discovery directory
-enable = ["bedrock"]               # allowlist: only these load (empty = all)
+enable = ["my-plugin"]             # allowlist: only these load (empty = all)
 disable = ["broken"]               # denylist (takes precedence over enable)
 ```
 
@@ -46,7 +46,7 @@ disable = ["broken"]               # denylist (takes precedence over enable)
 
 The discovery directory can also be overridden with the `GENIE_PLUGIN_DIR` env var.
 
-When a plugin is disabled it is never spawned — its tools, models, and commands simply don't exist that session.
+When a plugin is disabled it is never spawned — its tools, hooks, and commands simply don't exist that session.
 
 ## Using plugin commands in the REPL
 
@@ -74,20 +74,16 @@ The three miss messages you'll see and what they mean:
 | `/copilot nope` | `copilot: no such command: nope` | plugin exists, command doesn't |
 | `/copilot auth` | `plugin copilot is not active` | plugin loaded then crashed/timed out |
 
-## Using plugin tools and providers
+## Using plugin tools
 
 - **Tools**: a tool plugin's tools appear automatically in the harness's tool list and the model can call them like the built-in ones.
-- **Providers (wires)**: a wire plugin's models become available. Two ways to use one:
-  - Configure `provider = "bedrock"` (or `GENIE_PROVIDER`) — all requests route through that plugin.
-  - Leave `provider` empty and Genie routes by model ID: models a wire plugin reports in `wire/list_models` are routed to it automatically. Pick a model via `/model <id>` or `model = "..."` in config.
-
-Wire plugins bring their own authentication. See [plugin-owned credentials](../adr/0002-plugin-owned-credentials-request-scoped.md) for the model, and the plugin's own docs (e.g. the copilot plugin's `auth` commands) for the concrete flow.
+- **Providers**: provider selection is a config concern, not a plugin one. Every bundled wire ships as a declared `[providers.<name>]` default — zen, openai, anthropic, responses, google, copilot, bedrock — and the active one is chosen with the top-level `provider` key (or `GENIE_PROVIDER`). See [configuration](../configuration.md) for the provider config surface.
 
 ## When plugins misbehave
 
 Plugins are sandboxed by failure. A plugin that crashes or hangs is marked inactive and everything it provides degrades to a clear error rather than blocking your session. The harness never respawns a failed plugin.
 
-Wire plugin completions are the one deliberate exception: `wire/stream` has its own, much longer timeout (`[plugins] wire_stream_timeout`, default 10 minutes — see [configuration](../configuration.md)), and a completion that outlives even that doesn't kill the plugin. Genie waits a short grace period for the late response to resync the protocol, and only marks the plugin inactive if it never answers.
+Streaming-completion calls are the one deliberate exception: the stream completion timeout (`[plugins] wire_stream_timeout`, default 10 minutes — see [configuration](../configuration.md)) gives streaming work much longer than the normal 5-second RPC budget. A completion that outlives even that doesn't kill the plugin — genie waits a short grace period for the late response, and only marks the plugin inactive if it never answers.
 
 | Symptom | Cause | Remedy |
 |---------|-------|--------|

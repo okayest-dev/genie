@@ -1,6 +1,6 @@
 # Writing Genie plugins
 
-This guide is for building a plugin: an executable that extends Genie over the NDJSON-RPC protocol. If you're just installing plugins, see [using plugins](using.md) instead; for the complete wire reference see the [protocol reference](protocol.md).
+This guide is for building a plugin: an executable that extends Genie over the NDJSON-RPC protocol. If you're just installing plugins, see [using plugins](using.md) instead; for the complete protocol reference see the [protocol reference](../plugin-protocol.md).
 
 ## The mental model
 
@@ -15,7 +15,7 @@ You can write a plugin in any language — the protocol is newline-delimited JSO
 A `capabilities/list` response is the only hard requirement:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"tools":false,"wires":false,"providers":false,"commands":false,"version":1}}
+{"jsonrpc":"2.0","id":1,"result":{"tools":false,"commands":false,"version":1}}
 ```
 
 Plus `ping` and `shutdown` to stay alive cleanly:
@@ -24,7 +24,7 @@ Plus `ping` and `shutdown` to stay alive cleanly:
 {"jsonrpc":"2.0","id":123,"result":{}}
 ```
 
-Everything else — tools, wires, commands, hooks — is declared in that handshake and implemented as methods. Declare a capability and Genie will call its methods; don't declare it and Genie never calls them. The [example plugin](protocol.md#example-plugin-python) at the bottom of the protocol reference is a complete, runnable skeleton.
+Everything else — tools, commands, hooks — is declared in that handshake and implemented as methods. Declare a capability and Genie will call its methods; don't declare it and Genie never calls them. The [example plugin](../plugin-protocol.md#example-plugin-python) at the bottom of the protocol reference is a complete, runnable skeleton.
 
 ## Laying out the plugin
 
@@ -46,7 +46,7 @@ version = "1.0.0"
 capabilities = ["tools", "commands"]
 ```
 
-The valid manifest capability names mirror the handshake capability names: `tools`, `wires`, `providers`, `commands`, `context_before`, `context_after`, `context_compact`, `context_condense`, `lifecycle_request_built`, `lifecycle_tool_before`, `lifecycle_tool_after`, `lifecycle_response_ready`, `lifecycle_turn_error`. The host enforces capabilities from the `capabilities/list` handshake it probes at load — the manifest declares intent and is validated structurally.
+The valid manifest capability names mirror the handshake capability names: `tools`, `commands`, `context_before`, `context_after`, `context_compact`, `context_condense`, `lifecycle_request_built`, `lifecycle_tool_before`, `lifecycle_tool_after`, `lifecycle_response_ready`, `lifecycle_turn_error`. The host enforces capabilities from the `capabilities/list` handshake it probes at load — the manifest declares intent and is validated structurally.
 
 ## Tool plugins
 
@@ -66,20 +66,6 @@ Rules of the road:
 - Results are truncated and counted like built-in tool output — keep them as tight as you can.
 - A failing call returns a JSON-RPC error with a human-readable message; the error is fed back to the model as a tool error and the loop continues.
 - A tool whose name collides with a built-in (`read`, `write`, `edit`, `bash`) is dropped with a warning — the built-in wins.
-
-## Wire plugins
-
-Declare `wires: true`. A wire plugin *is* a provider: Genie stops talking HTTP to a provider directly and streams requests through your plugin instead.
-
-Three methods:
-
-- `wire/init` — receives config (`{ "config": { "api_key", "base_url" } }`) once at load.
-- `wire/list_models` — returns `{ "models": [ { "id", "name"?, "context_window"? } ] }`. The models you list are what the user can route to. `context_window` is the *authoritative* token budget Genie plans against; omit it when your provider doesn't expose one — Genie never guesses (users can still override per model in config).
-- `wire/stream` — receives a full chat request and streams back response events (text deltas, complete tool calls, finish reason, usage).
-
-Genie routes to your plugin in two ways: the user sets `provider = "<plugin-name>"` (all requests go through you), or leaves it unset and Genie routes by model ID — the models your `wire/list_models` reports are wired to your plugin automatically.
-
-Wire plugins own their auth end-to-end. Keep durable credentials in a plugin-owned file under your XDG data dir (owner-only permissions, atomic writes); derive short-lived tokens in memory per request. See [ADR-0002](../adr/0002-plugin-owned-credentials-request-scoped.md) for the request-scoped credential model the copilot plugin uses.
 
 ## Lifecycle plugins
 
@@ -143,7 +129,6 @@ The plugin protocol's Go bindings are **generated from `protocol/schema.yaml`** 
 - [ ] `ping` and `shutdown` answered; clean exit on shutdown.
 - [ ] All logging to stderr, never stdout.
 - [ ] Every `tools/list` name is documented for the model; `tools/call` results are text-only.
-- [ ] Wire models report a real `context_window` or omit it — never guess.
 - [ ] Commands are single-token names with one-line descriptions for `/help`.
 - [ ] Interactive work returns promptly from the RPC; long work runs in your own process.
 - [ ] Tests against a scripted genie host or a replay of the protocol.

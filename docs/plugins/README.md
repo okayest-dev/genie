@@ -5,18 +5,17 @@ Genie's plugin framework extends the harness with external processes. A plugin i
 | Kind | What it does |
 |------|--------------|
 | **Tool plugin** | Adds new tools the model can call (`tools/list`, `tools/call`) |
-| **Wire plugin** | Adds a new provider backend, e.g. AWS Bedrock or GitHub Copilot (`wire/*`) |
 | **Lifecycle plugin** | Hooks into the agent loop around each turn (`lifecycle/*`) |
 | **Command plugin** | Exposes user-typed slash commands in the REPL (`commands/*`) |
 | **Context plugin** | Hooks into context management around each request (`context/*`) |
 
-A single plugin can declare any combination of these — a wire plugin commonly also registers slash commands (e.g. `/copilot auth login`).
+A single plugin can declare any combination of these — a tool plugin can also register slash commands (e.g. `/copilot auth login`). Provider backends are bundled in-tree, not pluggable: adding a provider means a config table, not a plugin (see [configuration](../configuration.md)).
 
 The protocol is NDJSON-RPC 2.0 over stdio: the host writes a JSON request per line to the plugin's stdin, the plugin replies with one JSON response per line on stdout. Logging goes to stderr. Everything a plugin can do is a method on this protocol.
 
 - **[Installing and using plugins](using.md)** — for people who want to make Genie do more.
 - **[Writing plugins](authoring.md)** — for people who want to build a plugin of their own.
-- **[Protocol reference](protocol.md)** — the complete wire-level reference (methods, params, results, error handling), plus a worked example.
+- **[Protocol reference](../plugin-protocol.md)** — the complete wire-level reference (methods, params, results, error handling), plus a worked example.
 
 ## How plugins fit in
 
@@ -39,7 +38,6 @@ At startup the host asks each plugin `capabilities/list`. The plugin's answer de
 | Capability | Methods | Purpose |
 |------------|---------|---------|
 | `tools` | `tools/list`, `tools/call` | Add tools the model can invoke |
-| `wires` | `wire/init`, `wire/stream`, `wire/list_models` | Serve a provider backend |
 | `commands` | `commands/list`, `commands/run`, optional `commands/help` | Register REPL slash commands |
 | `context_before` | `context/before_request` | Rewrite every outgoing request |
 | `context_after` | `context/after_response` | Observe completed turns (usage deltas) |
@@ -51,7 +49,7 @@ At startup the host asks each plugin `capabilities/list`. The plugin's answer de
 | `lifecycle_response_ready` | `lifecycle/response_ready` | Rewrite streamed response deltas |
 | `lifecycle_turn_error` | `lifecycle/turn_error` | Observe a turn that exited with an error |
 
-See [the protocol reference](protocol.md#capabilitieslist) for the exact wire shape and [writing plugins](authoring.md) for what each capability is for.
+See [the protocol reference](../plugin-protocol.md#capabilitieslist) for the exact wire shape and [writing plugins](authoring.md) for what each capability is for.
 
 ## Failure semantics
 
