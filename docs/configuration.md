@@ -25,14 +25,14 @@ An env var that is set but empty leaves the file value in place. The API key nev
 
 ## Top-level keys
 
+The old flat `model`, `base_url`, `api_key_env`, `wire`, and `gateway` keys are
+gone — every boot parameter lives in a `[providers.<name>]` table (next
+section). The only top-level selector left is `provider`. The remaining
+top-level keys:
+
 | Key | Type | Default | Env var | Meaning |
 |-----|------|---------|---------|---------|
-| `model` | string | `big-pickle` | `GENIE_MODEL` | model ID for the session |
-| `base_url` | string | `https://opencode.ai/zen/v1` | `GENIE_BASE_URL` | provider wire base URL |
-| `api_key_env` | string | `OPENCODE_API_KEY` | `GENIE_API_KEY_ENV` | name of the env var holding the API key |
-| `wire` | string | `""` (auto-detect) | `GENIE_WIRE` | wire protocol override: `openai`, `anthropic`, `responses`, `google`, `copilot`, `bedrock` |
-| `provider` | string | `""` | `GENIE_PROVIDER` | route all requests through a loaded wire plugin by name |
-| `gateway` | string | `""` | `GENIE_GATEWAY` | URL override for the provider gateway (replaces `base_url`) |
+| `provider` | string | `""` (none) | `GENIE_PROVIDER` | selects the active provider, named from the `[providers]` tables |
 | `instruction_file` | string | `""` (none) | `GENIE_INSTRUCTION_FILE` | extra agent-instruction file, loaded after the built-in default |
 | `session_dir` | string | `~/.config/genie/sessions` | `GENIE_SESSION_DIR` | where sessions and their change ledgers are stored |
 | `bash_timeout` | integer (seconds) | `120` | `GENIE_BASH_TIMEOUT` | default kill timeout for `bash` tool commands |
@@ -40,18 +40,15 @@ An env var that is set but empty leaves the file value in place. The API key nev
 
 Notes:
 
-- `wire` empty auto-detects from the model ID prefix: `claude-*` → anthropic, `gpt-*` → responses, `gemini-*` → google, anything else → openai. An explicit `wire` beats detection, and an invalid value is a startup error.
-- `provider` is meaningful only when a plugin with that name is loaded and supports wires; it routes the whole session through it.
-- `gateway` is applied by overriding `base_url`; it exists for provider gateways that front multiple endpoints.
+- `provider` names a table under `[providers]` (or a shipped default — every
+  valid provider ships as one). Unset, the REPL prompts you to pick from the
+  declared providers; one-shot `-p` mode falls back to the first declared
+  provider with a warning. A provider named in `provider` but with no table
+  and no shipped default fails at startup.
 - `instruction_file` errors at startup if the file is missing.
 
 ```toml
-model = "big-pickle"
-base_url = "https://opencode.ai/zen/v1"
-api_key_env = "OPENCODE_API_KEY"
-wire = "openai"                  # openai | anthropic | responses | google
-# provider = "copilot"
-# gateway = "https://gateway.example.com"
+# provider = "zen"          # select the active provider (default: none)
 # instruction_file = "~/.config/genie/instructions.md"
 # session_dir = "~/.config/genie/sessions"
 bash_timeout = 120
@@ -188,7 +185,7 @@ bash = true
 | `plugins.dir` | string | `~/.config/genie/plugins` | `GENIE_PLUGIN_DIR` | directory where plugin executables are discovered |
 | `plugins.enable` | array of strings | `[]` (all) | — | allowlist of plugin names to load |
 | `plugins.disable` | array of strings | `[]` | — | denylist of plugin names to skip (wins over `enable`) |
-| `plugins.wire_stream_timeout` | integer (seconds) | `600` | `GENIE_PLUGIN_WIRE_STREAM_TIMEOUT` | per-call timeout for a wire plugin's `wire/stream` completion RPC |
+| `plugins.wire_stream_timeout` | integer (seconds) | `600` | `GENIE_PLUGIN_WIRE_STREAM_TIMEOUT` | per-call timeout for a streaming completion RPC |
 
 See [installing and using plugins](plugins/using.md) for the plugin layouts and discovery rules.
 
@@ -199,7 +196,7 @@ See [installing and using plugins](plugins/using.md) for the plugin layouts and 
 dir = "~/.config/genie/plugins"
 enable = ["my-plugin"]      # explicit allowlist (empty = all)
 disable = ["broken-plugin"] # denylist (takes precedence)
-# wire_stream_timeout = 600 # seconds; per-call timeout for wire/stream RPCs
+# wire_stream_timeout = 600 # seconds; per-call timeout for streaming completion RPCs
 ```
 
 ## `[context]` — context management
@@ -261,12 +258,7 @@ The complete set of knobs that can be set from the environment:
 | Variable | Setter for | Values / notes |
 |----------|-----------|----------------|
 | `OPENCODE_API_KEY` | the API key itself (default key holder named by `api_key_env`) | `sk-...` |
-| `GENIE_MODEL` | `model` | model ID |
-| `GENIE_BASE_URL` | `base_url` | provider wire base URL |
-| `GENIE_API_KEY_ENV` | `api_key_env` | name of another env var |
-| `GENIE_WIRE` | `wire` | `openai` \| `anthropic` \| `responses` \| `google` |
-| `GENIE_PROVIDER` | `provider` | a loaded wire plugin's name |
-| `GENIE_GATEWAY` | `gateway` | gateway URL |
+| `GENIE_PROVIDER` | `provider` | a provider name from the `[providers]` tables |
 | `GENIE_INSTRUCTION_FILE` | `instruction_file` | path to an instruction file |
 | `GENIE_SESSION_DIR` | `session_dir` | session storage directory |
 | `GENIE_BASH_TIMEOUT` | `bash_timeout` | seconds, positive integer |

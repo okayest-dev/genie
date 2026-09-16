@@ -1,4 +1,11 @@
-Status: ready-for-agent
+Status: superseded
+
+> Superseded: the config surface described here (flat `model`/`base_url`/
+> `api_key_env`/`wire`/`gateway` keys and their `GENIE_*` overrides) has been
+> replaced by the provider-first `[providers.*]` surface of
+> [ADR-0004](../adr/0004-provider-first-config-bundled-wires.md). Genie is
+> pre-release and the design moved since this spec was written; the
+> [configuration reference](../configuration.md) is authoritative.
 
 # genie — Agent Harness
 

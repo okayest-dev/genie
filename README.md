@@ -100,12 +100,7 @@ Precedence: **defaults < config file < environment variables**.
 # -p mode falls back to the first declared provider with a warning.
 provider = "zen"
 
-# The legacy top-level connection keys (model, base_url, wire, gateway) still
-# parse but no longer shape the startup client (og-z1m.3) — the active
-# provider's table does. They're removed in og-z1m.8.
-# model = "big-pickle"
-# base_url = "https://opencode.ai/zen/v1"
-api_key_env = "OPENCODE_API_KEY"
+# api_key_env, model, base_url, and wire live inside [providers.<name>] tables.
 # instruction_file = ""      # path to agent instruction file
 # session_dir = ""           # defaults to ~/.config/genie/sessions
 bash_timeout = 120
@@ -120,7 +115,7 @@ bash = true
 # dir = "~/.config/genie/plugins"
 # enable = ["my-plugin"]
 # disable = ["broken-plugin"]
-# wire_stream_timeout = 600  # per-call timeout for a wire plugin's stream RPC (seconds)
+# wire_stream_timeout = 600  # per-call timeout for a streaming completion RPC (seconds)
 
 [skills]
 # dirs = ["/custom/skills"]   # replaces the default three-directory stack
@@ -163,7 +158,7 @@ bash = true
 #
 # A provider missing a default model, or naming an unknown wire, fails at
 # startup; duplicate provider tables are rejected. Selecting a provider that
-# has no table (e.g. an uninstalled wire plugin) also fails at startup. With
+# has no table also fails at startup. With
 # no provider selected and no declared providers, startup fails naming the
 # requirement.
 ```
@@ -175,17 +170,14 @@ The default skill discovery stack is, in priority order (lowest wins): `./.genie
 | Variable | Description |
 |----------|-------------|
 | `GENIE_PROVIDER` | Selects the active provider by name (beats the config file's `provider` key) |
-| `GENIE_API_KEY_ENV` | Name of env var holding the API key |
 | `GENIE_INSTRUCTION_FILE` | Path to agent instruction file |
 | `GENIE_SESSION_DIR` | Session storage directory |
 | `GENIE_BASH_TIMEOUT` | Bash command timeout (seconds) |
 | `GENIE_PLUGIN_DIR` | Plugin discovery directory |
-| `GENIE_PLUGIN_WIRE_STREAM_TIMEOUT` | Wire plugin stream RPC timeout (seconds) |
+| `GENIE_PLUGIN_WIRE_STREAM_TIMEOUT` | Streaming completion RPC timeout (seconds) |
 | `GENIE_SKILL_DIR` | Skill discovery directory (replaces all skill dirs) |
 | `GENIE_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
 | `GENIE_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
-
-Legacy env vars (`GENIE_MODEL`, `GENIE_BASE_URL`, `GENIE_WIRE`, `GENIE_GATEWAY`) still parse but no longer shape the startup client (og-z1m.3), which now comes entirely from the active provider's table; they're removed in og-z1m.8.
 
 ### Debug and verbose modes
 
@@ -207,12 +199,9 @@ If a model doesn't support tool calling, the harness retries without tools — l
 
 Genie supports plugins via NDJSON-RPC 2.0 over stdio. Drop an executable into `~/.config/genie/plugins/` and it's loaded automatically.
 
-Wire plugins speak the genie wire plugin protocol (version 1; the schema in `protocol/schema.yaml` is the single source of truth for the generated `wireplugin` package and the `plugins/shared` helpers). A wire plugin reports the models it exposes via `wire/list_models`; each `ModelDef` may carry an optional `context_window` (tokens) so the harness can budget the conversation without guessing.
-
 ### Plugin types
 
 - **Tool plugins** — add new tools to the harness
-- **Wire plugins** — add new provider backends (e.g. AWS Bedrock, GitHub Copilot)
 - **Lifecycle plugins** — hook into the agent loop around each turn
 - **Command plugins** — expose user-typed slash commands (`/<plugin> <command>`, e.g. `/copilot auth`) via the `commands` capability (`commands/list`, `commands/run`, optional `commands/help`); useful for plugin-owned login/credential workflows. Slash names are single-token within the plugin and fully namespaced, so nothing collides with genie's built-in commands.
 
@@ -296,30 +285,19 @@ A TOML file describing the plugin. In directory layout, place it inside the plug
 ```toml
 name = "my-plugin"
 version = "1.0.0"
-capabilities = ["tools", "wires"]
+capabilities = ["tools", "commands"]
 ```
-
-### External provider plugins
-
-Genie's built-in providers cover OpenAI, Anthropic, Google, and Copilot (in-tree). The remaining bundled provider plugin is Bedrock:
-
-| Plugin | Provider | Install |
-|--------|----------|---------|
-| **bedrock** | AWS Bedrock (SigV4, ConverseStream) | `curl -fsSL https://github.com/okayest-dev/genie-bedrock/releases/latest/download/bedrock-linux-amd64 -o ~/.config/genie/plugins/bedrock/bedrock && chmod +x ~/.config/genie/plugins/bedrock/bedrock` |
-
-Each plugin repo contains full setup, config, and usage docs:
-- Bedrock: <https://github.com/okayest-dev/genie-bedrock>
 
 ### Plugin enable/disable
 
 ```toml
 [plugins]
 dir = "~/.config/genie/plugins"
-enable = ["bedrock"]    # explicit allowlist (empty = all)
+enable = ["my-plugin"]  # explicit allowlist (empty = all)
 disable = ["broken"]    # denylist (takes precedence)
 ```
 
-Max 16 plugins loaded concurrently. Plugins that crash or hang are automatically marked inactive. Wire plugin stream completions use their own, much longer timeout (`[plugins] wire_stream_timeout`, default 10 minutes): a completion that outlives it doesn't kill the plugin — genie waits a short grace period for the late response, and only marks the plugin inactive if it never answers.
+Max 16 plugins loaded concurrently. Plugins that crash or hang are automatically marked inactive. Streaming-completion RPCs use their own, much longer timeout (`[plugins] wire_stream_timeout`, default 10 minutes): a completion that outlives it doesn't kill the plugin — genie waits a short grace period for the late response, and only marks the plugin inactive if it never answers.
 
 ## Agent instructions
 

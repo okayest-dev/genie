@@ -87,8 +87,6 @@ Standard JSON-RPC error codes:
   "jsonrpc": "2.0",
   "result": {
     "tools": true,
-    "wires": false,
-    "providers": false,
     "commands": true,
     "context_before": true,
     "context_after": false,
@@ -107,8 +105,6 @@ Standard JSON-RPC error codes:
 
 **Fields**:
 - `tools` (boolean): Plugin provides tools
-- `wires` (boolean): Plugin provides wire protocols
-- `providers` (boolean): Plugin provides provider access (collapsed into wires)
 - `commands` (boolean): Plugin registers slash commands (see `commands/list`)
 - `context_before` (boolean): Plugin declares a `context/before_request` hook
 - `context_after` (boolean): Plugin declares a `context/after_response` hook
@@ -317,95 +313,6 @@ Each command definition contains:
 }
 ```
 
-### wire/init
-
-**Direction**: Host → Plugin
-
-**Purpose**: Initialize a wire plugin with configuration.
-
-**Request**:
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "wire/init",
-  "params": {
-    "config": {
-      "api_key": "...",
-      "base_url": "..."
-    }
-  },
-  "id": 4
-}
-```
-
-**Response**:
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "ok": true
-  },
-  "id": 4
-}
-```
-
-### wire/stream
-
-**Direction**: Host → Plugin
-
-**Purpose**: Send a chat request to the wire plugin and receive a streaming response.
-
-**Request**:
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "wire/stream",
-  "params": {
-    "request": { ... }
-  },
-  "id": 5
-}
-```
-
-**Response**: The plugin should return a response compatible with the wire protocol (streaming chunks).
-
-### wire/list_models
-
-**Direction**: Host → Plugin
-
-**Purpose**: Discover the models this plugin can serve. This is the model-provider contract: each model may carry an authoritative context window that the harness budgets conversations against.
-
-**Request**:
-```json
-{
-  "jsonrpc": "2.0",
-  "method": "wire/list_models",
-  "id": 6
-}
-```
-
-**Response**:
-```json
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "models": [
-      {
-        "id": "claude-sonnet-4-5",
-        "name": "Claude Sonnet 4.5",
-        "context_window": 200000
-      }
-    ]
-  },
-  "id": 6
-}
-```
-
-**Fields** (per model):
-- `id` (string, required): Model identifier used in requests
-- `name` (string, optional): Human-readable display name
-- `context_window` (integer, optional): The model's authoritative context window in tokens, as reported by the plugin's provider. Omit when the provider does not expose one — the harness never guesses. Users can correct a missing or wrong value with a per-model `context.windows` override in `[context]` config, which takes precedence over this field.
-
 ### context/before_request
 
 **Direction**: Host → Plugin
@@ -582,13 +489,13 @@ Plugins may optionally include a `plugin.toml` manifest file next to the executa
 ```toml
 name = "my-plugin"
 version = "1.0.0"
-capabilities = ["tools", "wires"]
+capabilities = ["tools", "commands"]
 ```
 
 **Fields**:
 - `name` (string, required): Plugin name
 - `version` (string, required): Plugin version
-- `capabilities` (array of strings, required): List of capabilities ("tools", "wires", "providers", "commands", "context_before", "context_after", "context_compact", "context_condense", "lifecycle_request_built", "lifecycle_tool_before", "lifecycle_tool_after", "lifecycle_response_ready", "lifecycle_turn_error")
+- `capabilities` (array of strings, required): List of capabilities ("tools", "commands", "context_before", "context_after", "context_compact", "context_condense", "lifecycle_request_built", "lifecycle_tool_before", "lifecycle_tool_after", "lifecycle_response_ready", "lifecycle_turn_error")
 
 If no manifest is present, the host will probe the plugin with `capabilities/list` after spawning.
 
@@ -607,7 +514,7 @@ Configuration options (in `config.toml`):
 ```toml
 [plugins]
 dir = "~/.config/genie/plugins"    # plugin directory
-enable = ["my-tool", "my-wire"] # explicit allowlist (empty = all)
+enable = ["my-tool", "my-command"] # explicit allowlist (empty = all)
 disable = ["broken-plugin"]     # denylist (takes precedence)
 ```
 
@@ -631,7 +538,6 @@ Environment variable override: `GENIE_PLUGIN_DIR`
 ## Name Collision Handling
 
 - **Tool collision**: Plugin tools that collide with built-in tool names are silently dropped (built-in wins). A warning is logged.
-- **Wire collision**: Plugin wires that collide with registered wire names are rejected with a warning. Core wires are never overridden.
 - **Built-in slash name collision**: A plugin whose display name matches a built-in REPL slash command (`help`, `quit`, `exit`, `new`, `changes`, `model`, `provider`, `agent`) is rejected at startup with a warning and skipped — the built-in wins. Plugin command names (`/<plugin> <command>`) share the plugin's namespace and never collide with built-ins.
 
 ## Logging
@@ -656,8 +562,6 @@ def main():
         if req["method"] == "capabilities/list":
             resp["result"] = {
                 "tools": True,
-                "wires": False,
-                "providers": False,
                 "commands": True,
                 "version": 1
             }

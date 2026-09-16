@@ -28,7 +28,7 @@ A turn's in-flight messages are the current-turn spine while it runs, and land i
 The **context window** is the model's authoritative token limit. Genie never guesses it; it resolves a window for each model from, in order:
 
 1. a per-model `context.windows["<model>"]` override in config (wins over everything),
-2. provider data: the context window a wire plugin reports for the model in `wire/list_models`,
+2. provider data: the context window a provider reports for the model,
 3. a provider model-info probe for native wires (probed lazily once per model, cached for the process),
 
 and if nothing authoritative exists the window is **unknown** (`0`) — no invented number.
