@@ -29,6 +29,7 @@ import (
 	"github.com/okayest-dev/genie/internal/plugin"
 	"github.com/okayest-dev/genie/internal/repl"
 	"github.com/okayest-dev/genie/internal/session"
+	"github.com/okayest-dev/genie/internal/skill"
 	"github.com/okayest-dev/genie/internal/tokens"
 	"github.com/okayest-dev/genie/internal/tools"
 	"github.com/okayest-dev/genie/internal/tools/bashtool"
@@ -135,6 +136,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// Build the tool registry from config.
 	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
 
+	// Resolve the skill pool once so agent resolution validates explicit
+	// skills lists against real discovered skills (and inheritance binds the
+	// whole pool rather than an empty list), then bind the same pool into the
+	// instruction layer below.
+	skillPool, poolWarns, err := skill.FilteredPool(cfg.Skills.Dirs, cfg.Skills.Enable, cfg.Skills.Disable)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	for _, w := range poolWarns {
+		fmt.Fprintf(stderr, "warning: %s\n", w.Message)
+	}
+	skillNames := skill.Names(skillPool)
+
 	// Resolve the agent for this run.
 	var runAgent *config.ResolvedAgent
 	agentName := *agentFlag
@@ -144,7 +159,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if agentName != "" {
 		agentReg := resolveAgentReg(cwd)
-		resolved, err := agentReg.GetResolved(agentName, cfg, nil)
+		resolved, err := agentReg.GetResolved(agentName, cfg, skillNames)
 		if err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 3
@@ -182,8 +197,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		runModel = runAgent.Model
 	}
 
+	// Bind the discovered pool to the resolved agent and build the layer.
+	agentSkills := []string(nil)
+	if runAgent != nil {
+		agentSkills = runAgent.Skills
+	}
+	bound, err := skill.BindToAgent(skillPool, agentSkills, agentName)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	skillLayer := skill.BuildSkillLayer(bound)
+
 	// Assemble instruction with agent context.
-	instruction, err := instruct.LoadWithAgent(cfg, runAgent, cwd)
+	instruction, err := instruct.LoadWithAgent(cfg, runAgent, skillLayer, cwd)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1

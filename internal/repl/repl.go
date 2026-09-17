@@ -25,6 +25,7 @@ import (
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/session"
+	"github.com/okayest-dev/genie/internal/skill"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
@@ -232,17 +233,59 @@ func Run(ctx context.Context, cfg *Config) error {
 	}
 }
 
-// resolveInstruction assembles the instruction for the current agent.
+// resolveInstruction assembles the instruction for the current agent,
+// re-running the skill pipeline (discover → filter → bind → build) each turn
+// so SKILL.md edits are picked up without a config reload.
 func resolveInstruction(cfg *Config, agent *config.ResolvedAgent) string {
-	if agent == nil {
+	if agent == nil && cfg.Cfg == nil {
 		return cfg.Instruction
 	}
-	s, err := instruct.LoadWithAgent(cfg.Cfg, agent, cfg.Cwd)
+
+	// Run the skill pipeline with the current agent's bindings.
+	var agentSkills []string
+	agentName := ""
+	if agent != nil {
+		agentSkills = agent.Skills
+		agentName = agent.Name
+	}
+
+	skillLayer, warns, err := skill.Pipeline(
+		cfg.Cfg.Skills.Dirs, cfg.Cfg.Skills.Enable, cfg.Cfg.Skills.Disable,
+		agentSkills, agentName,
+	)
+	if err != nil {
+		slog.Error("skill pipeline failed", "error", err)
+		// Fall through — instruction without skills is still usable.
+	}
+
+	for _, w := range warns {
+		slog.Warn(w.Message)
+	}
+
+	s, err := instruct.LoadWithAgent(cfg.Cfg, agent, skillLayer, cfg.Cwd)
 	if err != nil {
 		slog.Error("failed to resolve instruction", "error", err)
 		return cfg.Instruction
 	}
 	return s
+}
+
+// skillPoolNames returns the globally-filtered discovered skill names for
+// agent resolution validation. The pool is discover-filter at the config
+// level; an agent's explicit skills list is validated against it.
+func skillPoolNames(cfg *Config) []string {
+	if cfg.Cfg == nil {
+		return nil
+	}
+	names, warns, err := skill.PoolNames(cfg.Cfg.Skills.Dirs, cfg.Cfg.Skills.Enable, cfg.Cfg.Skills.Disable)
+	if err != nil {
+		slog.Warn("skillPoolNames: discover failed", "error", err)
+		return nil
+	}
+	for _, w := range warns {
+		slog.Warn(w.Message)
+	}
+	return names
 }
 
 // resolveRegistry returns the tool registry scoped to the current agent.
@@ -287,9 +330,10 @@ func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Confi
 		return
 	}
 
-	// Look up the agent. The skill pool stays empty until the pipeline is
-	// wired in; an agent with explicit skills fails fast here.
-	resolved, err := cfg.AgentReg.GetResolved(agentName, cfg.Cfg, nil)
+	// Look up the agent against the discovered skill pool so explicit skill
+	// bindings validate against real skills.
+	poolNames := skillPoolNames(cfg)
+	resolved, err := cfg.AgentReg.GetResolved(agentName, cfg.Cfg, poolNames)
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 		return
@@ -470,7 +514,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 					_marker = "* "
 				}
 				def, _ := cfg.AgentReg.Get(name)
-				resolved, _ := cfg.AgentReg.GetResolved(name, cfg.Cfg, nil)
+				resolved, _ := cfg.AgentReg.GetResolved(name, cfg.Cfg, skillPoolNames(cfg))
 				modelStr := ""
 				if resolved != nil && resolved.Model != "" {
 					modelStr = fmt.Sprintf("  model: %s", resolved.Model)
@@ -490,7 +534,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		}
 		// Switch agent.
 		target := strings.TrimSpace(parts[1])
-		resolved, err := cfg.AgentReg.GetResolved(target, cfg.Cfg, nil)
+		resolved, err := cfg.AgentReg.GetResolved(target, cfg.Cfg, skillPoolNames(cfg))
 		if err != nil {
 			fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 			return false

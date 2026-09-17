@@ -162,7 +162,7 @@ bash = true
 # requirement.
 ```
 
-The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. See [docs/agent-definitions.md](docs/agent-definitions.md).
+The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. Skills are injected into the instruction between the instruction file and AGENTS.md. See [docs/agent-definitions.md](docs/agent-definitions.md) and [docs/skills.md](docs/skills.md).
 
 ### Environment variables
 

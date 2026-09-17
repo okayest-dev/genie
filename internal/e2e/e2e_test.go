@@ -144,6 +144,7 @@ func providerEnv(t *testing.T, p *fake.Provider) []string {
 	return []string{
 		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + t.TempDir(),
 	}
 }
 
@@ -608,6 +609,7 @@ func TestAGENTSMDInRequest(t *testing.T) {
 	stdout, stderr, code := runInDir(t, workDir, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
 		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + t.TempDir(),
 	}, "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -652,6 +654,7 @@ func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
 	stdout, stderr, code := runInDir(t, workDir, []string{
 		"XDG_CONFIG_HOME=" + cfgDir,
 		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + t.TempDir(),
 	}, "-p", "hi")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -660,6 +663,249 @@ func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	want := "You are genie, a helpful terminal agent.\n---config---\n---agents---"
+	assertSystemMessage(t, p, want)
+}
+
+// writeSkill creates <dir>/<name>/SKILL.md with the given front matter and
+// body, the standard layout skill discovery expects.
+func writeSkill(t *testing.T, dir, name, description, body string) {
+	t.Helper()
+	skillDir := filepath.Join(dir, name)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := fmt.Sprintf("---\nname: %s\ndescription: %s\n---\n", name, description)
+	if body != "" {
+		content += body + "\n"
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSKILLMDInjectedIntoSystemMessage asserts a SKILL.md dropped into a
+// discovery dir is automatically loaded, parsed, and injected into the
+// system message between the instruction file and AGENTS.md (og-uem.11).
+func TestSKILLMDInjectedIntoSystemMessage(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
+	writeSkill(t, skillDir, "beta", "Handles beta tasks.", "Beta body.")
+
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are genie, a helpful terminal agent.\n" +
+		"## Skills\n" +
+		"Available skills — engage a skill when its description matches the current task:\n" +
+		"- alpha: Handles alpha tasks.\n" +
+		"- beta: Handles beta tasks.\n" +
+		"### Skill: alpha\n" +
+		"Alpha body.\n" +
+		"### Skill: beta\n" +
+		"Beta body.\n"
+	assertSystemMessage(t, p, want)
+}
+
+// TestEmptySkillPoolNoLayer asserts an empty discovery dir injects no skill
+// layer, so an agent with no available skills gets the bare default prompt.
+func TestEmptySkillPoolNoLayer(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	stdout, stderr, code := run(t, providerEnv(t, p), "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.")
+}
+
+// TestSKILLMDOrderInInstruction asserts the skill layer sits between the
+// instruction file and AGENTS.md in the system message.
+func TestSKILLMDOrderInInstruction(t *testing.T) {
+	dir := t.TempDir()
+	instFile := filepath.Join(dir, "instructions.md")
+	if err := os.WriteFile(instFile, []byte("---config---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := filepath.Join(dir, "work")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentsMD := filepath.Join(workDir, "AGENTS.md")
+	if err := os.WriteFile(agentsMD, []byte("---agents---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(dir, "skills")
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
+
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\ninstruction_file = %q\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", instFile, p.URL))
+	stdout, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are genie, a helpful terminal agent.\n---config---\n" +
+		"## Skills\n" +
+		"Available skills — engage a skill when its description matches the current task:\n" +
+		"- alpha: Handles alpha tasks.\n" +
+		"### Skill: alpha\n" +
+		"Alpha body.\n\n" +
+		"---agents---"
+	assertSystemMessage(t, p, want)
+}
+
+// TestConfigSkillsEnableAllowlist asserts [skills] enable limits the injected
+// layer to the named skills only.
+func TestConfigSkillsEnableAllowlist(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
+	writeSkill(t, skillDir, "beta", "Handles beta tasks.", "Beta body.")
+
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[skills]\nenable = [\"alpha\"]\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are genie, a helpful terminal agent.\n" +
+		"## Skills\n" +
+		"Available skills — engage a skill when its description matches the current task:\n" +
+		"- alpha: Handles alpha tasks.\n" +
+		"### Skill: alpha\n" +
+		"Alpha body.\n"
+	assertSystemMessage(t, p, want)
+}
+
+// TestAgentSkillsSubset asserts an agent declaring skills binds only what it
+// names, via a local .genie/agents definition (og-uem.11).
+func TestAgentSkillsSubset(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
+	writeSkill(t, skillDir, "beta", "Handles beta tasks.", "Beta body.")
+
+	agentsDir := filepath.Join(dir, ".genie", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentToml := "model = \"test-model\"\nskills = [\"beta\"]\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "parser.toml"), []byte(agentToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
+	stdout, stderr, code := runInDir(t, dir, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-a", "parser", "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are genie, a helpful terminal agent.\n" +
+		"## Skills\n" +
+		"Available skills — engage a skill when its description matches the current task:\n" +
+		"- beta: Handles beta tasks.\n" +
+		"### Skill: beta\n" +
+		"Beta body.\n"
+	assertSystemMessage(t, p, want)
+}
+
+// TestAgentUnknownSkillFailsStartup asserts an agent naming a skill that is
+// not in the discovered pool fails startup with a clean error.
+func TestAgentUnknownSkillFailsStartup(t *testing.T) {
+	dir := t.TempDir()
+	skillDir := filepath.Join(dir, "skills")
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
+
+	agentsDir := filepath.Join(dir, ".genie", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentToml := "model = \"test-model\"\nskills = [\"nope\"]\n"
+	if err := os.WriteFile(filepath.Join(agentsDir, "parser.toml"), []byte(agentToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
+	stdout, stderr, code := runInDir(t, dir, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-a", "parser", "-p", "hi")
+	assertCleanFailure(t, stdout, stderr, code, "unknown skill")
+}
+
+// TestConfigSkillsDisableDenylist asserts [skills] disable suppresses a skill
+// from the injected layer even when it exists on disk.
+func TestConfigSkillsDisableDenylist(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
+	writeSkill(t, skillDir, "beta", "Handles beta tasks.", "Beta body.")
+
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[skills]\ndisable = [\"beta\"]\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	want := "You are genie, a helpful terminal agent.\n" +
+		"## Skills\n" +
+		"Available skills — engage a skill when its description matches the current task:\n" +
+		"- alpha: Handles alpha tasks.\n" +
+		"### Skill: alpha\n" +
+		"Alpha body.\n"
 	assertSystemMessage(t, p, want)
 }
 

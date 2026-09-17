@@ -20,7 +20,7 @@ const DefaultPrompt = "You are genie, a helpful terminal agent."
 //  2. The config instruction file, if set (errors if the file is missing).
 //  3. An AGENTS.md in cwd, if present (no parent-directory walk).
 func Load(cfg *config.Config, cwd string) (string, error) {
-	return LoadWithAgent(cfg, nil, cwd)
+	return LoadWithAgent(cfg, nil, "", cwd)
 }
 
 // LoadWithAgent assembles the instruction with an optional agent override.
@@ -28,7 +28,8 @@ func Load(cfg *config.Config, cwd string) (string, error) {
 // When agent is set:
 //   - agent.InstructionFile replaces cfg.InstructionFile (if agent's is non-empty)
 //   - agent.InheritAgentsMD controls AGENTS.md inclusion (default true)
-func LoadWithAgent(cfg *config.Config, agent *config.ResolvedAgent, cwd string) (string, error) {
+//   - skillLayer is injected between the instruction file and AGENTS.md
+func LoadWithAgent(cfg *config.Config, agent *config.ResolvedAgent, skillLayer string, cwd string) (string, error) {
 	instruction := DefaultPrompt
 
 	// Determine which instruction file to use.
@@ -45,6 +46,13 @@ func LoadWithAgent(cfg *config.Config, agent *config.ResolvedAgent, cwd string) 
 		instruction += "\n" + string(b)
 		slog.Info("instruction file loaded", "path", instructionFile, "bytes", len(b))
 		slog.Debug("instruction source", "name", "instruction_file", "path", instructionFile, "bytes", len(b))
+	}
+
+	// Skill layer: injected between instruction file and AGENTS.md.
+	if skillLayer != "" {
+		instruction += "\n" + skillLayer
+		slog.Info("skill layer injected", "bytes", len(skillLayer))
+		slog.Debug("instruction source", "name", "skill_layer", "bytes", len(skillLayer))
 	}
 
 	// AGENTS.md: included unless agent explicitly excludes it.
