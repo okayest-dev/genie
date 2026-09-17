@@ -199,3 +199,70 @@ func TestLoadLogsInstructionTotalLength(t *testing.T) {
 		t.Errorf("log output missing 'instruction assembled':\n%s", out)
 	}
 }
+
+func TestSkillLayerInjectedBetweenFileAndAgentsMD(t *testing.T) {
+	dir := t.TempDir()
+	instFile := filepath.Join(dir, "custom.md")
+	if err := os.WriteFile(instFile, []byte("---config---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agentsMD := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(agentsMD, []byte("---agents---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{InstructionFile: instFile}
+	got, err := LoadWithAgent(cfg, nil, "---skill-layer---", dir)
+	if err != nil {
+		t.Fatalf("LoadWithAgent() error = %v", err)
+	}
+	want := DefaultPrompt + "\n---config---\n---skill-layer---\n---agents---"
+	if got != want {
+		t.Errorf("LoadWithAgent() = %q, want %q", got, want)
+	}
+}
+
+func TestSkillLayerEmptyIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	instFile := filepath.Join(dir, "custom.md")
+	if err := os.WriteFile(instFile, []byte("---config---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{InstructionFile: instFile}
+	got, err := LoadWithAgent(cfg, nil, "", dir)
+	if err != nil {
+		t.Fatalf("LoadWithAgent() error = %v", err)
+	}
+	want := DefaultPrompt + "\n---config---"
+	if got != want {
+		t.Errorf("LoadWithAgent() = %q, want %q", got, want)
+	}
+}
+
+func TestSkillLayerWithoutInstructionFile(t *testing.T) {
+	dir := t.TempDir()
+	agentsMD := filepath.Join(dir, "AGENTS.md")
+	if err := os.WriteFile(agentsMD, []byte("---agents---"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{}
+	got, err := LoadWithAgent(cfg, nil, "---skill-layer---", dir)
+	if err != nil {
+		t.Fatalf("LoadWithAgent() error = %v", err)
+	}
+	want := DefaultPrompt + "\n---skill-layer---\n---agents---"
+	if got != want {
+		t.Errorf("LoadWithAgent() = %q, want %q", got, want)
+	}
+}
+
+func TestSkillLayerLogsInjection(t *testing.T) {
+	buf := captureInfo(t)
+	cfg := &config.Config{}
+	if _, err := LoadWithAgent(cfg, nil, "## Skills\n- test: desc\n", t.TempDir()); err != nil {
+		t.Fatalf("LoadWithAgent() error = %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "skill layer injected") {
+		t.Errorf("log output missing 'skill layer injected':\n%s", out)
+	}
+}
