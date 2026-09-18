@@ -412,9 +412,20 @@ func (p *Plugin) monitor(ctx context.Context) {
 	ticker := time.NewTicker(PingInterval)
 	defer ticker.Stop()
 
-	waitCh := make(chan error, 1)
+	// Wait for process exit in a dedicated goroutine and close p.Done there.
+	// Closing p.Done must not depend on this goroutine being scheduled to
+	// run its select loop: Shutdown() cancels ctx and then calls p.Close(),
+	// which waits on p.Done while the monitor is itself blocked in Close()
+	// waiting for the plugin mutex. With exit-detect in its own goroutine,
+	// Close() returns as soon as the plugin answers the shutdown request
+	// instead of burning the full grace+force budget.
+	waitCh := make(chan struct{}, 1)
 	go func() {
-		waitCh <- p.Cmd.Wait()
+		if err := p.Cmd.Wait(); err != nil {
+			slog.Warn("plugin process exited", "plugin", p.Name, "error", err)
+		}
+		close(p.Done)
+		waitCh <- struct{}{}
 	}()
 
 	for {
@@ -428,12 +439,8 @@ func (p *Plugin) monitor(ctx context.Context) {
 				p.Close()
 				return
 			}
-		case err := <-waitCh:
-			if err != nil {
-				slog.Warn("plugin process exited", "plugin", p.Name, "error", err)
-			}
+		case <-waitCh:
 			p.Active = false
-			close(p.Done)
 			return
 		}
 	}
