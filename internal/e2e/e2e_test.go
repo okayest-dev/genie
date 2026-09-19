@@ -2469,9 +2469,12 @@ func TestInteractiveWriteOnceSpentPromptsAgain(t *testing.T) {
 }
 
 // runSIGINTAtPrompt starts the binary, sends initial on stdin, waits until
-// marker appears on stdout, sends SIGINT, then closes stdin and returns
-// stdout, stderr and the exit code.
-func runSIGINTAtPrompt(t *testing.T, dir string, env []string, initial, marker string) (string, string, int) {
+// marker appears on stdout, sends SIGINT, waits for followup, then quits and
+// returns stdout, stderr and the exit code. Stdin is deliberately left open
+// until followup so the signal alone resolves the escalation prompt; closing
+// it in the same instant as the signal lets the negotiator reject on EOF first
+// and misroutes the in-flight SIGINT to the turn.
+func runSIGINTAtPrompt(t *testing.T, dir string, env []string, initial, marker, followup string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(binPath)
 	if dir != "" {
@@ -2497,6 +2500,7 @@ func runSIGINTAtPrompt(t *testing.T, dir string, env []string, initial, marker s
 
 	var outBuf bytes.Buffer
 	signaled := false
+	quit := false
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -2510,6 +2514,10 @@ func runSIGINTAtPrompt(t *testing.T, dir string, env []string, initial, marker s
 			if !signaled && strings.Contains(outBuf.String(), marker) {
 				signaled = true
 				cmd.Process.Signal(os.Interrupt)
+			}
+			if signaled && !quit && strings.Contains(outBuf.String(), followup) {
+				quit = true
+				io.WriteString(in, "/quit\n")
 				in.Close()
 			}
 		}
@@ -2545,7 +2553,7 @@ func TestInteractiveCtrlCRejectsAxis(t *testing.T) {
 		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
 		"OPENCODE_API_KEY=test-key",
 		"GENIE_SESSION_DIR=" + t.TempDir(),
-	}, "write output.txt\n", "? (o)nce/(s)ession/(p)ermanent/(r)eject: ")
+	}, "write output.txt\n", "? (o)nce/(s)ession/(p)ermanent/(r)eject: ", "no file written")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
