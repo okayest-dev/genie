@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 // Tool makes surgical text replacements in files.
@@ -49,6 +51,22 @@ type editArgs struct {
 	Path    string `json:"path"`
 	OldText string `json:"oldText"`
 	NewText string `json:"newText"`
+}
+
+// RequiredPermissions declares both the read and the write axis on the target
+// path: an edit reads the file before rewriting it, so both axes are required
+// and the gate chains them in fixed order (read → write) within the single
+// call. The scope rides through the raw (possibly relative) form;
+// normalization happens in the permission store against the tool cwd.
+func (t *Tool) RequiredPermissions(raw json.RawMessage) ([]tools.Requirement, error) {
+	var args editArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %v", err)
+	}
+	return []tools.Requirement{
+		{Axis: "read", Scope: args.Path},
+		{Axis: "write", Scope: args.Path},
+	}, nil
 }
 
 func (t *Tool) Execute(raw json.RawMessage) (string, error) {

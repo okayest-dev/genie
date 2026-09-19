@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 func TestEditSingleReplacement(t *testing.T) {
@@ -278,6 +280,50 @@ func TestEditMultiLineCRLF(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "LINE1") {
 		t.Errorf("replacement not applied: %q", string(data))
+	}
+}
+
+// TestEditImplementsPermissioned pins the deny-point seam: an edit declares
+// both its read and its write on the target, so an out-of-policy edit
+// escalates the chained per-axis flow (read → write).
+func TestEditImplementsPermissioned(t *testing.T) {
+	var _ interface {
+		RequiredPermissions(json.RawMessage) ([]tools.Requirement, error)
+	} = New(t.TempDir())
+}
+
+func TestRequiredPermissions(t *testing.T) {
+	tool := New("/work")
+	args, _ := json.Marshal(map[string]any{
+		"path":    "sub/x.txt",
+		"oldText": "a",
+		"newText": "b",
+	})
+	reqs, err := tool.RequiredPermissions(args)
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	if len(reqs) != 2 {
+		t.Fatalf("got %d requirements, want 2 (read + write)", len(reqs))
+	}
+	if got := reqs[0]; got.Axis != "read" {
+		t.Errorf("reqs[0].Axis = %q, want \"read\"", got.Axis)
+	}
+	if got := reqs[1]; got.Axis != "write" {
+		t.Errorf("reqs[1].Axis = %q, want \"write\"", got.Axis)
+	}
+	for i, got := range reqs {
+		if got.Scope != "sub/x.txt" {
+			t.Errorf("reqs[%d].Scope = %q, want \"sub/x.txt\" (raw path)", i, got.Scope)
+		}
+	}
+}
+
+func TestRequiredPermissionsBadArgs(t *testing.T) {
+	tool := New("/work")
+	_, err := tool.RequiredPermissions(json.RawMessage("{not json"))
+	if err == nil {
+		t.Fatal("RequiredPermissions with malformed args returned nil, want error")
 	}
 }
 

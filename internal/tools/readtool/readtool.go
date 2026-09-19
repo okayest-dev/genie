@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 const (
@@ -56,6 +58,18 @@ type readArgs struct {
 	Path   string `json:"path"`
 	Offset int    `json:"offset"`
 	Limit  int    `json:"limit"`
+}
+
+// RequiredPermissions declares the read axis with the target path as scope,
+// so a read outside the effective read policy escalates like a write does.
+// The scope rides through the raw (possibly relative) form; normalization
+// happens in the permission store against the tool cwd.
+func (t *Tool) RequiredPermissions(raw json.RawMessage) ([]tools.Requirement, error) {
+	var args readArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %v", err)
+	}
+	return []tools.Requirement{{Axis: "read", Scope: args.Path}}, nil
 }
 
 func (t *Tool) Execute(raw json.RawMessage) (string, error) {

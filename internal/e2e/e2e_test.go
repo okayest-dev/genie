@@ -2298,10 +2298,30 @@ models = ["openai-default", "openai-1"]
 // tool call and even requests with a text reply, recording request bodies.
 func writeToolThenText(t *testing.T, path, content, text string) (*httptest.Server, *[]string) {
 	t.Helper()
+	return toolCallThenText(t, "write", map[string]string{"path": path, "content": content}, text)
+}
+
+// toolCallThenText starts a provider that answers odd requests with one tool
+// call and even requests with a text reply, recording request bodies.
+func toolCallThenText(t *testing.T, toolName string, args map[string]string, text string) (*httptest.Server, *[]string) {
+	t.Helper()
+	return toolCallsThenText(t, toolName, []map[string]string{args}, text)
+}
+
+// toolCallsThenText starts a provider that answers the i-th odd request with
+// the i-th tool call (cycling when exhausted) and even requests with a text
+// reply, recording request bodies. callID is deterministic so grants and the
+// request tracking in tests stay comparable.
+func toolCallsThenText(t *testing.T, toolName string, calls []map[string]string, text string) (*httptest.Server, *[]string) {
+	t.Helper()
 	var bodies []string
-	args, err := json.Marshal(map[string]string{"path": path, "content": content})
-	if err != nil {
-		t.Fatal(err)
+	rawCalls := make([][]byte, len(calls))
+	for i, args := range calls {
+		raw, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rawCalls[i] = raw
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -2311,8 +2331,9 @@ func writeToolThenText(t *testing.T, path, content, text string) (*httptest.Serv
 		flusher, _ := w.(http.Flusher)
 		var chunks []string
 		if len(bodies)%2 == 1 {
+			raw := rawCalls[(len(bodies)-1)/2%len(rawCalls)]
 			chunks = []string{
-				fake.ToolCallDelta(0, "call_1", "write", string(args)),
+				fake.ToolCallDelta(0, "call_1", toolName, string(raw)),
 				fake.Finish("tool_calls"),
 				fake.Done,
 			}
@@ -2571,6 +2592,292 @@ func TestInteractiveCtrlCRejectsAxis(t *testing.T) {
 	}
 	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission rejected: write") {
 		t.Errorf("follow-up request missing the reject line; bodies=%v", *bodies)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; bodies=%v", *bodies)
+	}
+}
+
+// permissionEnv builds the env for a permission e2e: a config dir pointing at
+// the scripted provider and a scratch session dir.
+func permissionEnv(t *testing.T, srv *httptest.Server) []string {
+	t.Helper()
+	return []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}
+}
+
+// TestReadInsideBaseScopeRunsSilently: reads under the working tree are inside
+// the restrictive default base (read=["."]), so an in-tree read never pauses
+// the turn for negotiation.
+func TestReadInsideBaseScopeRunsSilently(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "in.txt"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := toolCallThenText(t, "read", map[string]string{"path": "in.txt"}, "read the file")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "read in.txt\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if strings.Contains(stdout, "allow read ") {
+		t.Errorf("stdout = %q, want no escalation prompt for an in-tree read", stdout)
+	}
+	if !strings.Contains(stdout, "read the file") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+}
+
+// TestReadOutsideBaseScopeEscalates: a read outside the read base (deliberately
+// ungated before og-uy5.2) escalates with the terse prompt, like a write does.
+func TestReadOutsideBaseScopeEscalates(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "out.txt")
+	if err := os.WriteFile(outside, []byte("outside data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	srv, _ := toolCallThenText(t, "read", map[string]string{"path": outside}, "read the outside file")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "read "+outside+"\ns\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow read "+outside+"? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+		t.Errorf("stdout = %q, want the terse read escalation prompt for the outside scope", stdout)
+	}
+	if !strings.Contains(stdout, "read the outside file") {
+		t.Errorf("stdout = %q, want the model's follow-up text after the grant", stdout)
+	}
+}
+
+// TestReadSessionGrantReusedNotReprompted: a session-tier read grant covers a
+// later read of the same scope — the granted scope is reusable and not
+// re-prompted (reads now respect the effective policy: base + grants).
+func TestReadSessionGrantReusedNotReprompted(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "out.txt")
+	if err := os.WriteFile(outside, []byte("outside data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	srv, _ := toolCallThenText(t, "read", map[string]string{"path": outside}, "read the outside file")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "read "+outside+"\ns\nread "+outside+"\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if n := strings.Count(stdout, "allow read "); n != 1 {
+		t.Errorf("stdout prompted %d times, want 1 (session grant covers the second read)", n)
+	}
+	if !strings.Contains(stdout, "read the outside file") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+}
+
+// TestHeadlessReadOutsideBaseAutoDenied: with no one to ask, -p denies an
+// uncovered read and feeds the model the composite denied result — reads are
+// no longer silently ungated.
+func TestHeadlessReadOutsideBaseAutoDenied(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "out.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	srv, bodies := toolCallThenText(t, "read", map[string]string{"path": outside}, "done")
+
+	_, stderr, code := runInDir(t, workDir, permissionEnv(t, srv), "-p", "read the outside file")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if len(*bodies) < 2 {
+		t.Fatalf("requests = %d, want the denied read fed back", len(*bodies))
+	}
+	if !strings.Contains((*bodies)[1], "Permission rejected: read "+outside) {
+		t.Errorf("follow-up request missing the read reject line; body=%s", (*bodies)[1])
+	}
+	if !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; body=%s", (*bodies)[1])
+	}
+}
+
+// TestEditOutsideBasePromptsBothAxesInOrder: an edit outside both the read and
+// write base escalates the chained per-axis flow (read → write) within the
+// single call, and runs only when both axes are granted.
+func TestEditOutsideBasePromptsBothAxesInOrder(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(outside, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	srv, _ := toolCallThenText(t, "edit", map[string]string{
+		"path": outside, "oldText": "original", "newText": "edited",
+	}, "edited the file")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit "+outside+"\ns\ns\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	readAt := strings.Index(stdout, "allow read ")
+	writeAt := strings.Index(stdout, "allow write ")
+	if readAt < 0 {
+		t.Errorf("stdout = %q, want a read escalation prompt", stdout)
+	}
+	if writeAt < 0 {
+		t.Errorf("stdout = %q, want a write escalation prompt", stdout)
+	}
+	if readAt >= 0 && writeAt >= 0 && readAt > writeAt {
+		t.Errorf("stdout = %q, want read prompted before write (fixed axis order)", stdout)
+	}
+	if !strings.Contains(stdout, "edited the file") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "edited" {
+		t.Errorf("file = %q, want %q (edit ran when both axes were granted)", got, "edited")
+	}
+}
+
+// TestEditInBasePromptsOnlyWrite: the read axis is already covered by the base
+// for an in-tree file, so an edit escalates only the uncovered write axis.
+func TestEditInBasePromptsOnlyWrite(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := toolCallThenText(t, "edit", map[string]string{
+		"path": "notes.txt", "oldText": "original", "newText": "edited",
+	}, "edited the file")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit notes.txt\ns\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if strings.Contains(stdout, "allow read ") {
+		t.Errorf("stdout = %q, want no read prompt (base already covers it)", stdout)
+	}
+	if n := strings.Count(stdout, "allow write "); n != 1 {
+		t.Errorf("stdout prompted write %d times, want 1", n)
+	}
+	got, err := os.ReadFile(filepath.Join(workDir, "notes.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "edited" {
+		t.Errorf("file = %q, want %q", got, "edited")
+	}
+}
+
+// TestEditFullyCoveredRunsSilently: once both axes on a scope are granted, a
+// later edit of that scope runs without any prompt.
+func TestEditFullyCoveredRunsSilently(t *testing.T) {
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("a b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := toolCallsThenText(t, "edit", []map[string]string{
+		{"path": "notes.txt", "oldText": "a", "newText": "A"},
+		{"path": "notes.txt", "oldText": "b", "newText": "B"},
+	}, "edited the file")
+
+	// The first edit grants session-tier write (read is base-covered); the
+	// second edit is fully covered and must not prompt.
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit notes.txt\ns\nedit notes.txt\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if n := strings.Count(stdout, "allow write "); n != 1 {
+		t.Errorf("stdout prompted write %d times, want 1", n)
+	}
+	if strings.Contains(stdout, "allow read ") {
+		t.Errorf("stdout = %q, want no read prompt", stdout)
+	}
+	got, err := os.ReadFile(filepath.Join(workDir, "notes.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "A B" {
+		t.Errorf("file = %q, want %q (both edits applied)", got, "A B")
+	}
+}
+
+// TestEditRejectedOnWriteAxisDoesNotExecute: rejecting the write axis on an
+// in-tree edit denies the call overall — the file is untouched and the model
+// gets the composite denied result.
+func TestEditRejectedOnWriteAxisDoesNotExecute(t *testing.T) {
+	workDir := t.TempDir()
+	path := filepath.Join(workDir, "notes.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, bodies := toolCallThenText(t, "edit", map[string]string{
+		"path": "notes.txt", "oldText": "original", "newText": "edited",
+	}, "no edit")
+
+	// Read is base-covered, so the single prompt is the write axis; rejecting
+	// it must never reach the edit tool.
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit notes.txt\nr\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow write ") {
+		t.Errorf("stdout = %q, want the write escalation prompt", stdout)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "original" {
+		t.Errorf("file = %q, want %q (edit must not execute on rejection)", got, "original")
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission rejected: write "+filepath.Join(workDir, "notes.txt")) {
+		t.Errorf("follow-up request missing the write reject line; bodies=%v", *bodies)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; bodies=%v", *bodies)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "hint: granted axes remain available") {
+		t.Errorf("follow-up request missing deny hint; bodies=%v", *bodies)
+	}
+}
+
+// TestEditRejectedOnReadAxisDoesNotExecute: the "either axis" counterpart — an
+// edit outside the read base, read rejected. The chain continues to write
+// (granted) but the call stays denied: the composite carries the granted write
+// and the rejected read, and the tool never runs.
+func TestEditRejectedOnReadAxisDoesNotExecute(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "notes.txt")
+	if err := os.WriteFile(outside, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	srv, bodies := toolCallThenText(t, "edit", map[string]string{
+		"path": outside, "oldText": "original", "newText": "edited",
+	}, "no edit")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit "+outside+"\nr\ns\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow read ") {
+		t.Errorf("stdout = %q, want the read escalation prompt", stdout)
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "original" {
+		t.Errorf("file = %q, want %q (edit must not execute when read is rejected)", got, "original")
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission rejected: read "+outside) {
+		t.Errorf("follow-up request missing the read reject line; bodies=%v", *bodies)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: write "+outside) {
+		t.Errorf("follow-up request missing the granted write line; bodies=%v", *bodies)
 	}
 	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "status: call not executed") {
 		t.Errorf("follow-up request missing denied status; bodies=%v", *bodies)
