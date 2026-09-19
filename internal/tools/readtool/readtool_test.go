@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/okayest-dev/genie/internal/tools"
 )
 
 func TestReadFile(t *testing.T) {
@@ -282,6 +284,41 @@ func TestReadDefaultLimit(t *testing.T) {
 	// Default limit should be 2000 lines. With 50 lines, no truncation.
 	if strings.Contains(result, "Showing lines") {
 		t.Errorf("50-line file should not be truncated: %s", result)
+	}
+}
+
+// TestReadImplementsPermissioned pins the deny-point seam: the read tool
+// declares its read requirement, so out-of-policy reads escalate.
+func TestReadImplementsPermissioned(t *testing.T) {
+	var _ interface {
+		RequiredPermissions(json.RawMessage) ([]tools.Requirement, error)
+	} = New(t.TempDir())
+}
+
+func TestRequiredPermissions(t *testing.T) {
+	tool := New("/work")
+	args, _ := json.Marshal(map[string]any{"path": "sub/x.txt"})
+	reqs, err := tool.RequiredPermissions(args)
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requirements, want 1", len(reqs))
+	}
+	got := reqs[0]
+	if got.Axis != "read" {
+		t.Errorf("Axis = %q, want \"read\"", got.Axis)
+	}
+	if got.Scope != "sub/x.txt" {
+		t.Errorf("Scope = %q, want \"sub/x.txt\" (raw path)", got.Scope)
+	}
+}
+
+func TestRequiredPermissionsBadArgs(t *testing.T) {
+	tool := New("/work")
+	_, err := tool.RequiredPermissions(json.RawMessage("{not json"))
+	if err == nil {
+		t.Fatal("RequiredPermissions with malformed args returned nil, want error")
 	}
 }
 
