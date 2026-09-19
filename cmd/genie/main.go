@@ -26,6 +26,7 @@ import (
 	_ "github.com/okayest-dev/genie/internal/llm/openai"
 	_ "github.com/okayest-dev/genie/internal/llm/responses"
 	"github.com/okayest-dev/genie/internal/modelinfo"
+	"github.com/okayest-dev/genie/internal/permissions"
 	"github.com/okayest-dev/genie/internal/plugin"
 	"github.com/okayest-dev/genie/internal/repl"
 	"github.com/okayest-dev/genie/internal/session"
@@ -131,6 +132,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
+	}
+
+	// Build the effective-policy store from the resolved config surface and
+	// the permanent grants. Writes/net/run/env start uncovered under the
+	// restrictive default, so they escalate at the deny point.
+	permStore, err := buildPermissionStore(cwd, cfg.Permissions)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
+	}
+	// Permanent grants persist to the config file; if the path cannot be
+	// resolved they stay in-memory for the run.
+	var permSink permissions.PermanentSink
+	if path, err := config.Path(); err == nil {
+		permSink = func(g permissions.Grant) error {
+			_, err := config.ApplyPermanentGrant(path, config.PermanentGrant{
+				Permission: string(g.Axis),
+				Scope:      g.Scope,
+				Granted:    g.Granted,
+			})
+			return err
+		}
+	} else {
+		slog.Warn("permanent grants will not persist", "error", err)
 	}
 
 	// Build the tool registry from config.
@@ -290,25 +315,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 			agentReg = resolveAgentReg(cwd)
 		}
 		replCfg := &repl.Config{
-			Client:       client,
-			Model:        runModel,
-			Provider:     provider,
-			Providers:    reg,
-			Instruction:  instruction,
-			SessionDir:   cfg.SessionDir,
-			Registry:     runRegistry,
-			Cwd:          cwd,
-			Cfg:          cfg,
-			AgentReg:     agentReg,
-			DefaultAgent: runAgent,
-			BashTimeout:  cfg.BashTimeout,
-			CtxOpts:      ctxOpts,
-			RebuildOpts:  buildContextOpts,
-			AgentOpts:    []agent.Option{agent.WithHooks(lifecycleSeam)},
-			Commands:     &plugin.ManagerCommands{Manager: pluginMgr},
-			Stdin:        os.Stdin,
-			Stdout:       stdout,
-			Stderr:       stderr,
+			Client:          client,
+			Model:           runModel,
+			Provider:        provider,
+			Providers:       reg,
+			Instruction:     instruction,
+			SessionDir:      cfg.SessionDir,
+			Registry:        runRegistry,
+			Cwd:             cwd,
+			Cfg:             cfg,
+			AgentReg:        agentReg,
+			DefaultAgent:    runAgent,
+			BashTimeout:     cfg.BashTimeout,
+			CtxOpts:         ctxOpts,
+			RebuildOpts:     buildContextOpts,
+			AgentOpts:       []agent.Option{agent.WithHooks(lifecycleSeam)},
+			Commands:        &plugin.ManagerCommands{Manager: pluginMgr},
+			Stdin:           os.Stdin,
+			Stdout:          stdout,
+			Stderr:          stderr,
+			PermissionStore: permStore,
+			PermanentSink:   permSink,
 		}
 		err := repl.Run(context.Background(), replCfg)
 		if err != nil {
@@ -347,6 +374,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
 	}
 	turnOpts = append(turnOpts, agent.WithHooks(lifecycleSeam))
+	// Non-interactive: there is no one to ask, so every uncovered
+	// requirement is denied at the gate and fed back to the model.
+	turnOpts = append(turnOpts, agent.WithPermissions(permissions.NewGate(permStore, permissions.DenyAll{}, permSink)))
 	ctxClient := contextmgr.New(client, sess, ctxOpts...)
 	err = agent.RunTurn(ctx, ctxClient, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, turnOpts...)
 
@@ -365,6 +395,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stderr, "session: %s\n", sess.ID)
 	return 0
+}
+
+// buildPermissionStore seeds the effective-policy store from config: the base
+// scopes plus every persisted permanent grant.
+func buildPermissionStore(cwd string, p config.Permissions) (*permissions.Store, error) {
+	store := permissions.New(cwd)
+	base := make(map[permissions.Axis][]string, len(p.Base))
+	for axis, scopes := range p.Base {
+		base[permissions.Axis(axis)] = scopes
+	}
+	store.SetBase(base)
+	for _, g := range p.Permanent {
+		if err := store.GrantPermanent(permissions.Grant{
+			Axis:    permissions.Axis(g.Permission),
+			Scope:   g.Scope,
+			Tier:    permissions.TierPermanent,
+			Granted: g.Granted,
+		}); err != nil {
+			return nil, fmt.Errorf("config: permanent grant: %w", err)
+		}
+	}
+	return store, nil
 }
 
 // resolveAgentReg creates an AgentReg from the standard directories.
@@ -386,7 +438,7 @@ func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration)
 
 	// Register tools.
 	reg.Register(readtool.New(cwd))
-	reg.Register(writetool.New(cwd, tools.AutoDeny{}))
+	reg.Register(writetool.New(cwd))
 	reg.Register(edittool.New(cwd))
 	reg.Register(bashtool.New(cwd, tools.AutoDeny{}, bashTimeout))
 

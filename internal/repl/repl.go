@@ -24,6 +24,7 @@ import (
 	"github.com/okayest-dev/genie/internal/instruct"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/permissions"
 	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/skill"
 	"github.com/okayest-dev/genie/internal/tools"
@@ -122,6 +123,11 @@ type Config struct {
 	// AgentOpts are the agent.RunTurn options (e.g. the lifecycle-hooks seam
 	// via agent.WithHooks) applied to every turn.
 	AgentOpts []agent.Option
+	// PermissionStore is the effective-policy store the deny-point escalation
+	// gate consults. Nil disables the gate (tool calls run ungated).
+	PermissionStore *permissions.Store
+	// PermanentSink persists permanent-tier grants. Nil keeps them in-memory.
+	PermanentSink permissions.PermanentSink
 	// Commands is the plugin command source. When nil, plugin slash
 	// commands are not available.
 	Commands CommandSource
@@ -186,50 +192,74 @@ func Run(ctx context.Context, cfg *Config) error {
 	}
 	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
-	// Set up signal handling for Ctrl+C.
+	// One goroutine owns stdin and fans lines out over a channel. Sharing the
+	// buffered reader with the escalation prompt is what lets ^C interrupt a
+	// prompt without racing a blocked Scan.
+	lines := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(cfg.Stdin)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
+
+	// Set up SIGINT routing. A single consumer drains os.Interrupt and hands
+	// it to whichever of idle/turn/prompt is active, so the escalation prompt
+	// owns delivery while it is live.
+	router := newInterruptRouter()
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
+	go func() {
+		for range sigCh {
+			router.deliver()
+		}
+	}()
 
-	scanner := bufio.NewScanner(cfg.Stdin)
+	// Build the deny-point escalation gate when a policy store is supplied.
+	var gate *permissions.Gate
+	if cfg.PermissionStore != nil {
+		neg := &interactiveNegotiator{lines: lines, out: cfg.Stdout, router: router}
+		gate = permissions.NewGate(cfg.PermissionStore, neg, cfg.PermanentSink)
+	}
+
 	for {
-		// Check for pending interrupt.
+		fmt.Fprint(cfg.Stdout, prompt)
 		select {
-		case <-sigCh:
+		case <-router.idleCh:
 			// Ctrl+C at idle: exit.
 			fmt.Fprintln(cfg.Stderr)
 			return nil
-		default:
-		}
-
-		fmt.Fprint(cfg.Stdout, prompt)
-		if !scanner.Scan() {
-			// EOF or read error.
-			fmt.Fprintln(cfg.Stderr)
-			return nil
-		}
-
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		// 1. Parse @name one-shot (before slash commands).
-		if agentName, rest, ok := parseInlineAgent(line); ok {
-			handleInlineAgent(ctx, agentName, rest, cfg, state, sess, sigCh)
-			continue
-		}
-
-		// 2. Handle slash commands.
-		if strings.HasPrefix(line, "/") {
-			if handleSlashCommand(ctx, line, cfg, state, &sess) {
+		case line, ok := <-lines:
+			if !ok {
+				// EOF or read error.
+				fmt.Fprintln(cfg.Stderr)
 				return nil
 			}
-			continue
-		}
 
-		// 3. Normal turn.
-		runTurn(ctx, cfg, state, line, sess, sigCh)
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			// 1. Parse @name one-shot (before slash commands).
+			if agentName, rest, ok := parseInlineAgent(line); ok {
+				handleInlineAgent(ctx, agentName, rest, cfg, state, sess, router, gate)
+				continue
+			}
+
+			// 2. Handle slash commands.
+			if strings.HasPrefix(line, "/") {
+				if handleSlashCommand(ctx, line, cfg, state, &sess) {
+					return nil
+				}
+				continue
+			}
+
+			// 3. Normal turn.
+			runTurn(ctx, cfg, state, line, sess, router, gate)
+		}
 	}
 }
 
@@ -324,7 +354,7 @@ func parseInlineAgent(line string) (agentName, prompt string, ok bool) {
 }
 
 // handleInlineAgent runs a one-shot agent turn, then reverts state.
-func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Config, state *replState, sess *session.Session, sigCh <-chan os.Signal) {
+func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Config, state *replState, sess *session.Session, router *interruptRouter, gate *permissions.Gate) {
 	if prompt == "" {
 		fmt.Fprintf(cfg.Stderr, "genie: @%s requires a prompt\n", agentName)
 		return
@@ -350,7 +380,7 @@ func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Confi
 	state.currentAgent = resolved
 
 	// Run the turn.
-	runTurn(ctx, cfg, state, prompt, sess, sigCh)
+	runTurn(ctx, cfg, state, prompt, sess, router, gate)
 
 	// Revert.
 	state.currentAgent = state.previousAgent
@@ -359,7 +389,7 @@ func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Confi
 }
 
 // runTurn executes a single agent turn with the current agent state.
-func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, sess *session.Session, sigCh <-chan os.Signal) {
+func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, sess *session.Session, router *interruptRouter, gate *permissions.Gate) {
 	// Resolve instruction for this turn.
 	instruction := resolveInstruction(cfg, state.currentAgent)
 	registry := resolveRegistry(cfg, state.currentAgent)
@@ -370,7 +400,12 @@ func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, 
 	if state.currentAgent != nil {
 		opts = append(opts, agent.WithAgentName(state.currentAgent.Name))
 	}
+	if gate != nil {
+		opts = append(opts, agent.WithPermissions(gate))
+	}
 
+	router.drainTurn()
+	router.set(modeTurn)
 	turnCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	go func() {
@@ -379,7 +414,7 @@ func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, 
 	}()
 
 	select {
-	case <-sigCh:
+	case <-router.turnCh:
 		cancel()
 		fmt.Fprintln(cfg.Stderr, "\n[turn cancelled]")
 	case err := <-errCh:
@@ -388,6 +423,7 @@ func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, 
 			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
 		}
 	}
+	router.set(modeIdle)
 }
 
 // handleSlashCommand processes a slash command and returns true if the REPL

@@ -10,19 +10,9 @@ import (
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
-// alwaysAllow is a Confirmer that always accepts.
-type alwaysAllow struct{}
-
-func (alwaysAllow) Confirm(string) bool { return true }
-
-// neverAllow is a Confirmer that always declines.
-type neverAllow struct{}
-
-func (neverAllow) Confirm(string) bool { return false }
-
 func TestWriteNewFile(t *testing.T) {
 	dir := t.TempDir()
-	tool := New(dir, alwaysAllow{})
+	tool := New(dir)
 	args, _ := json.Marshal(map[string]any{
 		"path":    "hello.txt",
 		"content": "hello world",
@@ -45,7 +35,7 @@ func TestWriteNewFile(t *testing.T) {
 
 func TestWriteAutoCreatesParentDirs(t *testing.T) {
 	dir := t.TempDir()
-	tool := New(dir, alwaysAllow{})
+	tool := New(dir)
 	args, _ := json.Marshal(map[string]any{
 		"path":    "a/b/c/file.txt",
 		"content": "nested",
@@ -68,7 +58,7 @@ func TestWriteAutoCreatesParentDirs(t *testing.T) {
 
 func TestWriteOverCapRejected(t *testing.T) {
 	dir := t.TempDir()
-	tool := New(dir, alwaysAllow{})
+	tool := New(dir)
 	bigContent := strings.Repeat("x", maxContentBytes+1)
 	args, _ := json.Marshal(map[string]any{
 		"path":    "big.txt",
@@ -83,12 +73,12 @@ func TestWriteOverCapRejected(t *testing.T) {
 	}
 }
 
-func TestWriteOverwriteConfirmed(t *testing.T) {
+func TestWriteOverwriteNoGate(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "existing.txt")
 	os.WriteFile(path, []byte("old"), 0o644)
 
-	tool := New(dir, alwaysAllow{})
+	tool := New(dir)
 	args, _ := json.Marshal(map[string]any{
 		"path":    "existing.txt",
 		"content": "new",
@@ -106,31 +96,8 @@ func TestWriteOverwriteConfirmed(t *testing.T) {
 	}
 }
 
-func TestWriteOverwriteDenied(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "existing.txt")
-	os.WriteFile(path, []byte("old"), 0o644)
-
-	tool := New(dir, neverAllow{})
-	args, _ := json.Marshal(map[string]any{
-		"path":    "existing.txt",
-		"content": "new",
-	})
-	_, err := tool.Execute(args)
-	if err == nil {
-		t.Fatal("Execute on denied overwrite returned nil, want error")
-	}
-	if !strings.Contains(err.Error(), "denied by user") {
-		t.Errorf("error = %v, want 'denied by user'", err)
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "old" {
-		t.Errorf("file was modified despite denial: content = %q", string(data))
-	}
-}
-
 func TestWriteMissingPath(t *testing.T) {
-	tool := New(t.TempDir(), alwaysAllow{})
+	tool := New(t.TempDir())
 	args, _ := json.Marshal(map[string]any{"content": "x"})
 	_, err := tool.Execute(args)
 	if err == nil {
@@ -142,7 +109,7 @@ func TestWriteMissingPath(t *testing.T) {
 }
 
 func TestWriteMissingContent(t *testing.T) {
-	tool := New(t.TempDir(), alwaysAllow{})
+	tool := New(t.TempDir())
 	args, _ := json.Marshal(map[string]any{"path": "x.txt"})
 	_, err := tool.Execute(args)
 	if err == nil {
@@ -156,7 +123,7 @@ func TestWriteMissingContent(t *testing.T) {
 func TestWriteAbsolute(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "abs.txt")
-	tool := New("/tmp", alwaysAllow{})
+	tool := New("/tmp")
 	args, _ := json.Marshal(map[string]any{
 		"path":    path,
 		"content": "absolute",
@@ -172,14 +139,14 @@ func TestWriteAbsolute(t *testing.T) {
 }
 
 func TestWriteName(t *testing.T) {
-	tool := New(t.TempDir(), tools.AutoDeny{})
+	tool := New(t.TempDir())
 	if tool.Name() != "write" {
 		t.Errorf("Name() = %q, want %q", tool.Name(), "write")
 	}
 }
 
 func TestWriteParameters(t *testing.T) {
-	tool := New(t.TempDir(), tools.AutoDeny{})
+	tool := New(t.TempDir())
 	params := tool.Parameters()
 	if params == nil {
 		t.Fatal("Parameters() returned nil")
@@ -196,5 +163,44 @@ func TestWriteParameters(t *testing.T) {
 	}
 	if _, ok := props["content"]; !ok {
 		t.Error("Parameters missing 'content' property")
+	}
+}
+
+func TestWriteImplementation(t *testing.T) {
+	tool := New(t.TempDir())
+	if _, ok := any(tool).(interface {
+		RequiredPermissions(json.RawMessage) ([]tools.Requirement, error)
+	}); !ok {
+		t.Fatal("write tool does not implement Permissioned")
+	}
+}
+
+func TestRequiredPermissions(t *testing.T) {
+	tool := New("/work")
+	args, _ := json.Marshal(map[string]any{
+		"path":    "sub/x.txt",
+		"content": "x",
+	})
+	reqs, err := tool.RequiredPermissions(args)
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requirements, want 1", len(reqs))
+	}
+	got := reqs[0]
+	if got.Axis != "write" {
+		t.Errorf("Axis = %q, want \"write\"", got.Axis)
+	}
+	if got.Scope != "sub/x.txt" {
+		t.Errorf("Scope = %q, want \"sub/x.txt\" (raw path)", got.Scope)
+	}
+}
+
+func TestRequiredPermissionsBadArgs(t *testing.T) {
+	tool := New("/work")
+	_, err := tool.RequiredPermissions(json.RawMessage("{not json"))
+	if err == nil {
+		t.Fatal("RequiredPermissions with malformed args returned nil, want error")
 	}
 }

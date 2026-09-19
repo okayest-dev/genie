@@ -1,0 +1,3 @@
+Permission rejected: write /work/x.go — consider an alternative
+status: call not executed
+hint: granted axes remain available — reformulate without the denied axis.

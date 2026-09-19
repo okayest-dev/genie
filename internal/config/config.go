@@ -213,11 +213,30 @@ type Config struct {
 	// DefaultAgent is the name of the agent definition loaded at startup.
 	// Empty means no default agent (current behaviour).
 	DefaultAgent string
+	// Permissions is the resolved per-axis policy surface (base scopes per
+	// axis plus the permanent grants loaded at startup).
+	Permissions Permissions
 	// Context configures harness-level context management (history window).
 	Context   Context
 	Lifecycle Lifecycle
 	Skills    Skills
 	AgentReg  *AgentReg
+}
+
+// Permissions is the resolved permission policy. Base maps each axis name
+// (read/write/net/run/env) to its covered scopes; Permanent carries every
+// [[permissions.permanent]] entry verbatim. The restrictive default is a
+// single read scope (the project tree), with no grant on any other axis.
+type Permissions struct {
+	Base      map[string][]string
+	Permanent []PermanentGrant
+}
+
+// PermanentGrant is one [[permissions.permanent]] entry.
+type PermanentGrant struct {
+	Permission string
+	Scope      string
+	Granted    time.Time
 }
 
 // fileConfig is the TOML schema. Tool booleans and bash_timeout are pointers
@@ -227,17 +246,18 @@ type Config struct {
 // (og-z1m.8). provider keeps its dual role as the file-set selection and the
 // GENIE_PROVIDER env override.
 type fileConfig struct {
-	Provider        string        `toml:"provider"`
-	InstructionFile string        `toml:"instruction_file"`
-	SessionDir      string        `toml:"session_dir"`
-	BashTimeout     *int          `toml:"bash_timeout"` // seconds
-	Tools           toolsFile     `toml:"tools"`
-	Plugins         pluginsFile   `toml:"plugins"`
-	Skills          skillsFile    `toml:"skills"`
-	Context         contextFile   `toml:"context"`
-	Lifecycle       lifecycleFile `toml:"lifecycle"`
-	DefaultAgent    string        `toml:"default_agent"`
-	Providers       providerFiles `toml:"providers"`
+	Provider        string          `toml:"provider"`
+	InstructionFile string          `toml:"instruction_file"`
+	SessionDir      string          `toml:"session_dir"`
+	BashTimeout     *int            `toml:"bash_timeout"` // seconds
+	Tools           toolsFile       `toml:"tools"`
+	Plugins         pluginsFile     `toml:"plugins"`
+	Skills          skillsFile      `toml:"skills"`
+	Context         contextFile     `toml:"context"`
+	Lifecycle       lifecycleFile   `toml:"lifecycle"`
+	DefaultAgent    string          `toml:"default_agent"`
+	Providers       providerFiles   `toml:"providers"`
+	Permissions     permissionsFile `toml:"permissions"`
 }
 
 // providerFiles is the TOML schema for [providers.*]: nested tables keyed by
@@ -258,6 +278,24 @@ type toolsFile struct {
 	Write *bool `toml:"write"`
 	Edit  *bool `toml:"edit"`
 	Bash  *bool `toml:"bash"`
+}
+
+// permissionsFile is the TOML schema for [permissions]: per-axis base scopes
+// (restrictive default read=["."]) plus [[permissions.permanent]] grants
+// carrying the axis, scope and the granted timestamp.
+type permissionsFile struct {
+	Read      []string             `toml:"read"`
+	Write     []string             `toml:"write"`
+	Net       []string             `toml:"net"`
+	Run       []string             `toml:"run"`
+	Env       []string             `toml:"env"`
+	Permanent []permanentGrantFile `toml:"permanent"`
+}
+
+type permanentGrantFile struct {
+	Permission string    `toml:"permission"`
+	Scope      string    `toml:"scope"`
+	Granted    time.Time `toml:"granted"`
 }
 
 type pluginsFile struct {
@@ -334,6 +372,9 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		applyTools(&cfg.Tools, fc.Tools)
 		applyPlugins(&cfg, fc.Plugins, userConfigDir)
 		applySkills(&cfg, fc.Skills)
+		if err := applyPermissions(&cfg.Permissions, fc.Permissions); err != nil {
+			return nil, err
+		}
 		if fc.Context.Turns != nil {
 			if *fc.Context.Turns < 0 {
 				return nil, fmt.Errorf("config: context.turns must be non-negative, got %d", *fc.Context.Turns)
@@ -459,7 +500,40 @@ func defaults(userConfigDir string) Config {
 		PluginDir:   filepath.Join(userConfigDir, "genie", "plugins"),
 		Skills:      Skills{Dirs: defaultSkillDirs(userConfigDir)},
 		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
+		Permissions: Permissions{Base: map[string][]string{"read": {"."}}},
 	}
+}
+
+// applyPermissions overlays the file's [permissions] section on the
+// restrictive default (read=["."], no other axis covered). An axis keyed in
+// the file replaces its default scope list outright (replace-not-merge, like
+// agent tools); permanent grants append verbatim — no dedup at load.
+func applyPermissions(dst *Permissions, src permissionsFile) error {
+	if dst.Base == nil {
+		dst.Base = map[string][]string{}
+	}
+	for axis, scopes := range map[string][]string{
+		"read":  src.Read,
+		"write": src.Write,
+		"net":   src.Net,
+		"run":   src.Run,
+		"env":   src.Env,
+	} {
+		if scopes != nil {
+			dst.Base[axis] = append([]string(nil), scopes...)
+		}
+	}
+	for i, g := range src.Permanent {
+		if g.Permission == "" {
+			return fmt.Errorf("config: permissions.permanent[%d]: missing permission axis", i)
+		}
+		dst.Permanent = append(dst.Permanent, PermanentGrant{
+			Permission: g.Permission,
+			Scope:      g.Scope,
+			Granted:    g.Granted,
+		})
+	}
+	return nil
 }
 
 // defaultSkillDirs is the fresh-install discovery stack in priority order:
@@ -718,6 +792,45 @@ func expandPath(path string) string {
 		}
 	}
 	return path
+}
+
+// Path returns the config file path Load reads and ApplyPermanentGrant writes:
+// <config dir>/genie/config.toml, honoring GENIE_CONFIG_DIR.
+func Path() (string, error) {
+	dir := os.Getenv("GENIE_CONFIG_DIR")
+	if dir == "" {
+		var err error
+		dir, err = os.UserConfigDir()
+		if err != nil {
+			return "", fmt.Errorf("config: %w", err)
+		}
+	}
+	return filepath.Join(dir, "genie", configFileName), nil
+}
+
+// ApplyPermanentGrant appends a [[permissions.permanent]] block to the config
+// file, preserving the existing structure (the block is written at the end,
+// keeping every other table and comment untouched). Missing files are created.
+// Returns the grant's granted timestamp so the caller can update the in-memory
+// policy in lockstep with the on-disk record.
+func ApplyPermanentGrant(path string, g PermanentGrant) (time.Time, error) {
+	if g.Permission == "" {
+		return time.Time{}, fmt.Errorf("config: ApplyPermanentGrant: missing permission axis")
+	}
+	if g.Granted.IsZero() {
+		g.Granted = time.Now().UTC()
+	}
+	block := fmt.Sprintf("\n[[permissions.permanent]]\npermission = %q\nscope = %q\ngranted = %s\n",
+		g.Permission, g.Scope, g.Granted.UTC().Format(time.RFC3339))
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("config: ApplyPermanentGrant: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(block); err != nil {
+		return time.Time{}, fmt.Errorf("config: ApplyPermanentGrant: %w", err)
+	}
+	return g.Granted, nil
 }
 
 func environMap() map[string]string {

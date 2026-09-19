@@ -5,11 +5,14 @@ import (
 	"context"
 	"io"
 	"iter"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/permissions"
 )
 
 // captureStartupClient is a fake wire client that records the parameters its
@@ -293,5 +296,38 @@ func TestPromptProviderChoiceAbortsAtEOF(t *testing.T) {
 				t.Errorf("error = %v, want it to contain %q", err, tc.wantStderr)
 			}
 		})
+	}
+}
+
+// TestBuildPermissionStore seeds base and permanent scopes and rejects an
+// unknown permanent axis.
+func TestBuildPermissionStore(t *testing.T) {
+	cwd := t.TempDir()
+	store, err := buildPermissionStore(cwd, config.Permissions{
+		Base: map[string][]string{"read": {"."}},
+		Permanent: []config.PermanentGrant{
+			{Permission: "write", Scope: "/tmp/granted.txt", Granted: time.Now()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildPermissionStore: %v", err)
+	}
+	if !store.Covered(permissions.AxisRead, filepath.Join(cwd, "a.go")) {
+		t.Error("base read \".\" did not cover a file under cwd")
+	}
+	if !store.Covered(permissions.AxisWrite, "/tmp/granted.txt") {
+		t.Error("permanent write grant not loaded")
+	}
+	if store.Covered(permissions.AxisWrite, filepath.Join(cwd, "x.go")) {
+		t.Error("write covered with no base or permanent grant")
+	}
+	if got := store.PermanentGrants(); len(got) != 1 {
+		t.Errorf("permanent grants = %d, want 1", len(got))
+	}
+
+	if _, err := buildPermissionStore(cwd, config.Permissions{
+		Permanent: []config.PermanentGrant{{Permission: "bogus"}},
+	}); err == nil {
+		t.Fatal("buildPermissionStore accepted an unknown axis; want an error")
 	}
 }
