@@ -78,7 +78,7 @@ The model has access to four tools:
 | Tool | Description |
 |------|-------------|
 | **read** | Read file contents or list directories. Supports offset/limit pagination. Rejects binary files. |
-| **write** | Create or overwrite files. Overwrites require confirmation. Auto-creates parent directories. |
+| **write** | Create or overwrite files. Permission-gated on the write axis (see [Permissions](#permissions)). Auto-creates parent directories. |
 | **edit** | Surgical find-and-replace. Exact, whitespace-sensitive matching. One pair at a time. |
 | **bash** | Run shell commands via `sh -c`. Requires confirmation. 120s timeout (configurable). |
 
@@ -124,6 +124,24 @@ bash = true
 [context]
 # turns = 0   # prior turns of history carried into each new turn; 0 = all
 
+[permissions]
+# Per-axis base policy: scopes already covered without escalation. Restrictive
+# default when the section is absent — read covers the project tree ("./"),
+# and write/net/run/env are empty, so any need on those axes escalates. A
+# keyed axis replaces its default scope list outright (replace-not-merge).
+# read  = ["."]
+# write = []
+# net   = []
+# run   = []
+# env   = []
+
+# Permanent grants loaded at startup and honored across restarts. `granted`
+# timestamps are written by the harness when a permanent grant is negotiated.
+# [[permissions.permanent]]
+# permission = "read"
+# scope      = "/etc"
+# granted    = 2026-09-10T12:00:00Z
+
 [providers]
 # Declared providers, keyed by name. A provider is one wire, one endpoint,
 # one default model. Every valid provider ships as a default — one per
@@ -163,6 +181,25 @@ bash = true
 ```
 
 The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. Skills are injected into the instruction between the instruction file and AGENTS.md. See [docs/agent-definitions.md](docs/agent-definitions.md) and [docs/skills.md](docs/skills.md).
+
+### Permissions
+
+When a tool call needs access the effective policy does not cover, the turn pauses and the harness asks about each axis inline, most-dependent-last in the fixed order read → write → net → run → env:
+
+```
+allow write /work/report.md? (o)nce/(s)ession/(p)ermanent/(r)eject:
+```
+
+Answer with a terse key (`o`/`s`/`p`/`r`) or the full word. A grant covers that scope for the chosen lifetime:
+
+- **once** — just this call (spent on execute, discarded on deny).
+- **session** — until the REPL exits.
+- **permanent** — appended to `~/.config/genie/config.toml` as a `[[permissions.permanent]]` block and honored on every later run.
+- **reject** — the call is not executed; the model gets the grant/reject composite and can reformulate.
+
+The effective policy is the union of the config base, persisted permanent grants, session grants, and single-call grants; the model never sees which tier an authorization came from. `^C` while a prompt is live rejects the current axis (it does not cancel the turn); an unknown answer prints a hint and re-prompts.
+
+Non-interactive `-p` runs have no one to ask: every uncovered requirement is denied and the denial is fed back to the model. Setting the relevant base scope (for example `write = ["."]`) authorizes it up front.
 
 ### Environment variables
 

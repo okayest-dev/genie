@@ -1081,3 +1081,169 @@ func TestSkillsEmptyEnvVarDoesNotOverride(t *testing.T) {
 		t.Errorf("Skills.Dirs = %v, want default stack %v (empty env must not override)", cfg.Skills.Dirs, want)
 	}
 }
+
+// TestPermissionsRestrictiveDefault: no [permissions] section
+// → read=["./"], no other axis covered, no permanent grants.
+func TestPermissionsRestrictiveDefault(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Permissions.Base["read"]; len(got) != 1 || got[0] != "." {
+		t.Errorf("Permissions.Base[read] = %v, want [.]", got)
+	}
+	for _, axis := range []string{"write", "net", "run", "env"} {
+		if got := cfg.Permissions.Base[axis]; len(got) != 0 {
+			t.Errorf("Permissions.Base[%s] = %v, want empty", axis, got)
+		}
+	}
+	if len(cfg.Permissions.Permanent) != 0 {
+		t.Errorf("Permissions.Permanent = %v, want none", cfg.Permissions.Permanent)
+	}
+}
+
+// TestPermissionsBaseReplacesDefault: a [permissions] section replaces the
+// restrictive default per axis (replace-not-merge).
+func TestPermissionsBaseReplacesDefault(t *testing.T) {
+	file := `[permissions]
+read = ["/app", "/etc"]
+write = ["/work"]
+net = ["api.openai.com:443"]
+`
+	cfg, err := Parse([]byte(file), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got := cfg.Permissions.Base["read"]; len(got) != 2 || got[0] != "/app" || got[1] != "/etc" {
+		t.Errorf("Permissions.Base[read] = %v, want [\"/app\" \"/etc\"]", got)
+	}
+	if got := cfg.Permissions.Base["write"]; len(got) != 1 || got[0] != "/work" {
+		t.Errorf("Permissions.Base[write] = %v, want [\"/work\"]", got)
+	}
+	if got := cfg.Permissions.Base["run"]; len(got) != 0 {
+		t.Errorf("Permissions.Base[run] = %v, want empty (replace-not-merge)", got)
+	}
+}
+
+// TestPermissionsPermanentLoads: [[permissions.permanent]] entries load
+// verbatim with their granted timestamp round-tripped as an RFC 3339 time.
+func TestPermissionsPermanentLoads(t *testing.T) {
+	file := `[[permissions.permanent]]
+permission = "write"
+scope = "/work/x.go"
+granted = 2026-09-10T12:00:00Z
+
+[[permissions.permanent]]
+permission = "net"
+scope = "api.openai.com:443"
+granted = 2026-09-11T08:30:00Z
+`
+	cfg, err := Parse([]byte(file), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(cfg.Permissions.Permanent) != 2 {
+		t.Fatalf("Permissions.Permanent = %d entries, want 2", len(cfg.Permissions.Permanent))
+	}
+	if g := cfg.Permissions.Permanent[0]; g.Permission != "write" || g.Scope != "/work/x.go" || g.Granted.IsZero() {
+		t.Errorf("permanent[0] = %+v, want write /work/x.go with a granted time", g)
+	}
+	if g := cfg.Permissions.Permanent[1]; g.Permission != "net" || g.Scope != "api.openai.com:443" {
+		t.Errorf("permanent[1] = %+v, want net api.openai.com:443", g)
+	}
+}
+
+// TestPermissionsPermanentMissingAxisRejected: a permanent grant without a
+// permission axis is a config error.
+func TestPermissionsPermanentMissingAxisRejected(t *testing.T) {
+	file := `[[permissions.permanent]]
+scope = "/work/x.go"
+`
+	_, err := Parse([]byte(file), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted a permanent grant with no permission axis; want an error")
+	}
+}
+
+// TestPermissionsUnknownKeyRejected: an unknown [permissions] sub-key fails
+// fast, matching the rest of the config surface.
+func TestPermissionsUnknownKeyRejected(t *testing.T) {
+	file := `[permissions]
+reade = ["/app"]
+`
+	_, err := Parse([]byte(file), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted unknown [permissions] key; want an error")
+	}
+}
+
+// TestApplyPermanentGrantRoundTrips: appending a permanent grant to a (possibly
+// empty) config file preserves its structure, survives a Load+Parse, and the
+// returned granted timestamp matches what the reloaded grant carries.
+func TestApplyPermanentGrantRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	first := PermanentGrant{Permission: "write", Scope: "/work/x.go"}
+	g1, err := ApplyPermanentGrant(path, first)
+	if err != nil {
+		t.Fatalf("ApplyPermanentGrant(first): %v", err)
+	}
+	second := PermanentGrant{Permission: "net", Scope: "api.openai.com:443", Granted: time.Date(2026, 9, 11, 8, 30, 0, 0, time.UTC)}
+	g2, err := ApplyPermanentGrant(path, second)
+	if err != nil {
+		t.Fatalf("ApplyPermanentGrant(second): %v", err)
+	}
+
+	file, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile: %v", err)
+	}
+	cfg, err := Parse(file, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse after append: %v", err)
+	}
+	if len(cfg.Permissions.Permanent) != 2 {
+		t.Fatalf("Permanent = %d entries, want 2", len(cfg.Permissions.Permanent))
+	}
+	if got := cfg.Permissions.Permanent[0]; got.Permission != "write" || got.Scope != "/work/x.go" || !got.Granted.Equal(g1.Truncate(time.Second)) {
+		t.Errorf("permanent[0] = %+v, want write /work/x.go granted %v (RFC3339 keeps second precision)", got, g1)
+	}
+	if got := cfg.Permissions.Permanent[1]; got.Permission != "net" || got.Scope != "api.openai.com:443" || !got.Granted.Equal(g2) {
+		t.Errorf("permanent[1] = %+v, want net api.openai.com:443 granted %v", got, g2)
+	}
+}
+
+// TestApplyPermanentGrantMissingAxisRejected: appending a permanent grant
+// without a permission axis is an error, and nothing is written to the file.
+func TestApplyPermanentGrantMissingAxisRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	_, err := ApplyPermanentGrant(path, PermanentGrant{Scope: "/work/x.go"})
+	if err == nil {
+		t.Fatal("ApplyPermanentGrant accepted a grant with no permission axis; want an error")
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("file %s exists, want nothing written on error", path)
+	}
+}
+
+// TestPathHonorsConfigDir: Path resolves under GENIE_CONFIG_DIR when set, and
+// under the OS config dir otherwise.
+func TestPathHonorsConfigDir(t *testing.T) {
+	t.Setenv("GENIE_CONFIG_DIR", "/custom/cfg")
+	got, err := Path()
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if want := filepath.Join("/custom/cfg", "genie", configFileName); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+
+	t.Setenv("GENIE_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "/xdg")
+	got, err = Path()
+	if err != nil {
+		t.Fatalf("Path: %v", err)
+	}
+	if want := filepath.Join("/xdg", "genie", configFileName); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+}

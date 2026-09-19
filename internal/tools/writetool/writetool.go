@@ -1,5 +1,6 @@
 // Package writetool implements the write tool: whole-file writes with
-// auto-mkdir for new files, a confirm gate for overwrites, and a 1MB cap.
+// auto-mkdir for new files and a 1MB cap. Overwrite permission is governed by
+// the permission gate (write axis), not a local Confirmer.
 package writetool
 
 import (
@@ -15,14 +16,12 @@ const maxContentBytes = 1 << 20 // 1 MB
 
 // Tool writes files.
 type Tool struct {
-	cwd      string
-	confirmer tools.Confirmer
+	cwd string
 }
 
-// New creates a write tool rooted at cwd. Writes to existing files go
-// through confirmer; new files are always allowed.
-func New(cwd string, confirmer tools.Confirmer) *Tool {
-	return &Tool{cwd: cwd, confirmer: confirmer}
+// New creates a write tool rooted at cwd.
+func New(cwd string) *Tool {
+	return &Tool{cwd: cwd}
 }
 
 func (t *Tool) Name() string        { return "write" }
@@ -48,6 +47,17 @@ func (t *Tool) Parameters() map[string]any {
 type writeArgs struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
+}
+
+// RequiredPermissions declares the write axis with the target path as scope.
+// The scope rides through the raw (possibly relative) form; normalization
+// happens in the permission store against the tool cwd.
+func (t *Tool) RequiredPermissions(raw json.RawMessage) ([]tools.Requirement, error) {
+	var args writeArgs
+	if err := json.Unmarshal(raw, &args); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %v", err)
+	}
+	return []tools.Requirement{{Axis: "write", Scope: args.Path}}, nil
 }
 
 func (t *Tool) Execute(raw json.RawMessage) (string, error) {
@@ -77,12 +87,7 @@ func (t *Tool) Execute(raw json.RawMessage) (string, error) {
 	_, err := os.Stat(absPath)
 	exists := err == nil
 
-	if exists {
-		// Overwrite: go through the confirm gate.
-		if !t.confirmer.Confirm(fmt.Sprintf("overwrite %s?", args.Path)) {
-			return "", fmt.Errorf("write denied by user")
-		}
-	} else {
+	if !exists {
 		// New file: auto-create parent directories.
 		dir := filepath.Dir(absPath)
 		if err := os.MkdirAll(dir, 0o755); err != nil {

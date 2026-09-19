@@ -1,0 +1,4 @@
+Permission granted: net api.github.com:443
+Permission rejected: run python3 — consider an alternative
+status: call not executed
+hint: granted axes remain available — reformulate without the denied axis.

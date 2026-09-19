@@ -15,6 +15,7 @@ import (
 
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/permissions"
 	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/tools"
 )
@@ -25,11 +26,18 @@ type Option func(*turnOptions)
 type turnOptions struct {
 	agentName string
 	hooks     Hooks
+	gate      *permissions.Gate
 }
 
 // WithAgentName attaches an agent name to the user message in the session log.
 func WithAgentName(name string) Option {
 	return func(o *turnOptions) { o.agentName = name }
+}
+
+// WithPermissions attaches the deny-point escalation gate. Nil disables it
+// (every tool call runs ungated).
+func WithPermissions(g *permissions.Gate) Option {
+	return func(o *turnOptions) { o.gate = g }
 }
 
 // WithHooks attaches the lifecycle-hooks seam (a LifecycleSeam in the plugin
@@ -324,6 +332,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 
 			var result string
 			var execErr error
+			var prelude string
 
 			if registry == nil {
 				execErr = fmt.Errorf("no tools registered")
@@ -341,47 +350,73 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 					if err := tools.ValidateArgs(json.RawMessage(args), tool.Parameters()); err != nil {
 						execErr = fmt.Errorf("invalid arguments for %s: %v", tc.Name, err)
 					} else {
-						// Snapshot pre-mutation content for write/edit tools.
-						if ldg != nil && (tc.Name == "write" || tc.Name == "edit") {
-							var largs struct {
-								Path string `json:"path"`
-							}
-							if json.Unmarshal([]byte(args), &largs) == nil && largs.Path != "" {
-								absPath := resolvePath(largs.Path, cwd)
-								if data, err := os.ReadFile(absPath); err == nil {
-									ldg.Snapshot(absPath, string(data))
+						// Deny-point escalation gate: negotiate any uncovered
+						// permission axes before the tool runs. A rejected call
+						// never reaches the tool.
+						allowed := true
+						var decision permissions.Decision
+						if to.gate != nil {
+							if p, ok := tool.(tools.Permissioned); ok {
+								d, gerr := to.gate.Check(ctx, tc.ID, p, json.RawMessage(args))
+								if gerr != nil {
+									execErr = gerr
+									allowed = false
+								} else if !d.Allow {
+									result = d.Denied
+									allowed = false
 								} else {
-									ldg.Snapshot(absPath, "") // New file
+									decision = d
+									prelude = d.Granted
 								}
-								ldg.RecordToolCall(tc.ID)
 							}
 						}
-						result, execErr = tool.Execute(json.RawMessage(args))
-						// Record successful mutations in ledger.
-						if ldg != nil && execErr == nil && (tc.Name == "write" || tc.Name == "edit") {
-							var largs struct {
-								Path    string `json:"path"`
-								Content string `json:"content"`
-							}
-							if json.Unmarshal([]byte(args), &largs) == nil && largs.Path != "" {
-								absPath := resolvePath(largs.Path, cwd)
-								oldContent := ldg.GetSnapshot(absPath)
-								newContent := largs.Content
-								if tc.Name == "edit" {
-									// For edits, read the new content from the file.
+						if allowed {
+							// Snapshot pre-mutation content for write/edit tools.
+							if ldg != nil && (tc.Name == "write" || tc.Name == "edit") {
+								var largs struct {
+									Path string `json:"path"`
+								}
+								if json.Unmarshal([]byte(args), &largs) == nil && largs.Path != "" {
+									absPath := resolvePath(largs.Path, cwd)
 									if data, err := os.ReadFile(absPath); err == nil {
-										newContent = string(data)
+										ldg.Snapshot(absPath, string(data))
+									} else {
+										ldg.Snapshot(absPath, "") // New file
 									}
+									ldg.RecordToolCall(tc.ID)
 								}
-								op := ledger.OpOverwrite
-								if oldContent == "" {
-									op = ledger.OpCreate
-								} else if newContent == "" {
-									op = ledger.OpDelete
-								} else {
-									op = ledger.OpEdit
+							}
+							result, execErr = tool.Execute(json.RawMessage(args))
+							// Once-tier grants are spent when the call resolves.
+							if to.gate != nil {
+								to.gate.Settle(decision)
+							}
+							// Record successful mutations in ledger.
+							if ldg != nil && execErr == nil && (tc.Name == "write" || tc.Name == "edit") {
+								var largs struct {
+									Path    string `json:"path"`
+									Content string `json:"content"`
 								}
-								ldg.RecordMutation(absPath, oldContent, newContent, op)
+								if json.Unmarshal([]byte(args), &largs) == nil && largs.Path != "" {
+									absPath := resolvePath(largs.Path, cwd)
+									oldContent := ldg.GetSnapshot(absPath)
+									newContent := largs.Content
+									if tc.Name == "edit" {
+										// For edits, read the new content from the file.
+										if data, err := os.ReadFile(absPath); err == nil {
+											newContent = string(data)
+										}
+									}
+									op := ledger.OpOverwrite
+									if oldContent == "" {
+										op = ledger.OpCreate
+									} else if newContent == "" {
+										op = ledger.OpDelete
+									} else {
+										op = ledger.OpEdit
+									}
+									ldg.RecordMutation(absPath, oldContent, newContent, op)
+								}
 							}
 						}
 					}
@@ -410,6 +445,12 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 			} else {
 				toolContent = result
 				slog.Info("tool completed", "tool", tc.Name, "result_length", len(result))
+			}
+
+			// Newly-negotiated grants precede the tool result (or its error) so
+			// the model learns the effective set from results only.
+			if prelude != "" {
+				toolContent = prelude + "\n" + toolContent
 			}
 
 			// Add the tool result to the conversation.

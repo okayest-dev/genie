@@ -4,6 +4,7 @@
 package e2e
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -1931,7 +1932,10 @@ func TestLedgerPersistedInHeadlessMode(t *testing.T) {
 	sessionDir := t.TempDir()
 	workDir := t.TempDir()
 	stdout, stderr, code := runInDir(t, workDir, []string{
-		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		// Under the restrictive default write is unauthorized and headless
+		// auto-denies; this test is about ledger recording, so authorize
+		// writes up front.
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")+"\n[permissions]\nwrite = [\".\"]\n"),
 		"OPENCODE_API_KEY=test-key",
 		"GENIE_SESSION_DIR=" + sessionDir,
 	}, "-p", "write output.txt")
@@ -2287,5 +2291,280 @@ models = ["openai-default", "openai-1"]
 	}
 	if strings.Contains(after, "zen-") {
 		t.Errorf("post-switch /model = %q, must not list the old provider's catalog", after)
+	}
+}
+
+// writeToolThenText starts a provider that answers odd requests with a write
+// tool call and even requests with a text reply, recording request bodies.
+func writeToolThenText(t *testing.T, path, content, text string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var bodies []string
+	args, err := json.Marshal(map[string]string{"path": path, "content": content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		var chunks []string
+		if len(bodies)%2 == 1 {
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "write", string(args)),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else {
+			chunks = []string{fake.TextDelta(text), fake.Finish("stop"), fake.Done}
+		}
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &bodies
+}
+
+// TestInteractiveWriteEscalationSessionGrant drives the tracer end-to-end:
+// under the restrictive default a write escalates, the user grants it for the
+// session, the call executes, and a second write to the same scope does not
+// re-prompt.
+func TestInteractiveWriteEscalationSessionGrant(t *testing.T) {
+	srv, bodies := writeToolThenText(t, "output.txt", "hello world", "wrote the file")
+	workDir := t.TempDir()
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "write output.txt\ns\nwrite output.txt\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow write ") || !strings.Contains(stdout, "output.txt? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+		t.Errorf("stdout = %q, want the escalation prompt", stdout)
+	}
+	if !strings.Contains(stdout, "wrote the file") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+	if n := strings.Count(stdout, "allow write "); n != 1 {
+		t.Errorf("stdout prompted %d times, want 1 (session grant covers the second write)", n)
+	}
+	got, err := os.ReadFile(filepath.Join(workDir, "output.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Errorf("file = %q, want %q", got, "hello world")
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: write") {
+		t.Errorf("follow-up request did not carry the grant line; bodies=%v", *bodies)
+	}
+}
+
+// TestHeadlessWriteAutoDenied: with no one to ask, -p denies the uncovered
+// write, never runs it, and feeds the model the composite denied result.
+func TestHeadlessWriteAutoDenied(t *testing.T) {
+	srv, bodies := writeToolThenText(t, "output.txt", "hello world", "done")
+	workDir := t.TempDir()
+
+	_, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}, "-p", "write output.txt")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); !os.IsNotExist(err) {
+		t.Errorf("output.txt exists (err=%v), want it never created", err)
+	}
+	if len(*bodies) < 2 {
+		t.Fatalf("requests = %d, want the denied result fed back", len(*bodies))
+	}
+	if !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; body=%s", (*bodies)[1])
+	}
+	if !strings.Contains((*bodies)[1], "hint: granted axes remain available") {
+		t.Errorf("follow-up request missing deny hint; body=%s", (*bodies)[1])
+	}
+}
+
+// TestPermanentGrantPersistsAcrossRuns: answering "p" writes a permanent grant
+// to config; a later run honors it with no prompt.
+func TestPermanentGrantPersistsAcrossRuns(t *testing.T) {
+	srv, _ := writeToolThenText(t, "output.txt", "hello world", "wrote the file")
+	workDir := t.TempDir()
+	dir := configDir(t, providerConfigAt(srv.URL, "test-model"))
+	env := []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "write output.txt\np\n/quit\n", env)
+	if code != 0 {
+		t.Fatalf("run 1: exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow write ") {
+		t.Errorf("run 1 stdout = %q, want an escalation prompt", stdout)
+	}
+
+	// The grant was appended to the config file.
+	data, err := os.ReadFile(filepath.Join(dir, "genie", "config.toml"))
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if !strings.Contains(string(data), "[[permissions.permanent]]") {
+		t.Errorf("config = %q, want a persisted permanent grant", data)
+	}
+
+	// Second run: no prompt and no grant input; the write is covered.
+	os.Remove(filepath.Join(workDir, "output.txt"))
+	stdout2, stderr2, code := runInDirWithStdin(t, workDir, "write output.txt\n/quit\n", env)
+	if code != 0 {
+		t.Fatalf("run 2: exit code = %d, want 0; stderr=%q", code, stderr2)
+	}
+	if strings.Contains(stdout2, "allow write ") {
+		t.Errorf("run 2 stdout = %q, must not re-prompt for a permanent grant", stdout2)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); err != nil {
+		t.Errorf("output.txt not written on run 2: %v", err)
+	}
+
+	// Third run is headless (-p, auto-deny): the persisted permanent grant is
+	// the only reason the write executes.
+	os.Remove(filepath.Join(workDir, "output.txt"))
+	_, stderr3, code := runInDir(t, workDir, env, "-p", "write output.txt")
+	if code != 0 {
+		t.Fatalf("run 3: exit code = %d, want 0; stderr=%q", code, stderr3)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); err != nil {
+		t.Errorf("output.txt not written on headless run 3: %v", err)
+	}
+}
+
+// TestInteractiveWriteOnceSpentPromptsAgain: a once grant is consumed by the
+// call it authorized, so the same scope prompts again on the next write.
+func TestInteractiveWriteOnceSpentPromptsAgain(t *testing.T) {
+	srv, _ := writeToolThenText(t, "output.txt", "hello world", "wrote the file")
+	workDir := t.TempDir()
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "write output.txt\no\nwrite output.txt\ns\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if n := strings.Count(stdout, "allow write "); n != 2 {
+		t.Errorf("stdout prompted %d times, want 2 (once is spent)", n)
+	}
+}
+
+// runSIGINTAtPrompt starts the binary, sends initial on stdin, waits until
+// marker appears on stdout, sends SIGINT, then closes stdin and returns
+// stdout, stderr and the exit code.
+func runSIGINTAtPrompt(t *testing.T, dir string, env []string, initial, marker string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(binPath)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	cmd.Env = append(os.Environ(), env...)
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatalf("StdinPipe: %v", err)
+	}
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := io.WriteString(in, initial); err != nil {
+		t.Fatalf("write initial stdin: %v", err)
+	}
+
+	var outBuf bytes.Buffer
+	signaled := false
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reader := bufio.NewReader(stdoutPipe)
+		for {
+			b, err := reader.ReadByte()
+			if err != nil {
+				return
+			}
+			outBuf.WriteByte(b)
+			if !signaled && strings.Contains(outBuf.String(), marker) {
+				signaled = true
+				cmd.Process.Signal(os.Interrupt)
+				in.Close()
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		cmd.Process.Kill()
+		t.Fatalf("timed out waiting for the process to exit; stdout=%q stderr=%q", outBuf.String(), stderrBuf.String())
+	}
+	err = cmd.Wait()
+	code := 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			t.Fatalf("Wait: %v", err)
+		}
+	}
+	return outBuf.String(), stderrBuf.String(), code
+}
+
+// TestInteractiveCtrlCRejectsAxis: ^C while the escalation prompt is live
+// rejects the current axis without cancelling the turn; the call never runs
+// and the model gets the denied composite.
+func TestInteractiveCtrlCRejectsAxis(t *testing.T) {
+	srv, bodies := writeToolThenText(t, "output.txt", "hello world", "no file written")
+	workDir := t.TempDir()
+
+	stdout, stderr, code := runSIGINTAtPrompt(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}, "write output.txt\n", "? (o)nce/(s)ession/(p)ermanent/(r)eject: ")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow write ") {
+		t.Errorf("stdout = %q, want the escalation prompt", stdout)
+	}
+	if strings.Contains(stderr, "[turn cancelled]") {
+		t.Errorf("stderr = %q, want the turn to survive the ^C", stderr)
+	}
+	if !strings.Contains(stdout, "no file written") {
+		t.Errorf("stdout = %q, want the model's follow-up text after the rejection", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); !os.IsNotExist(err) {
+		t.Errorf("output.txt exists (err=%v), want it never created", err)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission rejected: write") {
+		t.Errorf("follow-up request missing the reject line; bodies=%v", *bodies)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; bodies=%v", *bodies)
 	}
 }
