@@ -2883,3 +2883,146 @@ func TestEditRejectedOnReadAxisDoesNotExecute(t *testing.T) {
 		t.Errorf("follow-up request missing denied status; bodies=%v", *bodies)
 	}
 }
+
+// TestBashWithURLPromptsNetAndRunChained: a command with a URL extracts both
+// net (host from URL) and run (leading executable) axes, prompting in fixed
+// order net → run, and runs only when both are granted.
+func TestBashWithURLPromptsNetAndRunChained(t *testing.T) {
+	workDir := t.TempDir()
+	srv, _ := toolCallThenText(t, "bash", map[string]string{
+		"command": "curl https://api.example.com/users",
+	}, "command output")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "curl https://api.example.com/users\ns\ns\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// net should be prompted first (axis order: read, write, net, run)
+	netAt := strings.Index(stdout, "allow net ")
+	runAt := strings.Index(stdout, "allow run ")
+	if netAt < 0 {
+		t.Errorf("stdout = %q, want net escalation prompt", stdout)
+	}
+	if runAt < 0 {
+		t.Errorf("stdout = %q, want run escalation prompt", stdout)
+	}
+	if netAt >= 0 && runAt >= 0 && netAt > runAt {
+		t.Errorf("stdout = %q, want net prompted before run (fixed axis order)", stdout)
+	}
+	if !strings.Contains(stdout, "command output") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+}
+
+// TestBashScopeUndeterminedFallsBackToAxisOnly: when the command starts with an
+// operator so no executable can be extracted, the prompt falls back to the
+// axis-only frame (allow run? / allow net?) rather than failing.
+func TestBashScopeUndeterminedFallsBackToAxisOnly(t *testing.T) {
+	workDir := t.TempDir()
+	srv, _ := toolCallThenText(t, "bash", map[string]string{
+		"command": "> /dev/null",
+	}, "command output")
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "> /dev/null\ns\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// Should get an axis-only run prompt (no executable extracted)
+	if !strings.Contains(stdout, "allow run? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+		t.Errorf("stdout = %q, want axis-only run prompt for undetermined scope", stdout)
+	}
+	if !strings.Contains(stdout, "command output") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+}
+
+// TestBashDenialOfOneAxisWithholdsCallKeepsOtherGrants: denying run axis on a
+// command with both net and run keeps the net grant and reports composite deny.
+// The next command to the same host skips the net prompt but re-prompts run.
+func TestBashDenialOfOneAxisWithholdsCallKeepsOtherGrants(t *testing.T) {
+	workDir := t.TempDir()
+	srv, bodies := toolCallsThenText(t, "bash", []map[string]string{
+		{"command": "curl https://api.example.com/data"},
+		{"command": "curl https://api.example.com/other"},
+	}, "second command output")
+
+	// Deny run, grant net on the first call. The call must not execute; the net
+	// grant must persist for the second call to the same host.
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "curl https://api.example.com/data\ns\nr\ncurl https://api.example.com/other\ns\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// First call: both axes prompted in order, call withheld.
+	if n := strings.Count(stdout, "allow net "); n != 1 {
+		t.Errorf("stdout prompted net %d times, want 1 (once for the first call)", n)
+	}
+	if n := strings.Count(stdout, "allow run "); n != 2 {
+		t.Errorf("stdout prompted run %d times, want 2 (reject then re-grant)", n)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission rejected: run curl") {
+		t.Errorf("follow-up request missing run reject line; bodies=%v", *bodies)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: net api.example.com") {
+		t.Errorf("follow-up request missing net grant line; bodies=%v", *bodies)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; bodies=%v", *bodies)
+	}
+	// Second call to the same host: net covered (no re-prompt), run granted,
+	// and the command executes (its result lists the new grant, not a denial).
+	if !strings.Contains(stdout, "second command output") {
+		t.Errorf("stdout = %q, want the second command's follow-up text", stdout)
+	}
+	if len(*bodies) < 4 || !strings.Contains((*bodies)[3], "Permission granted: run curl") {
+		t.Errorf("second-call result missing granted run for the second call; bodies=%v", *bodies)
+	}
+}
+
+// TestBashCoveredAxisNotReprompted: an already-granted executable runs silently
+// without re-prompting the run axis.
+func TestBashCoveredAxisNotReprompted(t *testing.T) {
+	workDir := t.TempDir()
+	srv, _ := toolCallsThenText(t, "bash", []map[string]string{
+		{"command": "echo hi"},
+		{"command": "echo bye"},
+	}, "command output")
+
+	// First call grants run:echo for the session; the second call to echo is
+	// covered and runs without prompting.
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "echo hi\ns\necho bye\n/quit\n", permissionEnv(t, srv))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if n := strings.Count(stdout, "allow run "); n != 1 {
+		t.Errorf("stdout prompted run %d times, want 1 (session grant covers echo)", n)
+	}
+	if !strings.Contains(stdout, "command output") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+}
+
+// TestBashHeadlessAutoDeny: in -p mode with no one to ask, an uncovered bash
+// command is denied and the composite is fed back to the model.
+func TestBashHeadlessAutoDeny(t *testing.T) {
+	workDir := t.TempDir()
+	srv, bodies := toolCallThenText(t, "bash", map[string]string{
+		"command": "curl https://api.example.com/data",
+	}, "done")
+
+	_, stderr, code := runInDir(t, workDir, permissionEnv(t, srv), "-p", "run the curl command")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if len(*bodies) < 2 {
+		t.Fatalf("requests = %d, want the denied result fed back", len(*bodies))
+	}
+	if !strings.Contains((*bodies)[1], "Permission rejected: net ") {
+		t.Errorf("follow-up request missing net reject line; body=%s", (*bodies)[1])
+	}
+	if !strings.Contains((*bodies)[1], "Permission rejected: run ") {
+		t.Errorf("follow-up request missing run reject line; body=%s", (*bodies)[1])
+	}
+	if !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; body=%s", (*bodies)[1])
+	}
+}
