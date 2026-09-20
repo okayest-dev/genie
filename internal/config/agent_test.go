@@ -137,8 +137,9 @@ func TestResolveAgentDefDefaults(t *testing.T) {
 	if resolved.InstructionFile != "/cfg/instr.md" {
 		t.Errorf("InstructionFile = %q, want %q", resolved.InstructionFile, "/cfg/instr.md")
 	}
-	// edit is disabled in config, so allToolNames skips it
-	wantTools := []string{"read", "write", "bash"}
+	// edit is disabled in config, so allToolNames skips it; request_permission
+	// is always-on for inherit-all agents (a negotiation channel, no toggle).
+	wantTools := []string{"read", "write", "bash", "request_permission"}
 	if len(resolved.Tools) != len(wantTools) {
 		t.Fatalf("Tools = %v, want %v", resolved.Tools, wantTools)
 	}

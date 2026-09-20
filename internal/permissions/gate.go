@@ -110,7 +110,7 @@ func (g *Gate) Check(ctx context.Context, callID string, p tools.Permissioned, a
 		axis := Axis(r.Axis)
 		// The prompt and the grant must be the same expression, so normalize
 		// the scope before showing it.
-		scope := g.store.normalize(axis, r.Scope)
+		scope := g.store.Normalize(axis, r.Scope)
 		resp, err := g.neg.Negotiate(ctx, axis, scope)
 		if err != nil {
 			g.store.DiscardOnce(callID)
