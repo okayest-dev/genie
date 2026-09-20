@@ -1,6 +1,6 @@
 // Package writetool implements the write tool: whole-file writes with
 // auto-mkdir for new files and a 1MB cap. Overwrite permission is governed by
-// the permission gate (write axis), not a local Confirmer.
+// the permission gate (write axis).
 package writetool
 
 import (

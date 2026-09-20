@@ -60,19 +60,6 @@ func TestMergedStdoutStderr(t *testing.T) {
 	}
 }
 
-// TestConfirmGateRemoved verifies the old per-call Confirmer is no longer used.
-// The permission gate now handles escalation at the deny point.
-func TestConfirmGateRemoved(t *testing.T) {
-	tool := New(t.TempDir(), 0)
-	out, err := tool.Execute(argsJSON("echo hi"))
-	if err != nil {
-		t.Fatalf("Execute should succeed without Confirmer: %v", err)
-	}
-	if strings.TrimSpace(out) != "hi" {
-		t.Errorf("output = %q, want hi", out)
-	}
-}
-
 func TestEmptyCommand(t *testing.T) {
 	tool := New(t.TempDir(), 0)
 	_, err := tool.Execute(argsJSON(""))

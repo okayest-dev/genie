@@ -1,6 +1,5 @@
 // Package bashtool implements the bash tool: shell command execution with
-// confirm gate, timeout, output truncation with spill files, and merged
-// stdout+stderr.
+// timeout, output truncation with spill files, and merged stdout+stderr.
 package bashtool
 
 import (
@@ -24,7 +23,7 @@ const (
 )
 
 // Tool executes shell commands. Permissions are governed by the deny-point
-// escalation gate (net + run axes), not a local Confirmer.
+// escalation gate (net + run axes).
 type Tool struct {
 	cwd     string
 	timeout time.Duration
