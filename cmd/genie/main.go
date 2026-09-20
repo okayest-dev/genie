@@ -440,7 +440,7 @@ func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration)
 	reg.Register(readtool.New(cwd))
 	reg.Register(writetool.New(cwd))
 	reg.Register(edittool.New(cwd))
-	reg.Register(bashtool.New(cwd, tools.AutoDeny{}, bashTimeout))
+	reg.Register(bashtool.New(cwd, bashTimeout))
 
 	// Disable tools turned off in config.
 	if !cfgTools.Read {

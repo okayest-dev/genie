@@ -7,12 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/okayest-dev/genie/internal/tools"
 )
-
-// stubConfirmer returns the configured answer for every Confirm call.
-type stubConfirmer struct{ accept bool }
-
-func (s stubConfirmer) Confirm(string) bool { return s.accept }
 
 func argsJSON(command string) json.RawMessage {
 	b, _ := json.Marshal(bashArgs{Command: command})
@@ -20,7 +17,7 @@ func argsJSON(command string) json.RawMessage {
 }
 
 func TestNameAndDescription(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	if tool.Name() != "bash" {
 		t.Errorf("Name() = %q, want %q", tool.Name(), "bash")
 	}
@@ -30,7 +27,7 @@ func TestNameAndDescription(t *testing.T) {
 }
 
 func TestParametersSchema(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	p := tool.Parameters()
 	if p["type"] != "object" {
 		t.Errorf("type = %v, want object", p["type"])
@@ -42,7 +39,7 @@ func TestParametersSchema(t *testing.T) {
 }
 
 func TestSuccessfulCommand(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	out, err := tool.Execute(argsJSON("echo hello"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -53,7 +50,7 @@ func TestSuccessfulCommand(t *testing.T) {
 }
 
 func TestMergedStdoutStderr(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	out, err := tool.Execute(argsJSON("echo out; echo err >&2"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -63,19 +60,21 @@ func TestMergedStdoutStderr(t *testing.T) {
 	}
 }
 
-func TestConfirmGateDeniesCommand(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: false}, 0)
-	_, err := tool.Execute(argsJSON("echo hi"))
-	if err == nil {
-		t.Fatal("expected error for denied command")
+// TestConfirmGateRemoved verifies the old per-call Confirmer is no longer used.
+// The permission gate now handles escalation at the deny point.
+func TestConfirmGateRemoved(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	out, err := tool.Execute(argsJSON("echo hi"))
+	if err != nil {
+		t.Fatalf("Execute should succeed without Confirmer: %v", err)
 	}
-	if !strings.Contains(err.Error(), "denied") {
-		t.Errorf("error = %q, want 'denied'", err)
+	if strings.TrimSpace(out) != "hi" {
+		t.Errorf("output = %q, want hi", out)
 	}
 }
 
 func TestEmptyCommand(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	_, err := tool.Execute(argsJSON(""))
 	if err == nil {
 		t.Fatal("expected error for empty command")
@@ -86,7 +85,7 @@ func TestEmptyCommand(t *testing.T) {
 }
 
 func TestNonZeroExit(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	out, err := tool.Execute(argsJSON("exit 42"))
 	if err == nil {
 		t.Fatal("expected error for non-zero exit")
@@ -104,7 +103,7 @@ func TestCommandRunsInCwd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "marker.txt"), []byte("found"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tool := New(dir, stubConfirmer{accept: true}, 0)
+	tool := New(dir, 0)
 	out, err := tool.Execute(argsJSON("cat marker.txt"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -115,7 +114,7 @@ func TestCommandRunsInCwd(t *testing.T) {
 }
 
 func TestTimeoutKillsProcess(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 50*time.Millisecond)
+	tool := New(t.TempDir(), 50*time.Millisecond)
 	start := time.Now()
 	out, err := tool.Execute(argsJSON("echo before; sleep 5; echo after"))
 	elapsed := time.Since(start)
@@ -142,7 +141,7 @@ func TestOutputTruncationWithSpill(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/python3"); err != nil {
 		cmd = "python3 -c \"print('x' * 1024 * 2)\" 2>/dev/null || seq 1 200000 | tr '\\n' x"
 	}
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	out, err := tool.Execute(argsJSON(cmd))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -153,7 +152,7 @@ func TestOutputTruncationWithSpill(t *testing.T) {
 }
 
 func TestInvalidJSON(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	_, err := tool.Execute(json.RawMessage("not json"))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
@@ -163,8 +162,142 @@ func TestInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestBashImplementsPermissioned pins the deny-point seam: the bash tool
+// declares its run/net requirements so commands escalate via the gate.
+func TestBashImplementsPermissioned(t *testing.T) {
+	var _ interface {
+		RequiredPermissions(json.RawMessage) ([]tools.Requirement, error)
+	} = New(t.TempDir(), 0)
+}
+
+func TestRequiredPermissionsExtractsRunExecutable(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	reqs, err := tool.RequiredPermissions(argsJSON("git status"))
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	// Should have run axis with executable "git"
+	if len(reqs) != 1 {
+		t.Fatalf("got %d requirements, want 1 (run)", len(reqs))
+	}
+	if reqs[0].Axis != "run" {
+		t.Errorf("Axis = %q, want \"run\"", reqs[0].Axis)
+	}
+	if reqs[0].Scope != "git" {
+		t.Errorf("Scope = %q, want \"git\"", reqs[0].Scope)
+	}
+}
+
+func TestRequiredPermissionsExtractsNetFromURL(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	reqs, err := tool.RequiredPermissions(argsJSON("curl https://api.github.com/users"))
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	// Should have net axis with host
+	var hasNet bool
+	for _, r := range reqs {
+		if r.Axis == "net" {
+			hasNet = true
+			if r.Scope != "api.github.com" && r.Scope != "api.github.com:443" {
+				t.Errorf("Scope = %q, want host from URL", r.Scope)
+			}
+		}
+	}
+	if !hasNet {
+		t.Errorf("got %d requirements, want net axis for URL", len(reqs))
+	}
+}
+
+func TestRequiredPermissionsExtractsBothNetAndRun(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	reqs, err := tool.RequiredPermissions(argsJSON("curl -X POST https://api.example.com:8080/data"))
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	// Should have both net (with port) and run axes
+	axes := make(map[string]string)
+	for _, r := range reqs {
+		axes[r.Axis] = r.Scope
+	}
+	if _, ok := axes["net"]; !ok {
+		t.Errorf("missing net axis; got %v", axes)
+	}
+	if _, ok := axes["run"]; !ok {
+		t.Errorf("missing run axis; got %v", axes)
+	}
+	if axes["run"] != "curl" {
+		t.Errorf("run scope = %q, want \"curl\"", axes["run"])
+	}
+	if axes["net"] != "api.example.com:8080" {
+		t.Errorf("net scope = %q, want host:port \"api.example.com:8080\"", axes["net"])
+	}
+}
+
+func TestRequiredPermissionsExtractsFromPipedPipeline(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	reqs, err := tool.RequiredPermissions(argsJSON("curl https://api.example.com/data | jq ."))
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	// A piped pipeline still extracts the leading executable and the URL host.
+	axes := make(map[string]string)
+	for _, r := range reqs {
+		axes[r.Axis] = r.Scope
+	}
+	if axes["run"] != "curl" {
+		t.Errorf("run scope = %q, want \"curl\" (leading executable of the pipeline)", axes["run"])
+	}
+	if axes["net"] != "api.example.com" {
+		t.Errorf("net scope = %q, want \"api.example.com\"", axes["net"])
+	}
+}
+
+func TestRequiredPermissionsFallbackToAxisOnly(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	// Command starting with an operator: no executable can be extracted, so the
+	// run requirement falls back to a blanket (axis-only) scope.
+	reqs, err := tool.RequiredPermissions(argsJSON("> /dev/null"))
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	if len(reqs) != 1 || reqs[0].Axis != "run" || reqs[0].Scope != "" {
+		t.Errorf("reqs = %v, want a single blanket run axis requirement", reqs)
+	}
+}
+
+func TestRequiredPermissionsWhitespaceCommandFallsBackToBlanket(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	reqs, err := tool.RequiredPermissions(argsJSON("   "))
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	if len(reqs) != 1 || reqs[0].Axis != "run" || reqs[0].Scope != "" {
+		t.Errorf("reqs = %v, want a single blanket run axis requirement for whitespace command", reqs)
+	}
+}
+
+func TestRequiredPermissionsBasenameOfPathExecutable(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	reqs, err := tool.RequiredPermissions(argsJSON("/usr/bin/git status"))
+	if err != nil {
+		t.Fatalf("RequiredPermissions: %v", err)
+	}
+	if len(reqs) != 1 || reqs[0].Scope != "git" {
+		t.Errorf("reqs = %v, want run:git (basename of the path)", reqs)
+	}
+}
+
+func TestRequiredPermissionsBadArgs(t *testing.T) {
+	tool := New(t.TempDir(), 0)
+	_, err := tool.RequiredPermissions(json.RawMessage("{not json"))
+	if err == nil {
+		t.Fatal("RequiredPermissions with malformed args returned nil, want error")
+	}
+}
+
 func TestCommandWithOutput(t *testing.T) {
-	tool := New(t.TempDir(), stubConfirmer{accept: true}, 0)
+	tool := New(t.TempDir(), 0)
 	out, err := tool.Execute(argsJSON("printf 'line1\\nline2\\nline3'"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
