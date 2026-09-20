@@ -3001,9 +3001,10 @@ func TestBashCoveredAxisNotReprompted(t *testing.T) {
 	}
 }
 
-// TestBashHeadlessAutoDeny: in -p mode with no one to ask, an uncovered bash
-// command is denied and the composite is fed back to the model.
-func TestBashHeadlessAutoDeny(t *testing.T) {
+// TestBashHeadlessDeny: in -p mode with no one to ask, an uncovered bash
+// command is denied by the escalator's auto-deny negotiator and the composite
+// is fed back to the model.
+func TestBashHeadlessDeny(t *testing.T) {
 	workDir := t.TempDir()
 	srv, bodies := toolCallThenText(t, "bash", map[string]string{
 		"command": "curl https://api.example.com/data",
