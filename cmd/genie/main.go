@@ -36,6 +36,7 @@ import (
 	"github.com/okayest-dev/genie/internal/tools/bashtool"
 	"github.com/okayest-dev/genie/internal/tools/edittool"
 	"github.com/okayest-dev/genie/internal/tools/readtool"
+	"github.com/okayest-dev/genie/internal/tools/requesttool"
 	"github.com/okayest-dev/genie/internal/tools/writetool"
 )
 
@@ -158,8 +159,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		slog.Warn("permanent grants will not persist", "error", err)
 	}
 
-	// Build the tool registry from config.
-	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)
+	// Build the tool registry from config. request_permission is registered
+	// always-on (a negotiation channel, not a capability).
+	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout, permStore, permSink)
 
 	// Resolve the skill pool once so agent resolution validates explicit
 	// skills lists against real discovered skills (and inheritance binds the
@@ -432,8 +434,10 @@ func resolveAgentReg(cwd string) *config.AgentReg {
 }
 
 // buildRegistry creates the tool registry, registering available tools and
-// disabling any that are turned off in config.
-func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration) *tools.Registry {
+// disabling any that are turned off in config. request_permission is always-on
+// — it is a negotiation channel, not a capability — and is seeded with the
+// headless (auto-deny) negotiator; the REPL swaps in the interactive one.
+func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration, store *permissions.Store, sink permissions.PermanentSink) *tools.Registry {
 	reg := tools.NewRegistry()
 
 	// Register tools.
@@ -441,6 +445,7 @@ func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration)
 	reg.Register(writetool.New(cwd))
 	reg.Register(edittool.New(cwd))
 	reg.Register(bashtool.New(cwd, bashTimeout))
+	reg.Register(requesttool.New(store, sink))
 
 	// Disable tools turned off in config.
 	if !cfgTools.Read {

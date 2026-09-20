@@ -2301,6 +2301,13 @@ func writeToolThenText(t *testing.T, path, content, text string) (*httptest.Serv
 	return toolCallThenText(t, "write", map[string]string{"path": path, "content": content}, text)
 }
 
+// srvToolCall is one scripted tool call in the fake provider: the tool name
+// and its JSON-string arguments.
+type srvToolCall struct {
+	name string
+	args map[string]string
+}
+
 // toolCallThenText starts a provider that answers odd requests with one tool
 // call and even requests with a text reply, recording request bodies.
 func toolCallThenText(t *testing.T, toolName string, args map[string]string, text string) (*httptest.Server, *[]string) {
@@ -2314,10 +2321,22 @@ func toolCallThenText(t *testing.T, toolName string, args map[string]string, tex
 // request tracking in tests stay comparable.
 func toolCallsThenText(t *testing.T, toolName string, calls []map[string]string, text string) (*httptest.Server, *[]string) {
 	t.Helper()
+	named := make([]srvToolCall, len(calls))
+	for i, args := range calls {
+		named[i] = srvToolCall{name: toolName, args: args}
+	}
+	return toolCallsThenTextVaried(t, named, text)
+}
+
+// toolCallsThenTextVaried starts a provider that answers the i-th odd request
+// with the i-th (tool, args) pair, cycling when exhausted, and even requests
+// with a text reply, recording request bodies.
+func toolCallsThenTextVaried(t *testing.T, calls []srvToolCall, text string) (*httptest.Server, *[]string) {
+	t.Helper()
 	var bodies []string
 	rawCalls := make([][]byte, len(calls))
-	for i, args := range calls {
-		raw, err := json.Marshal(args)
+	for i, c := range calls {
+		raw, err := json.Marshal(c.args)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -2331,9 +2350,10 @@ func toolCallsThenText(t *testing.T, toolName string, calls []map[string]string,
 		flusher, _ := w.(http.Flusher)
 		var chunks []string
 		if len(bodies)%2 == 1 {
-			raw := rawCalls[(len(bodies)-1)/2%len(rawCalls)]
+			i := (len(bodies) - 1) / 2
+			c := calls[i%len(calls)]
 			chunks = []string{
-				fake.ToolCallDelta(0, "call_1", toolName, string(raw)),
+				fake.ToolCallDelta(0, "call_1", c.name, string(rawCalls[i%len(rawCalls)])),
 				fake.Finish("tool_calls"),
 				fake.Done,
 			}
@@ -2388,8 +2408,162 @@ func TestInteractiveWriteEscalationSessionGrant(t *testing.T) {
 	}
 }
 
-// TestHeadlessWriteAutoDenied: with no one to ask, -p denies the uncovered
-// write, never runs it, and feeds the model the composite denied result.
+// TestRequestPermissionPreNegotiateThenCall drives the always-on
+// request_permission tool: the model pre-negotiates a write grant for the
+// session, and a later write to that exact scope runs without re-prompting.
+func TestRequestPermissionPreNegotiateThenCall(t *testing.T) {
+	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
+		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
+		{name: "write", args: map[string]string{"path": "output.txt", "content": "hello world"}},
+	}, "ok")
+	workDir := t.TempDir()
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "ask the user for write access to output.txt, then write hello world to it\ns\nwrite hello world to output.txt\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	wantPrompt := "allow write " + filepath.Join(workDir, "output.txt") + "? (o)nce/(s)ession/(p)ermanent/(r)eject:"
+	if !strings.Contains(stdout, wantPrompt) {
+		t.Errorf("stdout = %q, want the shared request_permission prompt %q", stdout, wantPrompt)
+	}
+	// Exactly one negotiation: the session grant from request_permission covers
+	// the subsequent inline write call.
+	if n := strings.Count(stdout, "allow write "); n != 1 {
+		t.Errorf("stdout prompted %d times, want 1 (pre-negotiated session grant covers the write)", n)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: write "+filepath.Join(workDir, "output.txt")) {
+		t.Errorf("request 2 did not carry the request_permission grant line; bodies=%v", *bodies)
+	}
+	got, err := os.ReadFile(filepath.Join(workDir, "output.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Errorf("file = %q, want %q", got, "hello world")
+	}
+}
+
+// TestRequestPermissionRejectGrantsNothing: a rejected pre-negotiation feeds
+// the single reject line back and later denies the inline write (grants
+// nothing), forcing a fresh prompt that the user then grants.
+func TestRequestPermissionRejectGrantsNothing(t *testing.T) {
+	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
+		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
+		{name: "write", args: map[string]string{"path": "output.txt", "content": "hello world"}},
+	}, "ok")
+	workDir := t.TempDir()
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "ask the user for write access to output.txt, then write hello world to it\nr\nwrite hello world to output.txt\ns\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission rejected: write "+filepath.Join(workDir, "output.txt")+" — consider an alternative") {
+		t.Errorf("request 2 must carry the single reject line; bodies=%v", *bodies)
+	}
+	// The reject granted nothing, so the inline write re-prompts and only the
+	// user's later session grant lets it through.
+	if n := strings.Count(stdout, "allow write "); n != 2 {
+		t.Errorf("stdout prompted %d times, want 2 (pre-negotiation reject then inline re-prompt)", n)
+	}
+	if len(*bodies) < 4 || !strings.Contains((*bodies)[3], "Permission granted: write") {
+		t.Errorf("request 4 must carry the inline grant line; bodies=%v", *bodies)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); err != nil {
+		t.Errorf("output.txt after session grant: %v", err)
+	}
+}
+
+// TestHeadlessRequestPermissionAutoDenied: -p mode has no one to ask, so a
+// request_permission call is auto-denied with the standard reject line — the
+// tool is never auto-approved.
+func TestHeadlessRequestPermissionAutoDenied(t *testing.T) {
+	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
+		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
+	}, "ok")
+	workDir := t.TempDir()
+
+	_, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}, "-p", "request write access to output.txt")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission rejected: write "+filepath.Join(workDir, "output.txt")+" — consider an alternative") {
+		t.Errorf("request 2 must carry the headless auto-deny line; bodies=%v", *bodies)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); !os.IsNotExist(err) {
+		t.Errorf("output.txt exists (err=%v), want never created under headless pre-negotiation", err)
+	}
+}
+
+// TestRequestPermissionBlanketGrant: an omitted scope pre-negotiates blanket
+// access, and a later write to an arbitrary scope runs with no prompt.
+func TestRequestPermissionBlanketGrant(t *testing.T) {
+	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
+		{name: "request_permission", args: map[string]string{"permission": "write"}},
+		{name: "write", args: map[string]string{"path": "out/anywhere.txt", "content": "blanket"}},
+	}, "ok")
+	workDir := t.TempDir()
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "ask the user for blanket write access, then write to output.txt\ns\nwrite to out/anywhere.txt\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow write? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+		t.Errorf("stdout = %q, want the blanket prompt with no scope", stdout)
+	}
+	if n := strings.Count(stdout, "allow write"); n != 1 {
+		t.Errorf("stdout prompted %d times, want 1 (blanket grant covers the later write)", n)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: write") {
+		t.Errorf("request 2 must carry the blanket grant line; bodies=%v", *bodies)
+	}
+	got, err := os.ReadFile(filepath.Join(workDir, "out", "anywhere.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "blanket" {
+		t.Errorf("file = %q, want %q", got, "blanket")
+	}
+}
+
+// TestRequestPermissionInvalidPermissionRejected: a call naming an axis
+// outside the five is refused as an error, not silently granted or gated.
+func TestRequestPermissionInvalidPermissionRejected(t *testing.T) {
+	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
+		{name: "request_permission", args: map[string]string{"permission": "sudo"}},
+	}, "ok")
+	workDir := t.TempDir()
+
+	_, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}, "-p", "request sudo access")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if len(*bodies) < 2 {
+		t.Fatalf("requests = %d, want the error fed back", len(*bodies))
+	}
+	if !strings.Contains((*bodies)[1], "invalid permission") {
+		t.Errorf("request 2 must carry the invalid-axis error; body=%s", (*bodies)[1])
+	}
+}
 func TestHeadlessWriteAutoDenied(t *testing.T) {
 	srv, bodies := writeToolThenText(t, "output.txt", "hello world", "done")
 	workDir := t.TempDir()

@@ -41,6 +41,25 @@ const (
 // allAxes lists axes in rendering order.
 var allAxes = []Axis{AxisRead, AxisWrite, AxisNet, AxisRun, AxisEnv}
 
+// IsAxis reports whether name is one of the five permission axes.
+func IsAxis(name string) bool {
+	for _, a := range allAxes {
+		if string(a) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AxisNames returns the five axes in rendering order.
+func AxisNames() []string {
+	names := make([]string, len(allAxes))
+	for i, a := range allAxes {
+		names[i] = string(a)
+	}
+	return names
+}
+
 // Tier tags the lifetime of a grant.
 type Tier string
 
@@ -83,7 +102,7 @@ func New(cwd string) *Store {
 // Covered reports whether (axis, scope) is within the effective policy. The
 // requested scope is normalized against the store cwd before matching.
 func (s *Store) Covered(axis Axis, scope string) bool {
-	want := s.normalize(axis, scope)
+	want := s.Normalize(axis, scope)
 	return s.baseCovered(axis, want) || s.grantsCovered(s.permanent, axis, want, false) ||
 		s.grantsCovered(s.session, axis, want, false) || s.onceCovered(axis, want)
 }
@@ -98,7 +117,7 @@ func (s *Store) SetBase(b map[Axis][]string) {
 
 // GrantSession adds a session-tier grant covering scope.
 func (s *Store) GrantSession(axis Axis, scope string) {
-	g := Grant{Axis: axis, Scope: s.normalize(axis, scope), Tier: TierSession, Granted: time.Now().UTC()}
+	g := Grant{Axis: axis, Scope: s.Normalize(axis, scope), Tier: TierSession, Granted: time.Now().UTC()}
 	s.session = append(s.session, g)
 }
 
@@ -116,7 +135,7 @@ func (s *Store) GrantPermanent(g Grant) error {
 	if !valid {
 		return fmt.Errorf("permissions: GrantPermanent: unknown axis %q", g.Axis)
 	}
-	g.Scope = s.normalize(g.Axis, g.Scope)
+	g.Scope = s.Normalize(g.Axis, g.Scope)
 	s.permanent = append(s.permanent, g)
 	return nil
 }
@@ -159,7 +178,7 @@ func (s *Store) Once(call string) {
 // GrantOnce adds a once-tier grant for the call. A scope is covered for the
 // life of the call only.
 func (s *Store) GrantOnce(call string, axis Axis, scope string) {
-	g := Grant{Axis: axis, Scope: s.normalize(axis, scope), Tier: TierOnce, Granted: time.Now().UTC()}
+	g := Grant{Axis: axis, Scope: s.Normalize(axis, scope), Tier: TierOnce, Granted: time.Now().UTC()}
 	s.once[call] = append(s.once[call], g)
 }
 
@@ -200,7 +219,7 @@ func (s *Store) grantsCovered(grants []Grant, axis Axis, want string, _ bool) bo
 // baseCovered reports whether a base scope covers (axis, want).
 func (s *Store) baseCovered(axis Axis, want string) bool {
 	for _, sc := range s.base[axis] {
-		n := s.normalize(axis, sc)
+		n := s.Normalize(axis, sc)
 		if scopeCovers(axis, n, want) {
 			return true
 		}
@@ -253,10 +272,11 @@ func netScope(g, want string) bool {
 	return g == want
 }
 
-// normalize produces the canonical scope expression for an axis within the
+// Normalize produces the canonical scope expression for an axis within the
 // store cwd: read/write paths become clean absolute paths; net hosts keep
-// host[:port]; run/env stay literal.
-func (s *Store) normalize(axis Axis, scope string) string {
+// host[:port]; run/env stay literal. The normalized expression is what grant
+// and reject feedback lines quote, so prompts and grants always agree.
+func (s *Store) Normalize(axis Axis, scope string) string {
 	switch axis {
 	case AxisRead, AxisWrite:
 		if scope == "" {

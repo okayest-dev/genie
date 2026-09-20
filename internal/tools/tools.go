@@ -175,7 +175,7 @@ func ValidateArgs(args json.RawMessage, schema map[string]any) error {
 		}
 	}
 
-	// Check types of provided fields against properties.
+	// Check types and enum values of provided fields against properties.
 	if props, ok := schema["properties"].(map[string]any); ok {
 		for key, val := range obj {
 			prop, ok := props[key].(map[string]any)
@@ -189,10 +189,34 @@ func ValidateArgs(args json.RawMessage, schema map[string]any) error {
 			if !typeMatches(val, wantType) {
 				return fmt.Errorf("argument %q: expected %s, got %T", key, wantType, val)
 			}
+			if enum, ok := prop["enum"].([]any); ok {
+				if !enumContains(enum, val) {
+					return fmt.Errorf("argument %q: must be one of %s, got %v", key, formatEnum(enum), val)
+				}
+			}
 		}
 	}
 
 	return nil
+}
+
+// enumContains reports whether val is one of the enum entries.
+func enumContains(enum []any, val any) bool {
+	for _, e := range enum {
+		if e == val {
+			return true
+		}
+	}
+	return false
+}
+
+// formatEnum renders the accepted enum values for an error message.
+func formatEnum(enum []any) string {
+	strs := make([]string, 0, len(enum))
+	for _, e := range enum {
+		strs = append(strs, fmt.Sprintf("%v", e))
+	}
+	return strings.Join(strs, ", ")
 }
 
 // typeMatches checks if a JSON-decoded value matches the expected JSON Schema type.

@@ -73,7 +73,7 @@ Ctrl+C cancels a running turn. Ctrl+C at the prompt exits.
 
 ## Tools
 
-The model has access to four tools:
+The model has access to five tools:
 
 | Tool | Description |
 |------|-------------|
@@ -81,8 +81,9 @@ The model has access to four tools:
 | **write** | Create or overwrite files. Permission-gated on the write axis (see [Permissions](#permissions)). Auto-creates parent directories. |
 | **edit** | Surgical find-and-replace. Exact, whitespace-sensitive matching. One pair at a time. |
 | **bash** | Run shell commands via `sh -c`. Requires confirmation. 120s timeout (configurable). |
+| **request_permission** | Pre-negotiate a permission grant for a call you expect to be denied (see [Permissions](#permissions)). Never auto-approved. |
 
-Tools can be individually disabled in config.
+`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` is always-on for every default agent — it is a negotiation channel, not a capability — so it has no config toggle; an agent whose explicit `tools = [...]` list omits it drops it from that agent's toolset.
 
 ## Configuration
 
@@ -200,6 +201,10 @@ Answer with a terse key (`o`/`s`/`p`/`r`) or the full word. A grant covers that 
 The effective policy is the union of the config base, persisted permanent grants, session grants, and single-call grants; the model never sees which tier an authorization came from. `^C` while a prompt is live rejects the current axis (it does not cancel the turn); an unknown answer prints a hint and re-prompts.
 
 Non-interactive `-p` runs have no one to ask: every uncovered requirement is denied and the denial is fed back to the model. Setting the relevant base scope (for example `write = ["."]`) authorizes it up front.
+
+### Pre-negotiation with `request_permission`
+
+The model can ask for a grant ahead of a call it expects to be denied — or after a mid-call runtime denial — through the `request_permission` tool, passing the axis (`read`, `write`, `net`, `run`, `env`) and an optional scope (omitted for blanket access on that axis). The user gets the same terse prompt as inline escalation, and the result is exactly one `Permission granted:` or `Permission rejected:` line. A grant covers exactly the scope requested, so the model is guided to request its widest anticipated need. Requesting permission does not gate the tool; it never approves itself, and a rejection grants nothing.
 
 ### Environment variables
 

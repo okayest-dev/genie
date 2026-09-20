@@ -28,7 +28,16 @@ import (
 	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/skill"
 	"github.com/okayest-dev/genie/internal/tools"
+	"github.com/okayest-dev/genie/internal/tools/requesttool"
 )
+
+// requestPermissionNegotiatorSetter is implemented by the request_permission
+// tool so the REPL can hand it the interactive negotiator without coupling to
+// the concrete requesttool type. A tool that is absent from the agent's
+// subset is simply not wired and stays on the headless auto-deny default.
+type requestPermissionNegotiatorSetter interface {
+	SetNegotiator(permissions.Negotiator)
+}
 
 const prompt = "genie> "
 
@@ -222,6 +231,17 @@ func Run(ctx context.Context, cfg *Config) error {
 	if cfg.PermissionStore != nil {
 		neg := &interactiveNegotiator{lines: lines, out: cfg.Stdout, router: router}
 		gate = permissions.NewGate(cfg.PermissionStore, neg, cfg.PermanentSink)
+		// The request_permission tool shares the interactive negotiator, so a
+		// pre-negotiation prompt is byte-identical to inline escalation. When
+		// the tool is absent (an agent tool subset scoped it out) this is a
+		// quiet no-op.
+		if cfg.Registry != nil {
+			if t, ok := cfg.Registry.Get(requesttool.ToolName); ok {
+				if setter, ok := t.(requestPermissionNegotiatorSetter); ok {
+					setter.SetNegotiator(neg)
+				}
+			}
+		}
 	}
 
 	for {

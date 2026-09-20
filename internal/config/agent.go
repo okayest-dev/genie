@@ -109,6 +109,9 @@ func ResolveAgentDef(def *AgentDef, cfg *Config, availableSkills []string) Resol
 }
 
 // allToolNames returns the names of all enabled tools from config.
+// request_permission is always-on for inherit-all agents: it is a negotiation
+// channel, not a capability, so it has no config toggle here. An agent that
+// lists its tools explicitly can still scope it out.
 func allToolNames(t Tools) []string {
 	var names []string
 	if t.Read {
@@ -123,6 +126,7 @@ func allToolNames(t Tools) []string {
 	if t.Bash {
 		names = append(names, "bash")
 	}
+	names = append(names, "request_permission")
 	return names
 }
 

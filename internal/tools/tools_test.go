@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/okayest-dev/genie/internal/llm"
@@ -14,8 +15,8 @@ type fakeTool struct {
 	executeFunc func(json.RawMessage) (string, error)
 }
 
-func (f *fakeTool) Name() string            { return f.name }
-func (f *fakeTool) Description() string     { return f.description }
+func (f *fakeTool) Name() string               { return f.name }
+func (f *fakeTool) Description() string        { return f.description }
 func (f *fakeTool) Parameters() map[string]any { return f.params }
 func (f *fakeTool) Execute(args json.RawMessage) (string, error) {
 	if f.executeFunc != nil {
@@ -149,6 +150,43 @@ func TestValidateArgs(t *testing.T) {
 				t.Errorf("ValidateArgs(%s) error = %v, wantErr %v", tc.args, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateArgsEnum(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"permission": map[string]any{
+				"type": "string",
+				"enum": []any{"read", "write", "net", "run", "env"},
+			},
+		},
+		"required": []any{"permission"},
+	}
+
+	tests := []struct {
+		name    string
+		args    string
+		wantErr bool
+	}{
+		{"valid", `{"permission":"read"}`, false},
+		{"any axis valid", `{"permission":"net"}`, false},
+		{"invalid axis", `{"permission":"sudo"}`, true},
+		{"missing required", `{}`, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateArgs(json.RawMessage(tc.args), schema)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidateArgs(%s) error = %v, wantErr %v", tc.args, err, tc.wantErr)
+			}
+		})
+	}
+
+	err := ValidateArgs(json.RawMessage(`{"permission":"sudo"}`), schema)
+	if err == nil || !strings.Contains(err.Error(), "read, write, net, run, env") {
+		t.Errorf("invalid-axis error = %v, want the axis enum listed", err)
 	}
 }
 
