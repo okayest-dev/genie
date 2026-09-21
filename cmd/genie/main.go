@@ -198,6 +198,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		runAgent = resolved
 	}
 
+	// A per-agent [permissions] section replaces the global base wholly for
+	// this run (og-uy5.7); the deny-point gate and the instruction snapshot
+	// both read the store, so the active agent's base lands before either is
+	// consulted. An agent without a section inherits the global base.
+	permStore.SetBaseFromConfig(runAgent.EffectiveBase(cfg.Permissions.Base))
+
 	// Resolve the boot client and first model from the active provider through
 	// the registry. With the provider key unset, an interactive run prompts to
 	// pick from the declared set and a one-shot -p run falls back to the first
@@ -404,11 +410,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 // scopes plus every persisted permanent grant.
 func buildPermissionStore(cwd string, p config.Permissions) (*permissions.Store, error) {
 	store := permissions.New(cwd)
-	base := make(map[permissions.Axis][]string, len(p.Base))
-	for axis, scopes := range p.Base {
-		base[permissions.Axis(axis)] = scopes
-	}
-	store.SetBase(base)
+	store.SetBaseFromConfig(p.Base)
 	for _, g := range p.Permanent {
 		if err := store.GrantPermanent(permissions.Grant{
 			Axis:    permissions.Axis(g.Permission),

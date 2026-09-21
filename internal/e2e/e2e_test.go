@@ -3304,3 +3304,215 @@ func TestBashHeadlessDeny(t *testing.T) {
 		t.Errorf("follow-up request missing denied status; body=%s", (*bodies)[1])
 	}
 }
+
+// writeAgents writes per-agent TOML definitions into dir/.genie/agents, keyed
+// by agent name, so the compiled binary run in dir discovers them locally.
+func writeAgents(t *testing.T, dir string, agents map[string]string) {
+	t.Helper()
+	agentsDir := filepath.Join(dir, ".genie", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range agents {
+		if err := os.WriteFile(filepath.Join(agentsDir, name+".toml"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write agent %s: %v", name, err)
+		}
+	}
+}
+
+// systemMsgOf extracts the system message content from a recorded request
+// body (the current agent instruction, which carries the base-policy snapshot).
+func systemMsgOf(t *testing.T, body string) string {
+	t.Helper()
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	for _, m := range req.Messages {
+		if m.Role == "system" {
+			return m.Content
+		}
+	}
+	return ""
+}
+
+// perAgentBaseConfig returns a config declaring the fake provider and a
+// harness-global write base over workDir — the base the reader agent replaces
+// away (og-uy5.7).
+func perAgentBaseConfig(srvURL, workDir string) string {
+	return fmt.Sprintf("provider = \"zen\"\n\n[permissions]\nread = [\".\"]\nwrite = [%q]\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", workDir, srvURL)
+}
+
+// readerAgent is the two-agent demo's read-only agent: it declares a
+// [permissions] section granting read but not write, so its write prompts
+// despite any global write base.
+const readerAgent = "model = \"test-model\"\n\n[permissions]\nread = [\".\"]\n"
+
+// plainAgent inherits the global base: it declares no [permissions] section.
+const plainAgent = "model = \"test-model\"\n"
+
+// TestPerAgentPermissionsReplaceGlobalBase drives the per-agent [permissions]
+// surface end-to-end in the REPL (og-uy5.7): the global write base covers
+// writes for the plain agent, the read-only reader agent's section replaces
+// the base wholly (its write prompts), an /agent switch updates both the
+// deny-point envelope and the instruction snapshot, and switching back
+// restores the global base.
+func TestPerAgentPermissionsReplaceGlobalBase(t *testing.T) {
+	workDir := t.TempDir()
+	writeAgents(t, workDir, map[string]string{
+		"reader": readerAgent,
+		"plain":  plainAgent,
+	})
+
+	srv, bodies := toolCallsThenText(t, "write", []map[string]string{
+		{"path": "a.txt", "content": "A"},
+		{"path": "b.txt", "content": "B"},
+		{"path": "c.txt", "content": "C"},
+	}, "wrote the file")
+	env := []string{
+		"XDG_CONFIG_HOME=" + configDir(t, perAgentBaseConfig(srv.URL, workDir)),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}
+
+	// a.txt runs under the global base (write covered; the run starts on the
+	// plain agent, which inherits it); b.txt under reader (write uncovered —
+	// one prompt, granted for the session); c.txt back on the global base.
+	stdout, stderr, code := runInDirWithStdin(t, workDir,
+		"write a.txt\n/agent reader\nwrite b.txt\ns\n/agent plain\nwrite c.txt\n/quit\n", env, "-a", "plain")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if n := strings.Count(stdout, "allow write "); n != 1 {
+		t.Errorf("stdout prompted write %d times, want 1 (only under reader)", n)
+	}
+	if !strings.Contains(stdout, "switched to reader") || !strings.Contains(stdout, "switched to plain") {
+		t.Errorf("stdout = %q, want the /agent switch messages", stdout)
+	}
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if _, err := os.Stat(filepath.Join(workDir, name)); err != nil {
+			t.Errorf("%s not written: %v", name, err)
+		}
+	}
+
+	// The instruction snapshot follows the active agent: request 1 shows the
+	// global base (write = workDir), the request after /agent reader shows the
+	// replaced base (write empty), and the request after /agent plain shows the
+	// global base again.
+	if len(*bodies) < 5 {
+		t.Fatalf("requests = %d, want at least 5 recorded across the session", len(*bodies))
+	}
+	if sys := systemMsgOf(t, (*bodies)[0]); !strings.Contains(sys, "- write: "+workDir) {
+		t.Errorf("plain-agent snapshot missing global write base:\n%s", sys)
+	}
+	if sys := systemMsgOf(t, (*bodies)[2]); !strings.Contains(sys, "- write: nothing is authorized") {
+		t.Errorf("reader-agent snapshot must show an empty write axis after the global base was replaced:\n%s", sys)
+	}
+	if sys := systemMsgOf(t, (*bodies)[4]); !strings.Contains(sys, "- write: "+workDir) {
+		t.Errorf("snapshot after /agent plain must show the global write base again:\n%s", sys)
+	}
+}
+
+// TestPerAgentPermissionsHeadlessDeny: in -p mode an uncovered write under a
+// read-only agent base is auto-denied despite the global write base — the
+// deny-point gate evaluates against the active agent's base.
+func TestPerAgentPermissionsHeadlessDeny(t *testing.T) {
+	workDir := t.TempDir()
+	writeAgents(t, workDir, map[string]string{"reader": readerAgent})
+
+	srv, bodies := writeToolThenText(t, "out.txt", "denied", "done")
+	env := []string{
+		"XDG_CONFIG_HOME=" + configDir(t, perAgentBaseConfig(srv.URL, workDir)),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}
+
+	_, stderr, code := runInDir(t, workDir, env, "-a", "reader", "-p", "write out.txt")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); !os.IsNotExist(err) {
+		t.Errorf("out.txt exists (err=%v), want the write auto-denied under the agent base", err)
+	}
+	if len(*bodies) < 2 {
+		t.Fatalf("requests = %d, want the denied write fed back", len(*bodies))
+	}
+	if sys := systemMsgOf(t, (*bodies)[0]); !strings.Contains(sys, "- write: nothing is authorized") {
+		t.Errorf("headless reader-agent snapshot must show an empty write axis:\n%s", sys)
+	}
+	if !strings.Contains((*bodies)[1], "Permission rejected: write "+filepath.Join(workDir, "out.txt")) {
+		t.Errorf("follow-up request missing the write reject line; body=%s", (*bodies)[1])
+	}
+	if !strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request missing denied status; body=%s", (*bodies)[1])
+	}
+}
+
+// TestPerAgentPermanentGrantAppliesOverAgentBase: a write granted permanent
+// under a read-only agent base persists to config and covers the same write on
+// a restart under the same agent base — permanent grants stay additive over an
+// agent's replaced base (og-uy5.7).
+func TestPerAgentPermanentGrantAppliesOverAgentBase(t *testing.T) {
+	workDir := t.TempDir()
+	writeAgents(t, workDir, map[string]string{"reader": readerAgent})
+
+	srv, _ := writeToolThenText(t, "out.txt", "written", "wrote the file")
+	cfgDir := configDir(t, perAgentBaseConfig(srv.URL, workDir))
+	env := []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}
+
+	// First run: the global write base is replaced away by reader, so the write
+	// prompts; answering "p" persists it.
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "write out.txt\np\n/quit\n", env, "-a", "reader")
+	if code != 0 {
+		t.Fatalf("run 1: exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "allow write ") {
+		t.Errorf("run 1 stdout = %q, want the write to prompt under the reader base", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
+		t.Errorf("run 1: out.txt not written after the permanent grant: %v", err)
+	}
+
+	// The permanent grant landed in the shared config.toml.
+	cfgData, err := os.ReadFile(filepath.Join(cfgDir, "genie", "config.toml"))
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	if !strings.Contains(string(cfgData), "[[permissions.permanent]]") {
+		t.Errorf("config = %q, want a persisted permanent grant", cfgData)
+	}
+
+	// Second run under the same agent base: no prompt — the permanent grant
+	// covers the write over the replaced base.
+	os.Remove(filepath.Join(workDir, "out.txt"))
+	stdout2, stderr2, code := runInDirWithStdin(t, workDir, "write out.txt\n/quit\n", env, "-a", "reader")
+	if code != 0 {
+		t.Fatalf("run 2: exit code = %d, want 0; stderr=%q", code, stderr2)
+	}
+	if strings.Contains(stdout2, "allow write ") {
+		t.Errorf("run 2 stdout = %q, must not re-prompt for a permanent grant over the agent base", stdout2)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
+		t.Errorf("run 2: out.txt not written by the permanent grant over the agent base: %v", err)
+	}
+
+	// Third run is headless under the same agent base: auto-deny would kill the
+	// write, but the persisted permanent grant covers it.
+	os.Remove(filepath.Join(workDir, "out.txt"))
+	_, stderr3, code := runInDir(t, workDir, env, "-a", "reader", "-p", "write out.txt")
+	if code != 0 {
+		t.Fatalf("run 3: exit code = %d, want 0; stderr=%q", code, stderr3)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
+		t.Errorf("run 3: out.txt not written headless over the agent base: %v", err)
+	}
+}

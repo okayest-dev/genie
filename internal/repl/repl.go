@@ -199,6 +199,7 @@ func Run(ctx context.Context, cfg *Config) error {
 		client:       wrapClient(cfg, cfg.Client, sess),
 		provider:     cfg.Provider,
 	}
+	applyAgentBase(cfg, state.currentAgent)
 	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
 	// One goroutine owns stdin and fans lines out over a channel. Sharing the
@@ -324,6 +325,20 @@ func resolveInstruction(cfg *Config, agent *config.ResolvedAgent) string {
 	return s
 }
 
+// applyAgentBase sets the permission store's base for the active agent: an
+// agent with a declared [permissions] section replaces the global base wholly
+// (unnamed axes empty, no axis-level inheritance), otherwise the global base
+// is inherited (og-uy5.7). The store is the shared deny-point source, so the
+// gate and the instruction snapshot (BaseSnapshot) both follow the switch.
+// PermissionStore and Cfg may be nil in unit-test repls; both must be present
+// for the base to apply.
+func applyAgentBase(cfg *Config, agent *config.ResolvedAgent) {
+	if cfg.PermissionStore == nil || cfg.Cfg == nil {
+		return
+	}
+	cfg.PermissionStore.SetBaseFromConfig(agent.EffectiveBase(cfg.Cfg.Permissions.Base))
+}
+
 // skillPoolNames returns the globally-filtered discovered skill names for
 // agent resolution validation. The pool is discover-filter at the config
 // level; an agent's explicit skills list is validated against it.
@@ -402,6 +417,7 @@ func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Confi
 	// Save and switch.
 	state.previousAgent = state.currentAgent
 	state.currentAgent = resolved
+	applyAgentBase(cfg, state.currentAgent)
 
 	// Run the turn.
 	runTurn(ctx, cfg, state, prompt, sess, router, gate)
@@ -409,6 +425,7 @@ func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Confi
 	// Revert.
 	state.currentAgent = state.previousAgent
 	state.previousAgent = nil
+	applyAgentBase(cfg, state.currentAgent)
 	state.instruction = resolveInstruction(cfg, state.currentAgent)
 }
 
@@ -604,6 +621,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 			return false
 		}
 		state.currentAgent = resolved
+		applyAgentBase(cfg, state.currentAgent)
 		state.instruction = resolveInstruction(cfg, state.currentAgent)
 		toolsStr := ""
 		if resolved.Tools != nil {
