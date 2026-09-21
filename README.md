@@ -200,7 +200,7 @@ Answer with a terse key (`o`/`s`/`p`/`r`) or the full word. A grant covers that 
 
 The effective policy is the union of the config base, persisted permanent grants, session grants, and single-call grants; the model never sees which tier an authorization came from. `^C` while a prompt is live rejects the current axis (it does not cancel the turn); an unknown answer prints a hint and re-prompts.
 
-Non-interactive `-p` runs have no one to ask: every uncovered requirement is denied and the denial is fed back to the model. Setting the relevant base scope (for example `write = ["."]`) authorizes it up front.
+Non-interactive `-p` runs have no one to ask: every uncovered requirement is denied and the denial is fed back to the model. Setting the relevant base scope (for example `write = ["."]`) authorizes it up front. `-p --approve-all` instead approves every escalation for that single run — the same in-memory grants, effective only for that turn and never persisted to config — and is refused (with a clear error) in the interactive REPL.
 
 Every instruction carries a session-start snapshot of the resolved base policy plus the negotiation mechanism: one line per axis in fixed order (`read` → `write` → `net` → `run` → `env`), empty axes reading `nothing is authorized`. The snapshot is flat and tier-free — it never names once/session/permanent or base-vs-acquired grants — so the model reads only what it may call and how to ask for more. It is appended after AGENTS.md (and any skill layer) on every turn, in both `-p` and REPL runs.
 
