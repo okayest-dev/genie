@@ -83,7 +83,7 @@ The model has access to five tools:
 | **bash** | Run shell commands via `sh -c`. Permission-gated on the run and net axes (see [Permissions](#permissions)). 120s timeout (configurable). |
 | **request_permission** | Pre-negotiate a permission grant for a call you expect to be denied (see [Permissions](#permissions)). Never auto-approved. |
 
-`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` is always-on for every default agent — it is a negotiation channel, not a capability — so it has no config toggle; an agent whose explicit `tools = [...]` list omits it drops it from that agent's toolset.
+`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` is always-on for every default agent — it is a negotiation channel, not a capability — so it has no config toggle; an agent whose explicit `tools = [...]` list omits it drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool.
 
 ## Configuration
 
@@ -190,12 +190,11 @@ Named agents can declare their own `[permissions]` section in their agent TOML f
 model = "some-model"
 
 [permissions]
-# This agent starts with NO base permissions — every axis escalates.
-# read = []   # explicit empty = nothing authorized
-# write = []
-# net   = []
-# run   = []
-# env   = []
+read  = []   # explicit empty = nothing authorized on this axis
+write = []
+net   = []
+run   = []
+env   = []
 ```
 
 The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. Skills are injected into the instruction between the instruction file and AGENTS.md. See [docs/agent-definitions.md](docs/agent-definitions.md) and [docs/skills.md](docs/skills.md).
@@ -244,14 +243,6 @@ The effective policy is the union of four tiers, most-specific-first:
 4. **Once** — single-call grants bound to the current tool call.
 
 The model **never sees tiers or provenance** — it only sees a flat, per-axis scope list in the session-start snapshot (see below).
-
-#### Scope matching
-
-- **Paths (read, write)**: prefix match. `/app` covers `/app/src/file.go`. Exact match also covers.
-- **Network (net)**: subdomain wildcard or exact. `*.example.com:443` covers `api.example.com:443`; bare `example.com:443` matches exactly.
-- **Run (run), Env (env)**: exact match only.
-- **Blanket grant** (scope `""`): covers any request on its axis, including blanket requests.
-- **Precedence**: exact > prefix > wildcard; for wildcards, longest suffix wins.
 
 #### Session-start snapshot
 
