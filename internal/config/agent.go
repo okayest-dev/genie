@@ -21,15 +21,33 @@ type AgentDef struct {
 	Tools           []string // nil = inherit all; non-nil = exact set
 	InheritAgentsMD *bool    // nil = true (inherit); explicit false = don't
 	Skills          []string // nil = inherit all; non-nil = exact set (empty = none)
+	// Permissions is the agent's [permissions] base section. nil = inherit the
+	// harness global base; a present section replaces it wholly (og-uy5.7).
+	// Agent files never declare permanent grants — those are harness-global and
+	// apply additively over either base.
+	Permissions *AgentPermissions
+}
+
+// AgentPermissions is the per-agent [permissions] TOML section: per-axis base
+// scopes. A present section replaces the harness global base wholly — an
+// unnamed axis is left empty, with no axis-level inheritance, matching agent
+// tools' replace-not-merge semantics.
+type AgentPermissions struct {
+	Read  []string `toml:"read"`
+	Write []string `toml:"write"`
+	Net   []string `toml:"net"`
+	Run   []string `toml:"run"`
+	Env   []string `toml:"env"`
 }
 
 // fileAgentDef is the TOML schema with pointer types for optionals.
 type fileAgentDef struct {
-	Model           string   `toml:"model"`
-	InstructionFile string   `toml:"instruction_file"`
-	Tools           []string `toml:"tools"`
-	InheritAgentsMD *bool    `toml:"inherit_agents_md"`
-	Skills          []string `toml:"skills"`
+	Model           string            `toml:"model"`
+	InstructionFile string            `toml:"instruction_file"`
+	Tools           []string          `toml:"tools"`
+	InheritAgentsMD *bool             `toml:"inherit_agents_md"`
+	Skills          []string          `toml:"skills"`
+	Permissions     *AgentPermissions `toml:"permissions"`
 }
 
 // ResolvedAgent is an AgentDef resolved against harness config defaults. The
@@ -44,6 +62,10 @@ type ResolvedAgent struct {
 	Tools           []string
 	InheritAgentsMD bool
 	Skills          []string // guaranteed non-nil; inherit-all or exact set
+	// Permissions is nil for an agent that declares no [permissions] section
+	// (inherits the harness global base), non-nil when the agent replaces the
+	// global base wholly (og-uy5.7).
+	Permissions *AgentPermissions
 }
 
 // ParseAgentDef parses a TOML agent definition file. The name is derived
@@ -70,6 +92,7 @@ func ParseAgentDef(data []byte, name, sourcePath string) (*AgentDef, error) {
 		Tools:           fa.Tools,
 		InheritAgentsMD: fa.InheritAgentsMD,
 		Skills:          fa.Skills,
+		Permissions:     fa.Permissions,
 	}, nil
 }
 
@@ -95,6 +118,7 @@ func ResolveAgentDef(def *AgentDef, cfg *Config, availableSkills []string) Resol
 		Tools:           allToolNames(cfg.Tools),
 		InheritAgentsMD: true,
 		Skills:          skills,
+		Permissions:     def.Permissions,
 	}
 	if def.InstructionFile != "" {
 		r.InstructionFile = def.InstructionFile
@@ -138,6 +162,37 @@ func allToolNames(t Tools) []string {
 // agent names outright.
 func (a *ResolvedAgent) HasExplicitModel() bool {
 	return a != nil && a.Model != ""
+}
+
+// EffectiveBase resolves the agent's base policy as name-keyed scopes. An
+// agent that declares a [permissions] section replaces the harness global
+// base wholly: only the axes it names are covered, every other axis is empty
+// (no axis-level inheritance) — the same replace-not-merge rule agent tools
+// follow. An agent without a section, and a nil agent, inherit the global base
+// unchanged. The global map is never mutated, and both paths return a fresh
+// map (the declared scopes and the global scopes are copied), so callers can
+// mutate the result without aliasing the source of truth (og-uy5.7).
+func (a *ResolvedAgent) EffectiveBase(global map[string][]string) map[string][]string {
+	if a == nil || a.Permissions == nil {
+		out := make(map[string][]string, len(global))
+		for axis, scopes := range global {
+			out[axis] = append([]string(nil), scopes...)
+		}
+		return out
+	}
+	out := make(map[string][]string)
+	for axis, scopes := range map[string][]string{
+		"read":  a.Permissions.Read,
+		"write": a.Permissions.Write,
+		"net":   a.Permissions.Net,
+		"run":   a.Permissions.Run,
+		"env":   a.Permissions.Env,
+	} {
+		if scopes != nil {
+			out[axis] = append([]string(nil), scopes...)
+		}
+	}
+	return out
 }
 
 // AgentReg holds discovered agent definitions. Created by scanning

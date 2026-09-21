@@ -93,6 +93,169 @@ func TestParseAgentDefPartialFields(t *testing.T) {
 	}
 }
 
+func TestParseAgentDefPermissions(t *testing.T) {
+	data := []byte(`
+model = "gpt-4o"
+
+[permissions]
+read = ["."]
+write = ["/work"]
+`)
+	def, err := ParseAgentDef(data, "coder", "/agents/coder.toml")
+	if err != nil {
+		t.Fatalf("ParseAgentDef: %v", err)
+	}
+	if def.Permissions == nil {
+		t.Fatal("Permissions = nil, want a declared [permissions] section")
+	}
+	if len(def.Permissions.Read) != 1 || def.Permissions.Read[0] != "." {
+		t.Errorf("Permissions.Read = %v, want [.]", def.Permissions.Read)
+	}
+	if len(def.Permissions.Write) != 1 || def.Permissions.Write[0] != "/work" {
+		t.Errorf("Permissions.Write = %v, want [/work]", def.Permissions.Write)
+	}
+	if def.Permissions.Net != nil || def.Permissions.Run != nil || def.Permissions.Env != nil {
+		t.Errorf("Permissions = %+v, want unnamed axes nil", def.Permissions)
+	}
+}
+
+func TestParseAgentDefPermissionsAbsent(t *testing.T) {
+	def, err := ParseAgentDef([]byte(`model = "gpt-4o"`), "coder", "/agents/coder.toml")
+	if err != nil {
+		t.Fatalf("ParseAgentDef: %v", err)
+	}
+	if def.Permissions != nil {
+		t.Errorf("Permissions = %+v, want nil (absent section inherits the global base)", def.Permissions)
+	}
+}
+
+func TestParseAgentDefPermissionsUnknownKey(t *testing.T) {
+	_, err := ParseAgentDef([]byte(`[permissions]
+read = ["."]
+bogus = ["/x"]
+`), "bad", "/x.toml")
+	if err == nil {
+		t.Fatal("ParseAgentDef accepted an unknown [permissions] key; want an error")
+	}
+}
+
+func TestResolveAgentDefPermissionsCarried(t *testing.T) {
+	cfg := &Config{}
+	def := &AgentDef{
+		Name:        "coder",
+		Source:      "/x.toml",
+		Permissions: &AgentPermissions{Read: []string{"/agent"}},
+	}
+	resolved := ResolveAgentDef(def, cfg, nil)
+	if resolved.Permissions == nil {
+		t.Fatal("Permissions = nil, want the declared section carried into resolution")
+	}
+	if len(resolved.Permissions.Read) != 1 || resolved.Permissions.Read[0] != "/agent" {
+		t.Errorf("Permissions.Read = %v, want [/agent]", resolved.Permissions.Read)
+	}
+	if resolved.Permissions.Write != nil {
+		t.Errorf("Permissions.Write = %v, want nil", resolved.Permissions.Write)
+	}
+}
+
+func TestEffectiveBase(t *testing.T) {
+	global := map[string][]string{"read": {"."}, "write": {"/work"}}
+	cases := []struct {
+		name  string
+		agent *ResolvedAgent
+		want  map[string][]string
+	}{
+		{
+			name:  "nil agent inherits global base",
+			agent: nil,
+			want:  global,
+		},
+		{
+			name:  "no permissions section inherits global base",
+			agent: &ResolvedAgent{Name: "plain"},
+			want:  global,
+		},
+		{
+			name: "declared section replaces global base wholly",
+			agent: &ResolvedAgent{Name: "reader", Permissions: &AgentPermissions{
+				Read: []string{"."},
+			}},
+			want: map[string][]string{"read": {"."}},
+		},
+		{
+			name: "unnamed axis stays empty under replacement",
+			agent: &ResolvedAgent{Name: "netted", Permissions: &AgentPermissions{
+				Read: []string{"."},
+				Net:  []string{"api.example.com"},
+			}},
+			want: map[string][]string{"read": {"."}, "net": {"api.example.com"}},
+		},
+		{
+			name: "explicit empty axis is empty, not inherited",
+			agent: &ResolvedAgent{Name: "bare", Permissions: &AgentPermissions{
+				Read:  []string{"."},
+				Write: []string{},
+			}},
+			want: map[string][]string{"read": {"."}, "write": {}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.agent.EffectiveBase(cloneBase(global))
+			for axis, wantScopes := range tc.want {
+				gotScopes, ok := got[axis]
+				if !ok {
+					t.Errorf("EffectiveBase missing axis %q; want %v", axis, wantScopes)
+					continue
+				}
+				if len(gotScopes) != len(wantScopes) {
+					t.Errorf("axis %q scopes = %v, want %v", axis, gotScopes, wantScopes)
+					continue
+				}
+				for i := range wantScopes {
+					if gotScopes[i] != wantScopes[i] {
+						t.Errorf("axis %q scopes = %v, want %v", axis, gotScopes, wantScopes)
+					}
+				}
+			}
+			for axis := range got {
+				if _, ok := tc.want[axis]; !ok {
+					t.Errorf("EffectiveBase leaked axis %q (%v); want it replaced away", axis, got[axis])
+				}
+			}
+		})
+	}
+}
+
+func TestEffectiveBaseDoesNotMutateDeclaredScopes(t *testing.T) {
+	agent := &ResolvedAgent{Permissions: &AgentPermissions{Write: []string{"/work"}}}
+	got := agent.EffectiveBase(nil)
+	got["write"][0] = "/mutated"
+	if agent.Permissions.Write[0] != "/work" {
+		t.Errorf("EffectiveBase mutated the declared scopes; got %v", agent.Permissions.Write)
+	}
+}
+
+// TestEffectiveBaseInheritPathCopiesGlobal: the inherit path must return a
+// fresh map too — mutating the result must not alias the config's base map
+// (og-uy5.7).
+func TestEffectiveBaseInheritPathCopiesGlobal(t *testing.T) {
+	global := map[string][]string{"read": {"."}, "write": {"/work"}}
+	got := (&ResolvedAgent{Name: "plain"}).EffectiveBase(global)
+	got["read"][0] = "/mutated"
+	if global["read"][0] != "." {
+		t.Errorf("EffectiveBase inherit path aliased the global map: %v", global["read"])
+	}
+}
+
+func cloneBase(m map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
 func TestParseAgentDefUnknownKeys(t *testing.T) {
 	for _, tc := range []struct {
 		name string

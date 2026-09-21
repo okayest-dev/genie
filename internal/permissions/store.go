@@ -115,6 +115,21 @@ func (s *Store) SetBase(b map[Axis][]string) {
 	}
 }
 
+// SetBaseFromConfig replaces the base from a name-keyed scope surface — the
+// resolved config surface for the global base or a per-agent [permissions]
+// replacement (og-uy5.7). Only the five axis keys are read; an unnamed axis is
+// left empty (replace-not-merge, no axis-level inheritance). Config parsing
+// never emits other keys.
+func (s *Store) SetBaseFromConfig(raw map[string][]string) {
+	b := make(map[Axis][]string, len(raw))
+	for _, a := range allAxes {
+		if scopes, ok := raw[string(a)]; ok {
+			b[a] = scopes
+		}
+	}
+	s.SetBase(b)
+}
+
 // GrantSession adds a session-tier grant covering scope.
 func (s *Store) GrantSession(axis Axis, scope string) {
 	g := Grant{Axis: axis, Scope: s.Normalize(axis, scope), Tier: TierSession, Granted: time.Now().UTC()}

@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/permissions"
 	"github.com/okayest-dev/genie/internal/session"
 )
 
@@ -558,5 +560,71 @@ func TestModelCatalogFailureDegradesToDefaultModel(t *testing.T) {
 	}
 	if !strings.Contains(out, "Current: alpha-model") {
 		t.Errorf("/model = %q, want 'Current: alpha-model'", out)
+	}
+}
+
+// TestApplyAgentBase pins the per-agent base switch in the permission store
+// (og-uy5.7): the global base applies for nil/no-permissions agents, an
+// agent's declared [permissions] replaces it wholly (its write prompts despite
+// a global write base), and switching back restores the global base.
+func TestApplyAgentBase(t *testing.T) {
+	cwd := filepath.Join(t.TempDir(), "work")
+	store := permissions.New(cwd)
+	cfg := &Config{
+		Cfg: &config.Config{
+			Permissions: config.Permissions{Base: map[string][]string{
+				"read":  {"."},
+				"write": {"."},
+			}},
+		},
+		PermissionStore: store,
+	}
+	globalWrite := filepath.Join(cwd, "x.go")
+
+	// No agent, and an agent without a [permissions] section, inherit the
+	// global base.
+	applyAgentBase(cfg, nil)
+	if !store.Covered(permissions.AxisWrite, globalWrite) {
+		t.Fatalf("global write base not applied for a nil agent")
+	}
+	applyAgentBase(cfg, &config.ResolvedAgent{Name: "plain"})
+	if !store.Covered(permissions.AxisWrite, globalWrite) {
+		t.Fatalf("global write base not inherited by an agent without permissions")
+	}
+
+	// A read-only [permissions] section replaces the base wholly: the global
+	// write base is gone, so a write must escalate.
+	applyAgentBase(cfg, &config.ResolvedAgent{
+		Name:        "reader",
+		Permissions: &config.AgentPermissions{Read: []string{"."}},
+	})
+	if store.Covered(permissions.AxisWrite, globalWrite) {
+		t.Errorf("write covered under a read-only agent base; want it prompted despite the global write base")
+	}
+	if !store.Covered(permissions.AxisRead, filepath.Join(cwd, "a.go")) {
+		t.Errorf("read under the agent's declared read=[] base not covered")
+	}
+	if store.Covered(permissions.AxisNet, "") {
+		t.Errorf("net covered under a read-only agent base; want empty (no axis-level inheritance)")
+	}
+
+	// Switching back to an inheriting agent restores the global base.
+	applyAgentBase(cfg, &config.ResolvedAgent{Name: "plain"})
+	if !store.Covered(permissions.AxisWrite, globalWrite) {
+		t.Errorf("global write base not restored on switch back to an inheriting agent")
+	}
+}
+
+// TestApplyAgentBaseRequiresStoreAndConfig reports that applyAgentBase is a
+// no-op (never a panic) for the nil-store / nil-config repl configurations
+// used by unit tests — a store without a config to resolve the global base
+// from keeps its own base untouched.
+func TestApplyAgentBaseRequiresStoreAndConfig(t *testing.T) {
+	applyAgentBase(&Config{}, &config.ResolvedAgent{Name: "x", Permissions: &config.AgentPermissions{Read: []string{"."}}})
+	cwd := t.TempDir()
+	store := permissions.New(cwd)
+	applyAgentBase(&Config{PermissionStore: store}, &config.ResolvedAgent{Name: "x", Permissions: &config.AgentPermissions{Read: []string{"."}}})
+	if store.Covered(permissions.AxisWrite, filepath.Join(cwd, "x.go")) {
+		t.Error("applyAgentBase touched a store without a config; want a no-op")
 	}
 }

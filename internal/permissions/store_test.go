@@ -135,6 +135,37 @@ func TestCoverageScopeMatchingMostSpecificWins(t *testing.T) {
 	}
 }
 
+func TestSetBaseFromConfigNameKeyed(t *testing.T) {
+	s := New("/work")
+	// Name-keyed surface: only the five axis keys are honored, an unnamed axis
+	// stays empty (replace-not-merge, so read on the base is dropped without a
+	// declared read) and a non-axis key never becomes coverage.
+	s.SetBaseFromConfig(map[string][]string{
+		"write":   {"/work"},
+		"ignored": {"/nope"},
+	})
+	if !s.Covered(AxisWrite, "/work/x.go") {
+		t.Errorf("write /work/x.go not covered by name-keyed base /work")
+	}
+	if s.Covered(AxisRead, "/work/a.go") {
+		t.Errorf("read covered under a base that declares no read; want empty (no axis-level inheritance)")
+	}
+	if s.Covered(Axis("ignored"), "/nope") {
+		t.Errorf("non-axis key leaked into the base surface")
+	}
+	if s.Covered(AxisNet, "") {
+		t.Errorf("net covered under a base that declares no net; want empty")
+	}
+	// Replacing again drops the prior write: a fresh surface wholly replaces.
+	s.SetBaseFromConfig(map[string][]string{"net": {"api.example.com"}})
+	if s.Covered(AxisWrite, "/work/x.go") {
+		t.Errorf("write covered after replacement with a net-only surface; want empty")
+	}
+	if !s.Covered(AxisNet, "api.example.com") {
+		t.Errorf("net api.example.com not covered after replacement")
+	}
+}
+
 func TestPathNormalization(t *testing.T) {
 	s := New("/work")
 	s.SetBase(map[Axis][]string{AxisWrite: {"/work/.", "/work/a/../"}})
