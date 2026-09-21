@@ -53,7 +53,7 @@ Starts an interactive session at the `genie>` prompt. Each input runs a full age
 genie -p "explain this project"
 ```
 
-Runs a single prompt, prints the reply to stdout, and exits. Tool calls requiring confirmation are auto-denied in this mode.
+Runs a single prompt, prints the reply to stdout, and exits. Tool calls requiring permissions the base policy does not cover are auto-denied in this mode; use `-p --approve-all` to blanket-approve every escalation for that single run (never persisted, refused in the interactive REPL).
 
 With no provider selected, `-p` runs on the first declared provider and prints a warning — it cannot prompt. No declared providers at all is a startup error.
 
@@ -80,7 +80,7 @@ The model has access to five tools:
 | **read** | Read file contents or list directories. Supports offset/limit pagination. Rejects binary files. |
 | **write** | Create or overwrite files. Permission-gated on the write axis (see [Permissions](#permissions)). Auto-creates parent directories. |
 | **edit** | Surgical find-and-replace. Exact, whitespace-sensitive matching. One pair at a time. |
-| **bash** | Run shell commands via `sh -c`. Requires confirmation. 120s timeout (configurable). |
+| **bash** | Run shell commands via `sh -c`. Permission-gated on the run and net axes (see [Permissions](#permissions)). 120s timeout (configurable). |
 | **request_permission** | Pre-negotiate a permission grant for a call you expect to be denied (see [Permissions](#permissions)). Never auto-approved. |
 
 `read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` is always-on for every default agent — it is a negotiation channel, not a capability — so it has no config toggle; an agent whose explicit `tools = [...]` list omits it drops it from that agent's toolset.
@@ -181,34 +181,130 @@ bash = true
 # requirement.
 ```
 
+### Per-agent permissions
+
+Named agents can declare their own `[permissions]` section in their agent TOML file. A present section **replaces** the harness global base entirely (replace-not-merge, like agent `tools`). An unnamed axis in the agent's section is left empty — there is no axis-level inheritance. Permanent grants (`[[permissions.permanent]]`) are always harness-global and apply additively over either base.
+
+```toml
+# ~/.config/genie/agents/restrictive.toml
+model = "some-model"
+
+[permissions]
+# This agent starts with NO base permissions — every axis escalates.
+# read = []   # explicit empty = nothing authorized
+# write = []
+# net   = []
+# run   = []
+# env   = []
+```
+
 The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. Skills are injected into the instruction between the instruction file and AGENTS.md. See [docs/agent-definitions.md](docs/agent-definitions.md) and [docs/skills.md](docs/skills.md).
 
 ### Permissions
 
-When a tool call needs access the effective policy does not cover, the turn pauses and the harness asks about each axis inline, most-dependent-last in the fixed order read → write → net → run → env:
+Genie uses a **per-axis permission escalation model** across all tools. When a tool call needs access the effective policy does not already cover, the streaming turn pauses and the harness negotiates inline, one axis at a time, in the fixed order `read` → `write` → `net` → `run` → `env`.
+
+#### The escalation prompt
 
 ```
 allow write /work/report.md? (o)nce/(s)ession/(p)ermanent/(r)eject:
+allow net? (o)nce/(s)ession/(p)ermanent/(r)eject:
 ```
 
-Answer with a terse key (`o`/`s`/`p`/`r`) or the full word. A grant covers that scope for the chosen lifetime:
+Answer with a terse key (`o`/`s`/`p`/`r`) or the full word (`once`/`session`/`permanent`/`reject`). An unknown answer prints `:: unknown choice - o/s/p/r` and re-prompts. `^C` while a prompt is live rejects the current axis (it does not cancel the turn).
 
-- **once** — just this call (spent on execute, discarded on deny).
-- **session** — until the REPL exits.
-- **permanent** — appended to `~/.config/genie/config.toml` as a `[[permissions.permanent]]` block and honored on every later run.
-- **reject** — the call is not executed; the model gets the grant/reject composite and can reformulate.
+| Grant | Lifetime |
+|-------|----------|
+| **once** | Just this call — spent on execute, discarded on deny, never carried forward. |
+| **session** | Until the REPL exits. |
+| **permanent** | Appended to `~/.config/genie/config.toml` as a `[[permissions.permanent]]` block with a timestamp; honored on every later run. |
+| **reject** | The call is not executed; the model receives a composite grant/reject result and can reformulate. |
 
-The effective policy is the union of the config base, persisted permanent grants, session grants, and single-call grants; the model never sees which tier an authorization came from. `^C` while a prompt is live rejects the current axis (it does not cancel the turn); an unknown answer prints a hint and re-prompts.
+The prompt shows the **exact normalized scope** for that axis:
+- **read / write**: absolute file paths (e.g., `/work/report.md`). A grant covers the path and everything beneath it (prefix match — `/work` covers `/work/src/main.go`).
+- **net**: `host:port` or `*.domain:port` wildcard. `*.github.com:443` covers `api.github.com:443`; a bare hostname matches exactly.
+- **run**: exact executable path (e.g., `/usr/bin/git`).
+- **env**: exact variable name (e.g., `DB_HOST`).
+- **Blanket (axis-only)**: scope omitted = blanket access on that axis (covers any scope on that axis).
 
-Non-interactive `-p` runs have no one to ask: every uncovered requirement is denied and the denial is fed back to the model. Setting the relevant base scope (for example `write = ["."]`) authorizes it up front. `-p --approve-all` instead approves every escalation for that single run — the same in-memory grants, effective only for that turn and never persisted to config — and is refused (with a clear error) in the interactive REPL.
+#### Escalation chain rules
 
-Every instruction carries a session-start snapshot of the resolved base policy plus the negotiation mechanism: one line per axis in fixed order (`read` → `write` → `net` → `run` → `env`), empty axes reading `nothing is authorized`. The snapshot is flat and tier-free — it never names once/session/permanent or base-vs-acquired grants — so the model reads only what it may call and how to ask for more. It is appended after AGENTS.md (and any skill layer) on every turn, in both `-p` and REPL runs.
+- Axes are prompted one at a time in fixed order (`read` → `write` → `net` → `run` → `env`).
+- A denial on one axis **does not stop the chain** — remaining axes still prompt.
+- Grants persist **immediately** into the store (so a later axis in the same chain can reuse them).
+- The tool call **executes only if every required axis is granted**.
+- A granted scope is **never broader than what was requested** — the normalized scope from the prompt is what the grant covers.
 
-When a tool call is denied mid-execution by a runtime permission check, the tool's structured `ERR_PERMISSION_DENIED` result is rewritten before it reaches the model into a fixed status/hint composite (`status: call not executed — <axis> unavailable at runtime` + a hint to request the axis in advance via `request_permission` or reformulate). Inline escalation is not available mid-call, so the composite always directs the model to pre-negotiate.
+#### Effective policy
 
-### Pre-negotiation with `request_permission`
+The effective policy is the union of four tiers, most-specific-first:
+1. **Base** — `[permissions]` in config (or per-agent replacement), restrictive default when absent: `read = ["."]`, all others empty.
+2. **Permanent** — `[[permissions.permanent]]` entries loaded at startup.
+3. **Session** — grants made during the REPL session.
+4. **Once** — single-call grants bound to the current tool call.
 
-The model can ask for a grant ahead of a call it expects to be denied — or after a mid-call runtime denial — through the `request_permission` tool, passing the axis (`read`, `write`, `net`, `run`, `env`) and an optional scope (omitted for blanket access on that axis). The user gets the same terse prompt as inline escalation, and the result is exactly one `Permission granted:` or `Permission rejected:` line. A grant covers exactly the scope requested, so the model is guided to request its widest anticipated need. Requesting permission does not gate the tool; it never approves itself, and a rejection grants nothing.
+The model **never sees tiers or provenance** — it only sees a flat, per-axis scope list in the session-start snapshot (see below).
+
+#### Scope matching
+
+- **Paths (read, write)**: prefix match. `/app` covers `/app/src/file.go`. Exact match also covers.
+- **Network (net)**: subdomain wildcard or exact. `*.example.com:443` covers `api.example.com:443`; bare `example.com:443` matches exactly.
+- **Run (run), Env (env)**: exact match only.
+- **Blanket grant** (scope `""`): covers any request on its axis, including blanket requests.
+- **Precedence**: exact > prefix > wildcard; for wildcards, longest suffix wins.
+
+#### Session-start snapshot
+
+Every instruction carries a flat, tier-free snapshot of the resolved base policy plus the negotiation mechanism — one line per axis in fixed order (`read` → `write` → `net` → `run` → `env`), empty axes reading `nothing is authorized`:
+
+```
+Current permissions:
+- read: /work
+- write: nothing is authorized
+- net: nothing is authorized
+- run: nothing is authorized
+- env: nothing is authorized
+
+When a tool call needs a permission you do not already have, the turn pauses for negotiation and returns a Permission granted: or Permission rejected: result line. A granted scope is reused — paths match by prefix, hosts by subdomain wildcard, executables and environment variables exactly. To request access in advance, call request_permission rather than the tool itself. After a rejection, pursue a materially different alternative before re-asking.
+```
+
+This snapshot is appended after AGENTS.md (and any skill layer) on every turn, in both `-p` and REPL runs.
+
+#### Headless (`-p`) mode
+
+Non-interactive `-p` runs have no one to ask:
+- **Default**: every uncovered requirement is auto-denied; the denial is fed back to the model as a `Permission rejected:` line.
+- **`--approve-all`**: blanket-approves every escalation for that single run — the same in-memory grants, effective only for that turn, **never persisted to config**. This flag is **refused in the interactive REPL** (exit code 3, clear error) because a session has a user to ask.
+
+Setting the relevant base scope in config (e.g., `write = ["."]`) authorizes it up front for headless runs.
+
+#### Mid-call runtime denial (`NotCapable`)
+
+If a tool fails mid-execution with a runtime permission error, the harness rewrites it into a fixed composite before it reaches the model:
+
+```
+status: call not executed — write unavailable at runtime
+hint: inline escalation is not available mid-execution — request write access in advance via request_permission, or reformulate.
+```
+
+Inline escalation is not available mid-call; the composite always directs the model to pre-negotiate via `request_permission`.
+
+#### Pre-negotiation with `request_permission`
+
+The model can ask for a grant ahead of a call it expects to be denied — or after a mid-call runtime denial — through the `request_permission` tool:
+
+```json
+{"permission": "write", "scope": "/work/output.txt"}
+```
+
+- `permission`: one of `read`, `write`, `net`, `run`, `env` (required).
+- `scope`: optional; omitted = blanket access on that axis.
+
+The user gets the same terse prompt as inline escalation, and the result is exactly one `Permission granted:` or `Permission rejected:` line. A grant covers **exactly the scope requested**, so the model should request its widest anticipated need. `request_permission` is a negotiation channel, not a capability — it never auto-approves, and a rejection grants nothing. It is always-on in every default agent; an agent whose explicit `tools = [...]` list omits it drops it from that agent's toolset.
+
+#### Retired: the old confirm gates
+
+The previous `tools.Confirmer` seam (bash every-call prompts, write-overwrite prompts) has been removed. The per-axis escalation flow replaces it entirely — there is now exactly one permission mechanism. `config.Tools.AutoApprove` was never implemented and does not ship.
 
 ### Environment variables
 
