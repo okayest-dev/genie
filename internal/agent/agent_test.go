@@ -317,3 +317,66 @@ func (b *countingBashStub) Execute(_ json.RawMessage) (string, error) {
 	*b.calls++
 	return "output", nil
 }
+
+// notCapableStub is the stub emitter for a mid-call runtime permission denial:
+// it returns the structured NotCapable marker as its tool output, the shape the
+// harness mapper must rewrite.
+type notCapableStub struct{}
+
+func (n *notCapableStub) Name() string        { return "code" }
+func (n *notCapableStub) Description() string { return "Run analysis" }
+func (n *notCapableStub) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (n *notCapableStub) Execute(_ json.RawMessage) (string, error) {
+	return `{"code":"ERR_PERMISSION_DENIED","permission":"net","resource":"api.example.com"}`, nil
+}
+
+// TestRunTurnMapsNotCapableResult asserts a tool result carrying a structured
+// NotCapable marker is rewritten into the pinned status/hint composite before
+// it reaches the model (og-uy5.5).
+func TestRunTurnMapsNotCapableResult(t *testing.T) {
+	var toolResult string
+	mock := &mockStreamClient{
+		streamFunc: func(_ context.Context, req llm.Request) (iter.Seq[llm.Event], error) {
+			for _, m := range req.Messages {
+				if m.Role == llm.RoleTool {
+					toolResult = m.Content
+				}
+			}
+			if toolResult != "" {
+				return func(yield func(llm.Event) bool) {
+					yield(llm.Event{Kind: llm.EventText, Text: "done"})
+					yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+				}, nil
+			}
+			return func(yield func(llm.Event) bool) {
+				yield(llm.Event{Kind: llm.EventToolCall, ToolCalls: []llm.ToolCall{
+					{ID: "call_1", Name: "code", Arguments: `{}`},
+				}})
+				yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishToolCalls})
+			}, nil
+		},
+	}
+	reg := tools.NewRegistry()
+	reg.Register(&notCapableStub{})
+
+	var out bytes.Buffer
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, nil, nil, reg, nil, ""); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if toolResult == "" {
+		t.Fatal("no tool result observed in the follow-up request")
+	}
+	if strings.Contains(toolResult, "ERR_PERMISSION_DENIED") {
+		t.Errorf("tool result still carries the raw marker: %q", toolResult)
+	}
+	for _, frag := range []string{
+		"status: call not executed — net unavailable at runtime",
+		"request_permission",
+	} {
+		if !strings.Contains(toolResult, frag) {
+			t.Errorf("tool result missing %q: %q", frag, toolResult)
+		}
+	}
+}

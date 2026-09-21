@@ -1,0 +1,2 @@
+status: call not executed — net unavailable at runtime
+hint: inline escalation is not available mid-execution — request net access in advance via request_permission, or reformulate

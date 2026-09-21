@@ -236,8 +236,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	skillLayer := skill.BuildSkillLayer(bound)
 
-	// Assemble instruction with agent context.
-	instruction, err := instruct.LoadWithAgent(cfg, runAgent, skillLayer, cwd)
+	// Assemble instruction with agent context, appending the base-policy
+	// snapshot and negotiation mechanism paragraph (og-uy5.5).
+	instruction, err := instruct.LoadWithAgentAndPermissions(cfg, runAgent, skillLayer, cwd, permStore.BaseSnapshot())
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
