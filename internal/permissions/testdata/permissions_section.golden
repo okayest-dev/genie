@@ -1,0 +1,8 @@
+Current permissions:
+- read: ., /etc
+- write: nothing is authorized
+- net: api.openai.com:443
+- run: nothing is authorized
+- env: nothing is authorized
+
+When a tool call needs a permission you do not already have, the turn pauses for negotiation and returns a Permission granted: or Permission rejected: result line. A granted scope is reused — paths match by prefix, hosts by subdomain wildcard, executables and environment variables exactly. To request access in advance, call request_permission rather than the tool itself. After a rejection, pursue a materially different alternative before re-asking.

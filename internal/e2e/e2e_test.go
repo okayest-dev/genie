@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/okayest-dev/genie/internal/e2e/fake"
+	"github.com/okayest-dev/genie/internal/permissions"
 )
 
 var binPath string
@@ -217,7 +218,7 @@ func assertRequestModel(t *testing.T, p *fake.Provider, wantModel, wantAuth stri
 }
 
 // assertSystemMessage checks the first message in the request is a system
-// message with the given content prefix.
+// message with exactly the given content.
 func assertSystemMessage(t *testing.T, p *fake.Provider, wantContent string) {
 	t.Helper()
 	reqs := p.Requests()
@@ -242,6 +243,17 @@ func assertSystemMessage(t *testing.T, p *fake.Provider, wantContent string) {
 	if body.Messages[0].Content != wantContent {
 		t.Errorf("system message content = %q, want %q", body.Messages[0].Content, wantContent)
 	}
+}
+
+// permSection returns the instruction suffix every run carries under the
+// default restrictive base policy (read=["."]): the base-policy snapshot plus
+// the negotiation mechanism paragraph (og-uy5.5). Exact-match system message
+// tests must suffix their want with it. Note the leading newline, which the
+// assembler inserts before the section.
+func permSection() string {
+	return "\n" + permissions.RenderPermissionsSection(map[permissions.Axis][]string{
+		permissions.AxisRead: {"."},
+	})
 }
 
 // configDir creates a fresh XDG_CONFIG_HOME with genie/config.toml holding the
@@ -308,7 +320,7 @@ func TestStreamsReply(t *testing.T) {
 	if body.Model != "test-model" {
 		t.Errorf("request model = %q, want %q", body.Model, "test-model")
 	}
-	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.")
+	assertSystemMessage(t, p, "You are genie, a helpful terminal agent."+permSection())
 	if len(body.Messages) != 2 {
 		t.Fatalf("request messages = %+v, want 2 messages (system + user)", body.Messages)
 	}
@@ -568,7 +580,7 @@ func TestDefaultPromptAlwaysInRequest(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.")
+	assertSystemMessage(t, p, "You are genie, a helpful terminal agent."+permSection())
 }
 
 func TestInstructionFileInRequest(t *testing.T) {
@@ -594,7 +606,7 @@ func TestInstructionFileInRequest(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	want := "You are genie, a helpful terminal agent.\ncustom agent rules"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
 }
 
 func TestAGENTSMDInRequest(t *testing.T) {
@@ -619,7 +631,7 @@ func TestAGENTSMDInRequest(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	want := "You are genie, a helpful terminal agent.\nproject rules"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
 }
 
 func TestMissingInstructionFileFailsAtStartup(t *testing.T) {
@@ -664,7 +676,7 @@ func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	want := "You are genie, a helpful terminal agent.\n---config---\n---agents---"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
 }
 
 // writeSkill creates <dir>/<name>/SKILL.md with the given front matter and
@@ -716,7 +728,7 @@ func TestSKILLMDInjectedIntoSystemMessage(t *testing.T) {
 		"Alpha body.\n" +
 		"### Skill: beta\n" +
 		"Beta body.\n"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
 }
 
 // TestEmptySkillPoolNoLayer asserts an empty discovery dir injects no skill
@@ -732,7 +744,7 @@ func TestEmptySkillPoolNoLayer(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.")
+	assertSystemMessage(t, p, "You are genie, a helpful terminal agent."+permSection())
 }
 
 // TestSKILLMDOrderInInstruction asserts the skill layer sits between the
@@ -776,7 +788,7 @@ func TestSKILLMDOrderInInstruction(t *testing.T) {
 		"### Skill: alpha\n" +
 		"Alpha body.\n\n" +
 		"---agents---"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
 }
 
 // TestConfigSkillsEnableAllowlist asserts [skills] enable limits the injected
@@ -807,7 +819,7 @@ func TestConfigSkillsEnableAllowlist(t *testing.T) {
 		"- alpha: Handles alpha tasks.\n" +
 		"### Skill: alpha\n" +
 		"Alpha body.\n"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
 }
 
 // TestAgentSkillsSubset asserts an agent declaring skills binds only what it
@@ -848,7 +860,7 @@ func TestAgentSkillsSubset(t *testing.T) {
 		"- beta: Handles beta tasks.\n" +
 		"### Skill: beta\n" +
 		"Beta body.\n"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
 }
 
 // TestAgentUnknownSkillFailsStartup asserts an agent naming a skill that is
@@ -907,7 +919,97 @@ func TestConfigSkillsDisableDenylist(t *testing.T) {
 		"- alpha: Handles alpha tasks.\n" +
 		"### Skill: alpha\n" +
 		"Alpha body.\n"
-	assertSystemMessage(t, p, want)
+	assertSystemMessage(t, p, want+permSection())
+}
+
+// TestInstructionCarriesPermissionSnapshotAndMechanism asserts every request's
+// system message carries the base-policy snapshot and the negotiation mechanism
+// paragraph (og-uy5.5). Both -p and REPL modes must include it.
+func TestInstructionCarriesPermissionSnapshotAndMechanism(t *testing.T) {
+	type sysCase struct {
+		name string
+		sys  string
+	}
+	snapshotAndMechanism := func(t *testing.T, p *fake.Provider) {
+		t.Helper()
+		sys := systemContent(t, p)
+		for _, frag := range []string{
+			"Current permissions:",
+			"- read: .",
+			"- write: nothing is authorized",
+			"- net: nothing is authorized",
+			"- run: nothing is authorized",
+			"- env: nothing is authorized",
+			"Permission granted: or Permission rejected:",
+			"prefix",
+			"subdomain wildcard",
+			"request_permission",
+			"materially different alternative",
+		} {
+			if !strings.Contains(sys, frag) {
+				t.Errorf("system message missing %q:\n%s", frag, sys)
+			}
+		}
+	}
+
+	sysCases := []sysCase{
+		{name: "prompt_mode", sys: ""},
+		{name: "repl_mode", sys: ""},
+	}
+	for _, tc := range sysCases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := scriptedProvider(t, fake.Behavior{
+				Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+			})
+			env := []string{
+				"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(p.URL, "test-model")),
+				"OPENCODE_API_KEY=test-key",
+				"GENIE_SESSION_DIR=" + t.TempDir(),
+			}
+			if tc.name == "prompt_mode" {
+				stdout, stderr, code := run(t, env, "-p", "hi")
+				if code != 0 {
+					t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+				}
+				if stdout != "ok\n" {
+					t.Errorf("stdout = %q, want %q", stdout, "ok\n")
+				}
+			} else {
+				workDir := t.TempDir()
+				stdout, stderr, code := runInDirWithStdin(t, workDir, "hi\n/quit\n", env)
+				if code != 0 {
+					t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+				}
+				if !strings.Contains(stdout, "ok") {
+					t.Errorf("stdout = %q, want the model's reply", stdout)
+				}
+			}
+			snapshotAndMechanism(t, p)
+		})
+	}
+}
+
+// systemContent returns the first message's content from the first request the
+// provider recorded.
+func systemContent(t *testing.T, p *fake.Provider) string {
+	t.Helper()
+	reqs := p.Requests()
+	if len(reqs) < 1 {
+		t.Fatalf("no requests recorded")
+	}
+	var body struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if len(body.Messages) < 1 {
+		t.Fatalf("request has no messages")
+	}
+	return body.Messages[0].Content
 }
 
 // TestTextStreamsLive asserts deltas arrive before the stream (and process)
@@ -1165,12 +1267,13 @@ func TestSessionPersistence(t *testing.T) {
 	}
 	transcript := string(data)
 
-	// Verify system message
+	// Verify system message: the default prompt carries the appended permission
+	// snapshot (og-uy5.5), and both are persisted to the transcript.
 	if !strings.Contains(transcript, `"role":"system"`) {
 		t.Errorf("transcript missing system message")
 	}
-	if !strings.Contains(transcript, `"content":"You are genie, a helpful terminal agent."`) {
-		t.Errorf("transcript missing system prompt content")
+	if !strings.Contains(transcript, `"content":"You are genie, a helpful terminal agent.\nCurrent permissions:`) {
+		t.Errorf("transcript missing system prompt content with permission snapshot")
 	}
 
 	// Verify user message
@@ -2560,7 +2663,7 @@ func TestRequestPermissionInvalidPermissionRejected(t *testing.T) {
 	if len(*bodies) < 2 {
 		t.Fatalf("requests = %d, want the error fed back", len(*bodies))
 	}
-	if !strings.Contains((*bodies)[1], "invalid permission") {
+	if !strings.Contains((*bodies)[1], "must be one of read, write, net, run, env, got sudo") {
 		t.Errorf("request 2 must carry the invalid-axis error; body=%s", (*bodies)[1])
 	}
 }

@@ -202,6 +202,10 @@ The effective policy is the union of the config base, persisted permanent grants
 
 Non-interactive `-p` runs have no one to ask: every uncovered requirement is denied and the denial is fed back to the model. Setting the relevant base scope (for example `write = ["."]`) authorizes it up front.
 
+Every instruction carries a session-start snapshot of the resolved base policy plus the negotiation mechanism: one line per axis in fixed order (`read` → `write` → `net` → `run` → `env`), empty axes reading `nothing is authorized`. The snapshot is flat and tier-free — it never names once/session/permanent or base-vs-acquired grants — so the model reads only what it may call and how to ask for more. It is appended after AGENTS.md (and any skill layer) on every turn, in both `-p` and REPL runs.
+
+When a tool call is denied mid-execution by a runtime permission check, the tool's structured `ERR_PERMISSION_DENIED` result is rewritten before it reaches the model into a fixed status/hint composite (`status: call not executed — <axis> unavailable at runtime` + a hint to request the axis in advance via `request_permission` or reformulate). Inline escalation is not available mid-call, so the composite always directs the model to pre-negotiate.
+
 ### Pre-negotiation with `request_permission`
 
 The model can ask for a grant ahead of a call it expects to be denied — or after a mid-call runtime denial — through the `request_permission` tool, passing the axis (`read`, `write`, `net`, `run`, `env`) and an optional scope (omitted for blanket access on that axis). The user gets the same terse prompt as inline escalation, and the result is exactly one `Permission granted:` or `Permission rejected:` line. A grant covers exactly the scope requested, so the model is guided to request its widest anticipated need. Requesting permission does not gate the tool; it never approves itself, and a rejection grants nothing.
@@ -341,7 +345,7 @@ Max 16 plugins loaded concurrently. Plugins that crash or hang are automatically
 
 ## Agent instructions
 
-Genie reads `AGENTS.md` from the working directory (if present) and sends it as the agent instruction on every turn. Set `instruction_file` in config or `GENIE_INSTRUCTION_FILE` env var to use a different file.
+Genie reads `AGENTS.md` from the working directory (if present) and sends it as the agent instruction on every turn. Set `instruction_file` in config or `GENIE_INSTRUCTION_FILE` env var to use a different file. The permission snapshot and negotiation mechanism paragraph (see [Permissions](#permissions)) are appended after AGENTS.md on every turn.
 
 ## Session persistence
 

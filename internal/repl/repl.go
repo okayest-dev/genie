@@ -312,7 +312,11 @@ func resolveInstruction(cfg *Config, agent *config.ResolvedAgent) string {
 		slog.Warn(w.Message)
 	}
 
-	s, err := instruct.LoadWithAgent(cfg.Cfg, agent, skillLayer, cfg.Cwd)
+	var base map[permissions.Axis][]string
+	if cfg.PermissionStore != nil {
+		base = cfg.PermissionStore.BaseSnapshot()
+	}
+	s, err := instruct.LoadWithAgentAndPermissions(cfg.Cfg, agent, skillLayer, cfg.Cwd, base)
 	if err != nil {
 		slog.Error("failed to resolve instruction", "error", err)
 		return cfg.Instruction

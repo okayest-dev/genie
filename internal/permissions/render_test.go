@@ -3,6 +3,7 @@ package permissions
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,76 @@ func TestRenderDeniedCompositeIncludesGrants(t *testing.T) {
 	rejects := []Grant{{Axis: AxisRun, Scope: "python3", Tier: TierOnce}}
 	if got := RenderDeniedComposite(grants, rejects); got != want {
 		t.Errorf("denied composite mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestRenderBaseSnapshotFlatPerAxis(t *testing.T) {
+	base := map[Axis][]string{
+		AxisRead: {".", "/etc"},
+		AxisNet:  {"api.openai.com:443"},
+	}
+	got := RenderBaseSnapshot(base)
+	want := "" +
+		"Current permissions:\n" +
+		"- read: ., /etc\n" +
+		"- write: nothing is authorized\n" +
+		"- net: api.openai.com:443\n" +
+		"- run: nothing is authorized\n" +
+		"- env: nothing is authorized"
+	if got != want {
+		t.Errorf("snapshot mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestRenderBaseSnapshotConstantAxisOrder(t *testing.T) {
+	base := map[Axis][]string{
+		AxisEnv:   {"HOME"},
+		AxisRun:   {"python3"},
+		AxisNet:   {"api.openai.com:443"},
+		AxisWrite: {"/work"},
+		AxisRead:  {"."},
+	}
+	got := RenderBaseSnapshot(base)
+	read := strings.Index(got, "- read:")
+	write := strings.Index(got, "- write:")
+	net := strings.Index(got, "- net:")
+	run := strings.Index(got, "- run:")
+	env := strings.Index(got, "- env:")
+	if !(read < write && write < net && net < run && run < env) {
+		t.Errorf("axes not in fixed order read→write→net→run→env:\n%s", got)
+	}
+}
+
+func TestRenderPermissionsSectionMatchesGolden(t *testing.T) {
+	want := golden(t, "permissions_section.golden")
+	base := map[Axis][]string{
+		AxisRead: {".", "/etc"},
+		AxisNet:  {"api.openai.com:443"},
+	}
+	if got := RenderPermissionsSection(base); got != want {
+		t.Errorf("section mismatch:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+func TestMechanismTextZeroTierVocabulary(t *testing.T) {
+	lower := strings.ToLower(MechanismText)
+	for _, banned := range []string{"once", "session", "permanent", "tier", "base"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("mechanism text mentions forbidden tier vocabulary %q: %q", banned, MechanismText)
+		}
+	}
+}
+
+func TestMechanismTextStatesNegotiationMechanism(t *testing.T) {
+	need := []string{
+		"Permission granted:", "Permission rejected:",
+		"prefix", "subdomain wildcard", "exactly",
+		"request_permission",
+		"materially different alternative",
+	}
+	for _, frag := range need {
+		if !strings.Contains(MechanismText, frag) {
+			t.Errorf("mechanism text missing %q:\n%s", frag, MechanismText)
+		}
 	}
 }

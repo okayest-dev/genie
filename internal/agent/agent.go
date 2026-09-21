@@ -447,6 +447,14 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				slog.Info("tool completed", "tool", tc.Name, "result_length", len(result))
 			}
 
+			// A mid-call runtime permission denial surfaces as a structured
+			// NotCapable marker in the tool output; rewrite it into the pinned
+			// status/hint composite so the model sees actionable guidance, not
+			// raw structured bytes (og-uy5.5).
+			if mapped, ok := permissions.MapNotCapable(toolContent); ok {
+				toolContent = mapped
+			}
+
 			// Newly-negotiated grants precede the tool result (or its error) so
 			// the model learns the effective set from results only.
 			if prelude != "" {

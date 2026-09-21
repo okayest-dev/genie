@@ -1,6 +1,8 @@
 // Package instruct assembles the agent instruction from three append-only
 // sources in order: a built-in default prompt (always present), an optional
 // config instruction file, and an optional AGENTS.md in the working directory.
+// When a resolved base policy is provided, a permission snapshot and
+// negotiation mechanism paragraph are appended last (og-uy5.5).
 package instruct
 
 import (
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/okayest-dev/genie/internal/config"
+	"github.com/okayest-dev/genie/internal/permissions"
 )
 
 // DefaultPrompt is the built-in system instruction always prepended.
@@ -30,6 +33,20 @@ func Load(cfg *config.Config, cwd string) (string, error) {
 //   - agent.InheritAgentsMD controls AGENTS.md inclusion (default true)
 //   - skillLayer is injected between the instruction file and AGENTS.md
 func LoadWithAgent(cfg *config.Config, agent *config.ResolvedAgent, skillLayer string, cwd string) (string, error) {
+	return assemble(cfg, agent, skillLayer, cwd, nil)
+}
+
+// LoadWithAgentAndPermissions assembles the instruction like LoadWithAgent and
+// appends the base-policy snapshot plus negotiation mechanism paragraph when
+// base is non-nil. base must come from the permission store's BaseSnapshot() so
+// the model's view is flat and tier-free: permanent/session/once grants never
+// enter the instruction (og-73l.4). The snapshot is a session-start list; it
+// changes only when the base changes (e.g. an /agent switch).
+func LoadWithAgentAndPermissions(cfg *config.Config, agent *config.ResolvedAgent, skillLayer string, cwd string, base map[permissions.Axis][]string) (string, error) {
+	return assemble(cfg, agent, skillLayer, cwd, base)
+}
+
+func assemble(cfg *config.Config, agent *config.ResolvedAgent, skillLayer string, cwd string, base map[permissions.Axis][]string) (string, error) {
 	instruction := DefaultPrompt
 
 	// Determine which instruction file to use.
@@ -73,6 +90,12 @@ func LoadWithAgent(cfg *config.Config, agent *config.ResolvedAgent, skillLayer s
 		} else {
 			slog.Info("AGENTS.md not found", "path", agentsPath)
 		}
+	}
+
+	if base != nil {
+		section := permissions.RenderPermissionsSection(base)
+		instruction += "\n" + section
+		slog.Info("permission policy appended", "bytes", len(section))
 	}
 
 	slog.Info("instruction assembled", "total_bytes", len(instruction))
