@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"iter"
 	"path/filepath"
@@ -329,5 +330,95 @@ func TestBuildPermissionStore(t *testing.T) {
 		Permanent: []config.PermanentGrant{{Permission: "bogus"}},
 	}); err == nil {
 		t.Fatal("buildPermissionStore accepted an unknown axis; want an error")
+	}
+}
+
+// TestApproveAllRefusedWithoutHeadless: --approve-all is refused before any
+// provider or config work when no -p prompt was given — an interactive run has
+// a user to ask and no single-turn scope for a blanket grant to expire in
+// (og-uy5.6). The refusal is a usage error (code 3) and must not reach config
+// loading or publish any approval.
+func TestApproveAllRefusedWithoutHeadless(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--approve-all"}, &stdout, &stderr)
+	if code != 3 {
+		t.Errorf("exit code = %d, want 3", code)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--approve-all requires headless mode") {
+		t.Errorf("stderr = %q, want the headless-only refusal", stderr.String())
+	}
+}
+
+// TestHoistApproveAllAfterPrompt: "-p --approve-all <prompt>" is rewritten so
+// the approval flag parses before -p takes its value; the single-dash and
+// --prompt spellings hoist too, and unrelated forms pass through unchanged.
+func TestHoistApproveAllAfterPrompt(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want []string
+	}{
+		{in: []string{"-p", "--approve-all", "hello"}, want: []string{"--approve-all", "-p", "hello"}},
+		{in: []string{"--prompt", "-approve-all", "hello"}, want: []string{"-approve-all", "--prompt", "hello"}},
+		{in: []string{"--approve-all", "-p", "hello"}, want: []string{"--approve-all", "-p", "hello"}},
+		{in: []string{"-p", "hello"}, want: []string{"-p", "hello"}},
+		{in: []string{"-p"}, want: []string{"-p"}},
+		{in: []string{"-p", "--approve-all"}, want: []string{"--approve-all", "-p"}},
+	}
+	for _, tc := range cases {
+		got := hoistApproveAllAfterPrompt(tc.in)
+		if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+			t.Errorf("hoistApproveAllAfterPrompt(%v) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestHeadlessNegotiator: the -p gate picks DenyAll by default and ApproveAll
+// under --approve-all, never anything persistent.
+func TestHeadlessNegotiator(t *testing.T) {
+	if _, ok := headlessNegotiator(false).(permissions.DenyAll); !ok {
+		t.Error("default negotiator must be DenyAll")
+	}
+	if _, ok := headlessNegotiator(true).(permissions.ApproveAll); !ok {
+		t.Error("--approve-all negotiator must be ApproveAll")
+	}
+}
+
+// TestBuildRegistrySeedsRequestToolWithHeadlessNegotiator: request_permission
+// is seeded with the run's headless negotiator, so what it grants lines up
+// with the deny-point gate under both auto-deny and --approve-all.
+func TestBuildRegistrySeedsRequestToolWithHeadlessNegotiator(t *testing.T) {
+	cwd := t.TempDir()
+	cases := []struct {
+		name       string
+		neg        permissions.Negotiator
+		wantPrefix string
+	}{
+		{name: "deny-all", neg: permissions.DenyAll{}, wantPrefix: "Permission rejected: write " + filepath.Join(cwd, "f.txt")},
+		{name: "approve-all", neg: permissions.ApproveAll{}, wantPrefix: "Permission granted: write " + filepath.Join(cwd, "f.txt")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := buildRegistry(cwd, config.Tools{}, 0, permissions.New(cwd), nil, tc.neg)
+			tool, ok := reg.Get("request_permission")
+			if !ok {
+				t.Fatalf("request_permission not registered")
+			}
+			execTool, ok := tool.(interface {
+				Execute(json.RawMessage) (string, error)
+			})
+			if !ok {
+				t.Fatalf("request_permission tool %T has no Execute", tool)
+			}
+			out, err := execTool.Execute(json.RawMessage(`{"permission":"write","scope":"f.txt"}`))
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if !strings.HasPrefix(out, tc.wantPrefix) {
+				t.Errorf("out = %q, want it to start with %q", out, tc.wantPrefix)
+			}
+		})
 	}
 }

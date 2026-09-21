@@ -41,6 +41,17 @@ func (DenyAll) Negotiate(context.Context, Axis, string) (Response, error) {
 	return ResponseReject, nil
 }
 
+// ApproveAll is the headless --approve-all negotiator: it approves every
+// uncovered requirement as an in-memory session grant, so a trusted one-shot
+// run never blocks. Grants live only for that single turn; nothing is
+// persisted.
+type ApproveAll struct{}
+
+// Negotiate grants the requirement for the run.
+func (ApproveAll) Negotiate(context.Context, Axis, string) (Response, error) {
+	return ResponseSession, nil
+}
+
 // Gate is the deny-point escalation evaluator: it turns a tool's declared
 // requirements into an allow/deny decision, negotiating each uncovered axis
 // one at a time.

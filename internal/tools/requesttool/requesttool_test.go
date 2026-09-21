@@ -278,6 +278,30 @@ func TestExecuteDenyAllDefault(t *testing.T) {
 	}
 }
 
+func TestExecuteApproveAll(t *testing.T) {
+	// --approve-all routes the headless ApproveAll negotiator into the tool:
+	// pre-negotiation grants the run-scoped session and never persists.
+	cwd := t.TempDir()
+	store := permissions.New(cwd)
+	sink := &trackingSink{}
+	tool := New(store, sink.Sink)
+	tool.SetNegotiator(permissions.ApproveAll{})
+
+	out, err := tool.Execute(xargs(t, map[string]any{"permission": "write", "scope": "out.txt"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Permission granted: write " + filepath.Join(cwd, "out.txt"); out != want {
+		t.Errorf("out = %q, want %q", out, want)
+	}
+	if !store.Covered(permissions.AxisWrite, "out.txt") {
+		t.Error("approve-all grant must cover the requested scope")
+	}
+	if len(sink.grants) != 0 {
+		t.Errorf("approve-all must never persist; sink=%+v", sink.grants)
+	}
+}
+
 func TestExecuteBlanketScope(t *testing.T) {
 	cwd := t.TempDir()
 	store := permissions.New(cwd)

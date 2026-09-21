@@ -307,8 +307,8 @@ func TestGateNoRequirementsAllows(t *testing.T) {
 	}
 }
 
-// TestDenyAllAlwaysRejects: the headless negotiator rejects every requirement
-// and never errors.
+// TestDenyAllAlwaysRejects: the headless auto-deny negotiator rejects every
+// requirement and never errors.
 func TestDenyAllAlwaysRejects(t *testing.T) {
 	resp, err := DenyAll{}.Negotiate(context.Background(), AxisRun, "ls")
 	if err != nil {
@@ -316,5 +316,46 @@ func TestDenyAllAlwaysRejects(t *testing.T) {
 	}
 	if resp != ResponseReject {
 		t.Fatalf("resp = %q, want reject", resp)
+	}
+}
+
+// TestApproveAllAlwaysApproves: the headless --approve-all negotiator
+// approves every requirement as an in-memory session grant (never persisted)
+// and never errors.
+func TestApproveAllAlwaysApproves(t *testing.T) {
+	resp, err := ApproveAll{}.Negotiate(context.Background(), AxisWrite, "/work/x.txt")
+	if err != nil {
+		t.Fatalf("Negotiate: %v", err)
+	}
+	if resp != ResponseSession {
+		t.Fatalf("resp = %q, want session grant", resp)
+	}
+}
+
+func TestGateApproveAllGrantsAndNeverPersists(t *testing.T) {
+	store := New("/work")
+	var sunk []Grant
+	gate := NewGate(store, ApproveAll{}, func(g Grant) error {
+		sunk = append(sunk, g)
+		return nil
+	})
+
+	d, err := gate.Check(context.Background(), "c1", fakeTool{reqs: []tools.Requirement{
+		{Axis: "write", Scope: "/work/new.txt"},
+	}}, noArgs())
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !d.Allow {
+		t.Fatalf("approve-all should allow; denied=%q", d.Denied)
+	}
+	if d.Granted != "Permission granted: write /work/new.txt" {
+		t.Errorf("Granted = %q", d.Granted)
+	}
+	if !store.Covered(AxisWrite, "/work/new.txt") {
+		t.Error("approve-all grant should cover for the run")
+	}
+	if len(sunk) != 0 {
+		t.Errorf("approve-all must never persist through the sink; sunk=%+v", sunk)
 	}
 }

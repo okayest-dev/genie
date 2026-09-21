@@ -2609,6 +2609,41 @@ func TestHeadlessRequestPermissionAutoDenied(t *testing.T) {
 	}
 }
 
+// TestHeadlessApproveAllCoversRequestPermission: --approve-all is a blanket
+// grant, so pre-negotiation via request_permission approves too — the grant
+// line is fed back and nothing persists (og-uy5.6).
+func TestHeadlessApproveAllCoversRequestPermission(t *testing.T) {
+	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
+		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
+	}, "ok")
+	workDir := t.TempDir()
+	dir := configDir(t, providerConfigAt(srv.URL, "test-model"))
+	configPath := filepath.Join(dir, "genie", "config.toml")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config before: %v", err)
+	}
+
+	_, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}, "-p", "--approve-all", "request write access to output.txt")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: write "+filepath.Join(workDir, "output.txt")) {
+		t.Errorf("request 2 must carry the grant line; bodies=%v", *bodies)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("config changed under approve-all pre-negotiation:\n before: %q\n after: %q", before, after)
+	}
+}
+
 // TestRequestPermissionBlanketGrant: an omitted scope pre-negotiates blanket
 // access, and a later write to an arbitrary scope runs with no prompt.
 func TestRequestPermissionBlanketGrant(t *testing.T) {
@@ -2691,6 +2726,84 @@ func TestHeadlessWriteAutoDenied(t *testing.T) {
 	if !strings.Contains((*bodies)[1], "hint: granted axes remain available") {
 		t.Errorf("follow-up request missing deny hint; body=%s", (*bodies)[1])
 	}
+}
+
+// TestHeadlessApproveAllRunsEscalatedCallAndKeepsConfig: -p --approve-all runs
+// a call that would otherwise escalate (auto-deny), feeds the grant line back,
+// and writes nothing to the config file — the blanket grant is in-memory and
+// dies with the run (og-uy5.6).
+func TestHeadlessApproveAllRunsEscalatedCallAndKeepsConfig(t *testing.T) {
+	srv, bodies := writeToolThenText(t, "output.txt", "hello world", "done")
+	workDir := t.TempDir()
+	dir := configDir(t, providerConfigAt(srv.URL, "test-model"))
+	configPath := filepath.Join(dir, "genie", "config.toml")
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config before: %v", err)
+	}
+	env := []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}
+
+	_, stderr, code := runInDir(t, workDir, env, "-p", "--approve-all", "write output.txt")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// The escalated write executed.
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); err != nil {
+		t.Errorf("output.txt not written under --approve-all: %v", err)
+	}
+	// The grant line was fed back, not a denial.
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: write "+filepath.Join(workDir, "output.txt")) {
+		t.Errorf("follow-up request missing the grant line; bodies=%v", *bodies)
+	}
+	if len(*bodies) >= 2 && strings.Contains((*bodies)[1], "status: call not executed") {
+		t.Errorf("follow-up request claims the call was not executed; body=%s", (*bodies)[1])
+	}
+	// Config is byte-for-byte unchanged: nothing persisted.
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("config changed:\n before: %q\n after: %q", before, after)
+	}
+}
+
+// TestHeadlessApproveAllBothFlagOrders pins both flag orders a user might
+// type: "--approve-all -p <prompt>" and "-p --approve-all <prompt>" (the
+// latter needs the prompt-first hoist) both run the escalated call (og-uy5.6).
+func TestHeadlessApproveAllBothFlagOrders(t *testing.T) {
+	for name, args := range map[string][]string{
+		"flag-first":   {"--approve-all", "-p", "write output.txt"},
+		"prompt-first": {"-p", "--approve-all", "write output.txt"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, bodies := writeToolThenText(t, "output.txt", "hello world", "done")
+			workDir := t.TempDir()
+			env := permissionEnv(t, srv)
+			_, stderr, code := runInDir(t, workDir, env, args...)
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+			}
+			if _, err := os.Stat(filepath.Join(workDir, "output.txt")); err != nil {
+				t.Errorf("output.txt not written under --approve-all (%v): %v", name, err)
+			}
+			if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: write ") {
+				t.Errorf("follow-up request missing the grant line; bodies=%v", *bodies)
+			}
+		})
+	}
+}
+
+// TestApproveAllRefusedInInteractiveREPL: --approve-all without -p is refused
+// with a clear error before any provider or config work — an interactive run
+// has a user to ask, so a blanket approval is invalid (og-uy5.6).
+func TestApproveAllRefusedInInteractiveREPL(t *testing.T) {
+	stdout, stderr, code := run(t, nil, "--approve-all")
+	assertCleanFailure(t, stdout, stderr, code, "--approve-all requires headless mode")
 }
 
 // TestPermanentGrantPersistsAcrossRuns: answering "p" writes a permanent grant

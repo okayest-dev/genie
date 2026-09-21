@@ -45,10 +45,12 @@ const usage = `usage: genie [-v] [-d] [-a agent] [-p prompt]
 genie is a minimal terminal agent harness.
 
 Flags:
-  -a agent   load a named agent definition for this run
-  -p prompt  run a single prompt, print the reply to stdout, and exit
-  -v         verbose output: high-level flow to stderr
-  -d         debug output: low-level detail to stderr (implies -v)
+  -a agent      load a named agent definition for this run
+  -p prompt     run a single prompt, print the reply to stdout, and exit
+  -approve-all  in headless (-p) mode, approve every escalation instead of
+                auto-denying; refused otherwise, never persists to config
+  -v            verbose output: high-level flow to stderr
+  -d            debug output: low-level detail to stderr (implies -v)
 
 Environment:
   GENIE_DEBUG    enable debug mode (true/1/yes)
@@ -61,6 +63,12 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// Go's flag package treats the token after -p as its value, so
+	// "-p --approve-all <prompt>" would swallow the boolean flag as the
+	// prompt. Hoist the approval flag (single- or double-dash) above -p so it
+	// parses and -p still takes the value that follows (og-uy5.6).
+	args = hoistApproveAllAfterPrompt(args)
+
 	// Pre-scan for -p without a value (e.g. "genie -p" or "genie -p -").
 	// Go's flag package requires a value after -p, so we detect the
 	// stdin-reading cases before handing off to flag.Parse.
@@ -109,6 +117,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	agentFlag := fs.String("a", "", "agent definition to load for this run")
 	verbose := fs.Bool("v", false, "verbose output")
 	debug := fs.Bool("d", false, "debug output (implies -v)")
+	approveAll := fs.Bool("approve-all", false, "approve all escalations for a headless (-p) run")
 	if err := fs.Parse(cleanArgs); err != nil {
 		return 3
 	}
@@ -117,6 +126,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if stdinPrompt != "" {
 		*prompt = stdinPrompt
 	}
+
+	// --approve-all is headless-only: in the interactive REPL there is a user
+	// to ask, and a blanket approval has no single-turn scope to expire in.
+	// Refuse rather than silently approve everything (og-uy5.6).
+	if *approveAll && *prompt == "" {
+		fmt.Fprintln(stderr, "Error: --approve-all requires headless mode; pass a prompt with -p")
+		return 3
+	}
+	// The headless negotiator: auto-deny by default, blanket-approve under
+	// --approve-all. Either way it routes through the same single-turn,
+	// in-memory policy store, so nothing is ever persisted.
+	headlessNeg := headlessNegotiator(*approveAll)
 
 	debugEnv := isTruthy(os.Getenv("GENIE_DEBUG"))
 	debug = boolPtr(*debug || debugEnv)
@@ -160,8 +181,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Build the tool registry from config. request_permission is registered
-	// always-on (a negotiation channel, not a capability).
-	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout, permStore, permSink)
+	// always-on (a negotiation channel, not a capability) and seeded with the
+	// headless negotiator; the REPL swaps in the interactive one.
+	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout, permStore, permSink, headlessNeg)
 
 	// Resolve the skill pool once so agent resolution validates explicit
 	// skills lists against real discovered skills (and inheritance binds the
@@ -383,9 +405,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
 	}
 	turnOpts = append(turnOpts, agent.WithHooks(lifecycleSeam))
-	// Non-interactive: there is no one to ask, so every uncovered
-	// requirement is denied at the gate and fed back to the model.
-	turnOpts = append(turnOpts, agent.WithPermissions(permissions.NewGate(permStore, permissions.DenyAll{}, permSink)))
+	// Non-interactive: there is no one to ask, so every uncovered requirement
+	// is resolved by the headless negotiator — auto-denied and fed back to the
+	// model by default, blanket-approved for this single run under --approve-all.
+	turnOpts = append(turnOpts, agent.WithPermissions(permissions.NewGate(permStore, headlessNeg, permSink)))
 	ctxClient := contextmgr.New(client, sess, ctxOpts...)
 	err = agent.RunTurn(ctx, ctxClient, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, turnOpts...)
 
@@ -439,8 +462,9 @@ func resolveAgentReg(cwd string) *config.AgentReg {
 // buildRegistry creates the tool registry, registering available tools and
 // disabling any that are turned off in config. request_permission is always-on
 // — it is a negotiation channel, not a capability — and is seeded with the
-// headless (auto-deny) negotiator; the REPL swaps in the interactive one.
-func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration, store *permissions.Store, sink permissions.PermanentSink) *tools.Registry {
+// headless negotiator (auto-deny, or blanket-approve under --approve-all); the
+// REPL swaps in the interactive one.
+func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration, store *permissions.Store, sink permissions.PermanentSink, headless permissions.Negotiator) *tools.Registry {
 	reg := tools.NewRegistry()
 
 	// Register tools.
@@ -448,7 +472,9 @@ func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration,
 	reg.Register(writetool.New(cwd))
 	reg.Register(edittool.New(cwd))
 	reg.Register(bashtool.New(cwd, bashTimeout))
-	reg.Register(requesttool.New(store, sink))
+	reqTool := requesttool.New(store, sink)
+	reqTool.SetNegotiator(headless)
+	reg.Register(reqTool)
 
 	// Disable tools turned off in config.
 	if !cfgTools.Read {
@@ -465,6 +491,35 @@ func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration,
 	}
 
 	return reg
+}
+
+// headlessNegotiator returns the headless negotiator for a -p run: DenyAll by
+// default, ApproveAll under --approve-all. Either way grants are in-memory and
+// never persisted to config.
+func headlessNegotiator(approveAll bool) permissions.Negotiator {
+	if approveAll {
+		return permissions.ApproveAll{}
+	}
+	return permissions.DenyAll{}
+}
+
+// hoistApproveAllAfterPrompt rewrites "-p --approve-all <prompt>" (and the
+// same with the single-dash approval flag, or --prompt) so the approval flag
+// parses first and -p keeps its value. Other flag forms pass through
+// unchanged.
+func hoistApproveAllAfterPrompt(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if (a == "-p" || a == "--prompt") && i+1 < len(args) &&
+			(args[i+1] == "-approve-all" || args[i+1] == "--approve-all") {
+			out = append(out, args[i+1], a)
+			i++ // skip the hoisted flag
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // readStdinPrompt reads all of stdin, trims whitespace, and returns the
