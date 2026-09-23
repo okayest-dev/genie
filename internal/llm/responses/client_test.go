@@ -182,6 +182,41 @@ func TestInputToWireToolResult(t *testing.T) {
 	}
 }
 
+// The agent loop emits tool results as RoleTool messages immediately after
+// the assistant function_call item. They must reach the wire as
+// function_call_output items or the call has no matching output.
+func TestInputToWireRoleToolResult(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "summarize a file"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Name: "read", Arguments: `{"path":"README.md"}`},
+			{ID: "call_2", Name: "read", Arguments: `{"path":"Makefile"}`},
+		}},
+		{Role: llm.RoleTool, Content: "file one contents", ToolCallID: "call_1"},
+		{Role: llm.RoleTool, Content: "file two contents", ToolCallID: "call_2"},
+	}
+	input := inputToWire(msgs)
+	if len(input) != 5 {
+		t.Fatalf("input = %d, want 5 (user, 2 function_calls, 2 function_call_outputs)", len(input))
+	}
+	if input[1]["type"] != "function_call" || input[2]["type"] != "function_call" {
+		t.Errorf("input[1:3] = %v %v, want function_calls", input[1]["type"], input[2]["type"])
+	}
+	for i, id := range []string{"call_1", "call_2"} {
+		item := input[3+i]
+		if item["type"] != "function_call_output" || item["call_id"] != id || item["output"] == "" {
+			t.Errorf("input[%d] = %+v, want function_call_output for %s", 3+i, item, id)
+		}
+	}
+}
+
+func TestInputToWireRoleToolWithoutIDDropped(t *testing.T) {
+	input := inputToWire([]llm.Message{{Role: llm.RoleTool, Content: "orphan"}})
+	if len(input) != 0 {
+		t.Fatalf("input = %d, want 0 (RoleTool without ToolCallID dropped)", len(input))
+	}
+}
+
 func TestInstructionsToWire(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "Be helpful"},

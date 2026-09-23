@@ -277,7 +277,7 @@ func TestStreamRequestShape(t *testing.T) {
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: "You are concise."},
 			{Role: llm.RoleUser, Content: "hi"},
-			{Role: llm.RoleUser, Content: "the tool said X", ToolCallID: "toolu_9"},
+			{Role: llm.RoleTool, Content: "the tool said X", ToolCallID: "toolu_9"},
 			{Role: llm.RoleAssistant, Content: "padding", ToolCalls: []llm.ToolCall{{ID: "toolu_9", Name: "get_weather", Arguments: `{"city":"Boston"}`}}},
 		},
 		Tools: []llm.ToolDef{
@@ -495,6 +495,53 @@ func TestMessagesToWireToolResult(t *testing.T) {
 	}
 	if aws.ToString(tu.Value.Name) != "f" || aws.ToString(tu.Value.ToolUseId) != "t1" {
 		t.Errorf("tool_use = %#v", tu.Value)
+	}
+}
+
+// The agent loop emits tool results as RoleTool messages (see agent.go),
+// immediately after the assistant message carrying the matching tool_use.
+// The wire converter must emit a tool_result for each, or Bedrock rejects
+// the request with "tool_use ids were found without tool_result blocks
+// immediately after".
+func TestMessagesToWireRoleToolResult(t *testing.T) {
+	wire := messagesToWire([]llm.Message{
+		{Role: llm.RoleUser, Content: "summarize a file"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "toolu_1", Name: "read", Arguments: `{"path":"README.md"}`},
+			{ID: "toolu_2", Name: "read", Arguments: `{"path":"Makefile"}`},
+		}},
+		{Role: llm.RoleTool, Content: "file one contents", ToolCallID: "toolu_1"},
+		{Role: llm.RoleTool, Content: "file two contents", ToolCallID: "toolu_2"},
+	})
+	if len(wire) != 3 {
+		t.Fatalf("wire msgs = %d, want 3 (user, assistant tool_use, merged tool_result)", len(wire))
+	}
+	asst := wire[1]
+	if asst.Role != types.ConversationRoleAssistant || len(asst.Content) != 2 {
+		t.Fatalf("asst = %#v, want assistant with 2 tool_use blocks", asst)
+	}
+	res := wire[2]
+	if res.Role != types.ConversationRoleUser {
+		t.Fatalf("result role = %v, want user", res.Role)
+	}
+	if len(res.Content) != 2 {
+		t.Fatalf("result blocks = %d, want 2 (one per tool_use)", len(res.Content))
+	}
+	for i, id := range []string{"toolu_1", "toolu_2"} {
+		tr, ok := res.Content[i].(*types.ContentBlockMemberToolResult)
+		if !ok {
+			t.Fatalf("Content[%d] = %#v, want tool_result", i, res.Content[i])
+		}
+		if aws.ToString(tr.Value.ToolUseId) != id {
+			t.Errorf("Content[%d] ToolUseId = %v, want %s", i, tr.Value.ToolUseId, id)
+		}
+	}
+}
+
+func TestMessagesToWireRoleToolWithoutIDDropped(t *testing.T) {
+	wire := messagesToWire([]llm.Message{{Role: llm.RoleTool, Content: "orphan"}})
+	if len(wire) != 0 {
+		t.Fatalf("wire msgs = %d, want 0 (RoleTool without ToolCallID dropped)", len(wire))
 	}
 }
 

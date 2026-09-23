@@ -241,21 +241,18 @@ func contentsToWire(messages []llm.Message) []map[string]any {
 		case llm.RoleUser:
 			if m.ToolCallID != "" {
 				// Tool result: functionResponse in a user message.
-				out = append(out, map[string]any{
-					"role": "user",
-					"parts": []map[string]any{{
-						"functionResponse": map[string]any{
-							"name":     m.ToolCallID,
-							"response": map[string]any{"result": m.Content},
-						},
-					}},
-				})
+				out = appendFunctionResponse(out, m.ToolCallID, m.Content)
 			} else {
 				out = append(out, map[string]any{
 					"role":  "user",
 					"parts": []map[string]any{{"text": m.Content}},
 				})
 			}
+		case llm.RoleTool:
+			if m.ToolCallID == "" {
+				continue
+			}
+			out = appendFunctionResponse(out, m.ToolCallID, m.Content)
 		case llm.RoleAssistant:
 			if len(m.ToolCalls) > 0 {
 				parts := make([]map[string]any, 0, len(m.ToolCalls))
@@ -283,6 +280,28 @@ func contentsToWire(messages []llm.Message) []map[string]any {
 		}
 	}
 	return out
+}
+
+// appendFunctionResponse adds a functionResponse part as a user message,
+// merging into the previous user message when it already carries
+// functionResponse parts so parallel tool calls share one user turn.
+func appendFunctionResponse(out []map[string]any, id, content string) []map[string]any {
+	part := map[string]any{
+		"functionResponse": map[string]any{
+			"name":     id,
+			"response": map[string]any{"result": content},
+		},
+	}
+	if len(out) > 0 && out[len(out)-1]["role"] == "user" {
+		if existing, ok := out[len(out)-1]["parts"].([]map[string]any); ok {
+			out[len(out)-1]["parts"] = append(existing, part)
+			return out
+		}
+	}
+	return append(out, map[string]any{
+		"role":  "user",
+		"parts": []map[string]any{part},
+	})
 }
 
 // toolsToWire maps tool definitions to the Google tools array. Returns nil

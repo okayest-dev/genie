@@ -223,6 +223,50 @@ func TestMessagesToWireToolResultsMerge(t *testing.T) {
 	}
 }
 
+// The agent loop emits tool results as RoleTool messages immediately after
+// the assistant tool_use message. They must reach the wire as tool_result
+// blocks or Anthropic rejects the request with "tool_use ids were found
+// without tool_result blocks immediately after".
+func TestMessagesToWireRoleToolResult(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "summarize a file"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "toolu_1", Name: "read", Arguments: `{"path":"README.md"}`},
+			{ID: "toolu_2", Name: "read", Arguments: `{"path":"Makefile"}`},
+		}},
+		{Role: llm.RoleTool, Content: "file one contents", ToolCallID: "toolu_1"},
+		{Role: llm.RoleTool, Content: "file two contents", ToolCallID: "toolu_2"},
+	}
+	wire := messagesToWire(msgs)
+	if len(wire) != 3 {
+		t.Fatalf("messages = %d, want 3 (user, assistant tool_use, merged tool_result)", len(wire))
+	}
+	if wire[1]["role"] != "assistant" {
+		t.Errorf("wire[1].role = %v, want assistant", wire[1]["role"])
+	}
+	res := wire[2]
+	if res["role"] != "user" {
+		t.Fatalf("wire[2].role = %v, want user", res["role"])
+	}
+	content := res["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content blocks = %d, want 2 tool_results", len(content))
+	}
+	for i, id := range []string{"toolu_1", "toolu_2"} {
+		tr := content[i].(map[string]any)
+		if tr["type"] != "tool_result" || tr["tool_use_id"] != id {
+			t.Errorf("content[%d] = %+v, want tool_result for %s", i, tr, id)
+		}
+	}
+}
+
+func TestMessagesToWireRoleToolWithoutIDDropped(t *testing.T) {
+	wire := messagesToWire([]llm.Message{{Role: llm.RoleTool, Content: "orphan"}})
+	if len(wire) != 0 {
+		t.Fatalf("messages = %d, want 0 (RoleTool without ToolCallID dropped)", len(wire))
+	}
+}
+
 func TestToolsToWire(t *testing.T) {
 	tools := []llm.ToolDef{
 		{Name: "read", Description: "Read a file", Parameters: map[string]any{"type": "object"}},

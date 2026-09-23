@@ -275,25 +275,15 @@ func messagesToWire(messages []llm.Message) []map[string]any {
 		case llm.RoleUser:
 			if m.ToolCallID != "" {
 				// Tool result -> user message with tool_result content block.
-				block := map[string]any{
-					"type":       "tool_result",
-					"tool_use_id": m.ToolCallID,
-					"content":    m.Content,
-				}
-				// Try to merge with the last user message.
-				if len(out) > 0 && out[len(out)-1]["role"] == "user" {
-					if existing, ok := out[len(out)-1]["content"].([]any); ok {
-						out[len(out)-1]["content"] = append(existing, block)
-						continue
-					}
-				}
-				out = append(out, map[string]any{
-					"role":    "user",
-					"content": []any{block},
-				})
+				out = appendToolResult(out, m.ToolCallID, m.Content)
 			} else {
 				out = append(out, map[string]any{"role": "user", "content": m.Content})
 			}
+		case llm.RoleTool:
+			if m.ToolCallID == "" {
+				continue
+			}
+			out = appendToolResult(out, m.ToolCallID, m.Content)
 		case llm.RoleAssistant:
 			if len(m.ToolCalls) > 0 {
 				var content []any
@@ -319,6 +309,27 @@ func messagesToWire(messages []llm.Message) []map[string]any {
 		}
 	}
 	return out
+}
+
+// appendToolResult adds a tool_result block as a user message, merging into
+// the previous user message when it already carries tool_result blocks.
+func appendToolResult(out []map[string]any, id, content string) []map[string]any {
+	block := map[string]any{
+		"type":        "tool_result",
+		"tool_use_id": id,
+		"content":     content,
+	}
+	// Try to merge with the last user message.
+	if len(out) > 0 && out[len(out)-1]["role"] == "user" {
+		if existing, ok := out[len(out)-1]["content"].([]any); ok {
+			out[len(out)-1]["content"] = append(existing, block)
+			return out
+		}
+	}
+	return append(out, map[string]any{
+		"role":    "user",
+		"content": []any{block},
+	})
 }
 
 // toolsToWire maps tool definitions to the Anthropic tools array. Returns nil
