@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/okayest-dev/genie/internal/repl"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
@@ -142,7 +141,7 @@ func TestManagerCommandsListUnknownPlugin(t *testing.T) {
 
 	mc := &ManagerCommands{Manager: mgr}
 	_, err := mc.ListCommands("nope")
-	if !errors.Is(err, repl.ErrUnknownPlugin) {
+	if !errors.Is(err, ErrUnknownPlugin) {
 		t.Fatalf("expected ErrUnknownPlugin, got %v", err)
 	}
 }
@@ -167,7 +166,7 @@ func TestManagerCommandsRunUnknownCommand(t *testing.T) {
 
 	mc := &ManagerCommands{Manager: mgr}
 	_, err := mc.RunCommand("cmd-plugin", "nope", "")
-	if !errors.Is(err, repl.ErrUnknownCommand) {
+	if !errors.Is(err, ErrUnknownCommand) {
 		t.Fatalf("expected ErrUnknownCommand, got %v", err)
 	}
 }
@@ -178,7 +177,7 @@ func TestManagerCommandsRunUnknownPlugin(t *testing.T) {
 
 	mc := &ManagerCommands{Manager: mgr}
 	_, err := mc.RunCommand("nope", "greet", "")
-	if !errors.Is(err, repl.ErrUnknownPlugin) {
+	if !errors.Is(err, ErrUnknownPlugin) {
 		t.Fatalf("expected ErrUnknownPlugin, got %v", err)
 	}
 }
@@ -192,11 +191,11 @@ func TestManagerCommandsInactive(t *testing.T) {
 
 	mc := &ManagerCommands{Manager: mgr}
 	_, err := mc.RunCommand("cmd-plugin", "greet", "")
-	if !errors.Is(err, repl.ErrPluginInactive) {
+	if !errors.Is(err, ErrPluginInactive) {
 		t.Fatalf("expected ErrPluginInactive, got %v", err)
 	}
 	_, err = mc.ListCommands("cmd-plugin")
-	if !errors.Is(err, repl.ErrPluginInactive) {
+	if !errors.Is(err, ErrPluginInactive) {
 		t.Fatalf("expected ErrPluginInactive from ListCommands, got %v", err)
 	}
 }
@@ -221,7 +220,7 @@ func TestManagerCommandsHelpFallsBack(t *testing.T) {
 
 	mc := &ManagerCommands{Manager: mgr}
 	_, err := mc.Help("cmd-plugin", "")
-	if !errors.Is(err, repl.ErrUnknownCommand) {
+	if !errors.Is(err, ErrUnknownCommand) {
 		t.Fatalf("expected ErrUnknownCommand fallback when no curated help, got %v", err)
 	}
 }
@@ -232,7 +231,7 @@ func TestManagerCommandsHelpUnknownPlugin(t *testing.T) {
 
 	mc := &ManagerCommands{Manager: mgr}
 	_, err := mc.Help("nope", "")
-	if !errors.Is(err, repl.ErrUnknownPlugin) {
+	if !errors.Is(err, ErrUnknownPlugin) {
 		t.Fatalf("expected ErrUnknownPlugin, got %v", err)
 	}
 }
@@ -244,7 +243,7 @@ func TestManagerCommandsHelpInactive(t *testing.T) {
 
 	mc := &ManagerCommands{Manager: mgr}
 	_, err := mc.Help("cmd-plugin", "")
-	if !errors.Is(err, repl.ErrPluginInactive) {
+	if !errors.Is(err, ErrPluginInactive) {
 		t.Fatalf("expected ErrPluginInactive, got %v", err)
 	}
 }
@@ -354,8 +353,8 @@ func TestIsCode(t *testing.T) {
 }
 
 // docsCheck provides a compile-time confirmation that the adapter satisfies the
-// repl seam without tieing the test to runtime behavior.
-var _ repl.CommandSource = (*ManagerCommands)(nil)
+// plugin seam without tieing the test to runtime behavior.
+var _ CommandSource = (*ManagerCommands)(nil)
 
 func TestScriptHasHelp(t *testing.T) {
 	if !strings.Contains(commandsPluginScriptWithHelp(), "commands/help") {

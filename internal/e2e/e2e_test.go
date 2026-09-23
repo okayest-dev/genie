@@ -180,7 +180,15 @@ func assertCleanFailure(t *testing.T, stdout, stderr string, code int, wantStder
 	if stdout != "" {
 		t.Errorf("stdout = %q, want empty on failure", stdout)
 	}
-	if !strings.HasPrefix(stderr, "Error: ") {
+	// The boot session notice precedes the failure line; skip it when
+	// checking that stderr opens with the Error: banner.
+	firstLine := stderr
+	if strings.HasPrefix(firstLine, "session: ") {
+		if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+			firstLine = firstLine[idx+1:]
+		}
+	}
+	if !strings.HasPrefix(firstLine, "Error: ") {
 		t.Errorf("stderr = %q, want to start with %q", stderr, "Error: ")
 	}
 	if !strings.Contains(stderr, wantStderr) {

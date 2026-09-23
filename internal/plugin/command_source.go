@@ -3,18 +3,16 @@ package plugin
 import (
 	"fmt"
 	"strings"
-
-	"github.com/okayest-dev/genie/internal/repl"
 )
 
-// ManagerCommands adapts the plugin Manager into the repl.CommandSource seam.
-// The REPL stays decoupled from the manager; main wires this adapter into
-// repl.Config.Commands.
+// ManagerCommands adapts the plugin Manager into the CommandSource seam, so
+// interactive entry points can discover and run plugin commands without
+// depending on the manager directly.
 type ManagerCommands struct {
 	Manager *Manager
 }
 
-var _ repl.CommandSource = (*ManagerCommands)(nil)
+var _ CommandSource = (*ManagerCommands)(nil)
 
 // Plugins returns the loaded plugin names in discovery order, enabling /help
 // to enumerate the flat plugin-commands section. Inactive plugins are omitted.
@@ -31,40 +29,40 @@ func (mc *ManagerCommands) Plugins() []string {
 }
 
 // ListCommands returns the commands a plugin exposes, mapping a missing plugin
-// to repl.ErrUnknownPlugin.
-func (mc *ManagerCommands) ListCommands(name string) ([]repl.CommandInfo, error) {
+// to ErrUnknownPlugin.
+func (mc *ManagerCommands) ListCommands(name string) ([]CommandInfo, error) {
 	p := mc.Manager.pluginByName(name)
 	if p == nil {
-		return nil, repl.ErrUnknownPlugin
+		return nil, ErrUnknownPlugin
 	}
 	if !p.isActive() {
-		return nil, repl.ErrPluginInactive
+		return nil, ErrPluginInactive
 	}
-	cmds := make([]repl.CommandInfo, 0, len(p.Commands))
+	cmds := make([]CommandInfo, 0, len(p.Commands))
 	for _, c := range p.Commands {
-		cmds = append(cmds, repl.CommandInfo{Name: c.Name, Description: c.Description})
+		cmds = append(cmds, CommandInfo{Name: c.Name, Description: c.Description})
 	}
 	return cmds, nil
 }
 
 // RunCommand invokes a plugin command, mapping protocol-level misses to the
-// repl error sentinels and printing plugin errors directly.
-func (mc *ManagerCommands) RunCommand(plugin, command, args string) (*repl.CommandResult, error) {
+// error sentinels and printing plugin errors directly.
+func (mc *ManagerCommands) RunCommand(plugin, command, args string) (*CommandResult, error) {
 	p := mc.Manager.pluginByName(plugin)
 	if p == nil {
-		return nil, repl.ErrUnknownPlugin
+		return nil, ErrUnknownPlugin
 	}
 	if !p.isActive() {
-		return nil, repl.ErrPluginInactive
+		return nil, ErrPluginInactive
 	}
 	if !p.hasCommand(command) {
-		return nil, repl.ErrUnknownCommand
+		return nil, ErrUnknownCommand
 	}
 	result, err := p.CallCommand(command, args)
 	if err != nil {
 		return nil, err
 	}
-	return &repl.CommandResult{Text: result.Text, Data: result.Data}, nil
+	return &CommandResult{Text: result.Text, Data: result.Data}, nil
 }
 
 // Help returns curated help for a plugin or single command, falling back to a
@@ -73,15 +71,15 @@ func (mc *ManagerCommands) RunCommand(plugin, command, args string) (*repl.Comma
 func (mc *ManagerCommands) Help(plugin, command string) (string, error) {
 	p := mc.Manager.pluginByName(plugin)
 	if p == nil {
-		return "", repl.ErrUnknownPlugin
+		return "", ErrUnknownPlugin
 	}
 	if !p.isActive() {
-		return "", repl.ErrPluginInactive
+		return "", ErrPluginInactive
 	}
 	result, err := p.CallCommandHelp(command)
 	if err != nil {
 		if IsCode(err, MethodNotFound) {
-			return "", fmt.Errorf("%w: %s", repl.ErrUnknownCommand, command)
+			return "", fmt.Errorf("%w: %s", ErrUnknownCommand, command)
 		}
 		return "", err
 	}

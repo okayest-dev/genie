@@ -11,33 +11,18 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/okayest-dev/genie/internal/agent"
 	"github.com/okayest-dev/genie/internal/config"
-	"github.com/okayest-dev/genie/internal/contextmgr"
-	"github.com/okayest-dev/genie/internal/instruct"
-	"github.com/okayest-dev/genie/internal/ledger"
-	"github.com/okayest-dev/genie/internal/llm"
 	_ "github.com/okayest-dev/genie/internal/llm/anthropic"
 	_ "github.com/okayest-dev/genie/internal/llm/bedrock"
 	_ "github.com/okayest-dev/genie/internal/llm/copilot"
 	_ "github.com/okayest-dev/genie/internal/llm/google"
 	_ "github.com/okayest-dev/genie/internal/llm/openai"
 	_ "github.com/okayest-dev/genie/internal/llm/responses"
-	"github.com/okayest-dev/genie/internal/modelinfo"
 	"github.com/okayest-dev/genie/internal/permissions"
-	"github.com/okayest-dev/genie/internal/plugin"
 	"github.com/okayest-dev/genie/internal/repl"
-	"github.com/okayest-dev/genie/internal/session"
+	runpkg "github.com/okayest-dev/genie/internal/run"
 	"github.com/okayest-dev/genie/internal/skill"
-	"github.com/okayest-dev/genie/internal/tokens"
-	"github.com/okayest-dev/genie/internal/tools"
-	"github.com/okayest-dev/genie/internal/tools/bashtool"
-	"github.com/okayest-dev/genie/internal/tools/edittool"
-	"github.com/okayest-dev/genie/internal/tools/readtool"
-	"github.com/okayest-dev/genie/internal/tools/requesttool"
-	"github.com/okayest-dev/genie/internal/tools/writetool"
 )
 
 const usage = `usage: genie [-v] [-d] [-a agent] [-p prompt]
@@ -136,7 +121,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	// The headless negotiator: auto-deny by default, blanket-approve under
 	// --approve-all. Either way it routes through the same single-turn,
-	// in-memory policy store, so nothing is ever persisted.
+	// in-memory policy store, so nothing is ever persisted. The REPL swaps in
+	// the interactive negotiator after the run handle is assembled.
 	headlessNeg := headlessNegotiator(*approveAll)
 
 	debugEnv := isTruthy(os.Getenv("GENIE_DEBUG"))
@@ -156,16 +142,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Build the effective-policy store from the resolved config surface and
-	// the permanent grants. Writes/net/run/env start uncovered under the
-	// restrictive default, so they escalate at the deny point.
-	permStore, err := buildPermissionStore(cwd, cfg.Permissions)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
 	// Permanent grants persist to the config file; if the path cannot be
-	// resolved they stay in-memory for the run.
+	// resolved they stay in-memory for the run. The effective-policy store
+	// itself lives in run.New.
 	var permSink permissions.PermanentSink
 	if path, err := config.Path(); err == nil {
 		permSink = func(g permissions.Grant) error {
@@ -180,15 +159,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		slog.Warn("permanent grants will not persist", "error", err)
 	}
 
-	// Build the tool registry from config. request_permission is registered
-	// always-on (a negotiation channel, not a capability) and seeded with the
-	// headless negotiator; the REPL swaps in the interactive one.
-	registry := buildRegistry(cwd, cfg.Tools, cfg.BashTimeout, permStore, permSink, headlessNeg)
-
-	// Resolve the skill pool once so agent resolution validates explicit
-	// skills lists against real discovered skills (and inheritance binds the
-	// whole pool rather than an empty list), then bind the same pool into the
-	// instruction layer below.
+	// Resolve the agent for this run. Agent resolution needs the discovered
+	// skill pool to validate explicit skills lists, so the pool is filtered
+	// here for that read; run.New derives its own pool for the agent-scoped
+	// assembly and for switch-time resolution.
 	skillPool, poolWarns, err := skill.FilteredPool(cfg.Skills.Dirs, cfg.Skills.Enable, cfg.Skills.Disable)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -199,176 +173,83 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	skillNames := skill.Names(skillPool)
 
-	// Resolve the agent for this run.
 	var runAgent *config.ResolvedAgent
+	var agentReg *config.AgentReg
 	agentName := *agentFlag
 	if agentName == "" && cfg.DefaultAgent != "" {
 		agentName = cfg.DefaultAgent
 	}
-
 	if agentName != "" {
-		agentReg := resolveAgentReg(cwd)
+		agentReg = resolveAgentReg(cwd)
 		resolved, err := agentReg.GetResolved(agentName, cfg, skillNames)
 		if err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 3
 		}
-		if err := registry.ValidateTools(resolved.Tools); err != nil {
-			fmt.Fprintf(stderr, "Error: agent %q: %v\n", agentName, err)
-			return 3
-		}
 		runAgent = resolved
 	}
 
-	// A per-agent [permissions] section replaces the global base wholly for
-	// this run (og-uy5.7); the deny-point gate and the instruction snapshot
-	// both read the store, so the active agent's base lands before either is
-	// consulted. An agent without a section inherits the global base.
-	permStore.SetBaseFromConfig(runAgent.EffectiveBase(cfg.Permissions.Base))
-
-	// Resolve the boot client and first model from the active provider through
-	// the registry. With the provider key unset, an interactive run prompts to
-	// pick from the declared set and a one-shot -p run falls back to the first
-	// declared provider (with a warning); zero declared providers is a startup
-	// error (og-z1m.4). The startup client never comes from flat-key wire/base_url
-	// selection, from a plugin, or from a model-prefix route: the resolved
-	// provider is the only path.
+	// Resolve and boot the provider. With the provider key unset, an
+	// interactive run prompts to pick from the declared set and a one-shot -p
+	// run falls back to the first declared provider (with a warning); zero
+	// declared providers is a startup error (og-z1m.4). The boot client and
+	// model are resolved inside run.New — the registry is only the named
+	// provider surface here.
 	reg := registryFromConfig(cfg)
 	provider, err := selectStartupProvider(reg, cfg.Provider, *prompt == "", os.Stdin, stdout, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-	client, runModel, err := resolveStartup(reg, provider)
+
+	// Assemble the run handle once; the REPL and -p share it. run.New owns
+	// every derivable component (store, tools, skills, plugins, seams, tokens,
+	// modelinfo, session, ledger, boot provider) and applies the agent's
+	// permissions base and model precedence.
+	h, err := runpkg.New(runpkg.Options{
+		Config:         cfg,
+		Cwd:            cwd,
+		Stdin:          os.Stdin,
+		Stdout:         stdout,
+		Stderr:         stderr,
+		Provider:       provider,
+		ProviderSource: reg,
+		Agent:          runAgent,
+		AgentReg:       agentReg,
+		Negotiator:     headlessNeg,
+		PermanentSink:  permSink,
+		OnUsageDegrade: func(msg string) { fmt.Fprintf(stderr, "%s\n", msg) },
+		WithLedger:     true,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	// A per-agent model override still wins, but only when the agent declares
-	// one outright: there is no config global, so an agent with no model of its
-	// own starts the run on the active provider's default.
-	if runAgent.HasExplicitModel() {
-		runModel = runAgent.Model
-	}
-
-	// Bind the discovered pool to the resolved agent and build the layer.
-	agentSkills := []string(nil)
-	if runAgent != nil {
-		agentSkills = runAgent.Skills
-	}
-	bound, err := skill.BindToAgent(skillPool, agentSkills, agentName)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-	skillLayer := skill.BuildSkillLayer(bound)
-
-	// Assemble instruction with agent context, appending the base-policy
-	// snapshot and negotiation mechanism paragraph (og-uy5.5).
-	instruction, err := instruct.LoadWithAgentAndPermissions(cfg, runAgent, skillLayer, cwd, permStore.BaseSnapshot())
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	// Agent-scoped registry.
-	runRegistry := registry
-	if runAgent != nil && runAgent.Tools != nil {
-		runRegistry = registry.Subset(runAgent.Tools)
-	}
-
-	// Load plugins.
-	pluginMgr := plugin.NewManager(cfg.PluginDir, cfg.PluginEnable, cfg.PluginDisable, runRegistry)
-	if err := pluginMgr.LoadPlugins(); err != nil {
-		fmt.Fprintf(stderr, "Error loading plugins: %v\n", err)
-		return 1
-	}
-	defer pluginMgr.Shutdown()
-
-	// Build the plugin context seam from loaded plugins + [context.plugins]. A
-	// single-active conflict (multiple plugins claiming compact/condense without
-	// an explicit active_compact/active_condense choice) is a hard startup error;
-	// hook failures later degrade gracefully with a visible terminal message.
-	ctxSeam, err := plugin.NewContextSeam(pluginMgr.PluginsInOrder(), plugin.ContextConfig{
-		Order:          cfg.Context.PluginsOrder,
-		ActiveCompact:  cfg.Context.ActiveCompact,
-		ActiveCondense: cfg.Context.ActiveCondense,
-	}, func(msg string) { fmt.Fprintf(stderr, "context degraded: %s\n", msg) })
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	// Build the plugin lifecycle seam from loaded plugins + [lifecycle.plugins].
-	// All lifecycle events degrade by default; a plugin-declared fatal escalation
-	// aborts the turn. The seam implements agent.Hooks and is delivered via the
-	// WithHooks option on both REPL and -p paths.
-	lifecycleSeam := plugin.NewLifecycleSeam(pluginMgr.PluginsInOrder(), plugin.LifecycleConfig{
-		Order: cfg.Lifecycle.PluginsOrder,
-	}, func(msg string) { fmt.Fprintf(stderr, "lifecycle degraded: %s\n", msg) })
-
-	// Context window & budget: per-model config overrides first, then
-	// authoritative provider data via the optional ModelInfo probe (lazily
-	// probed once per model and cached for the process lifetime).
-	counter := tokens.New()
-
-	// buildContextOpts returns the ContextManager options for a given base
-	// client, sourcing modelinfo from that client: a /provider switch hands
-	// the freshly built client back in, so the resolver is re-sourced against
-	// the new provider rather than serving the old one's model windows
-	// (ADR-0004).
-	buildContextOpts := func(base llm.Client) []contextmgr.Option {
-		var infoSource modelinfo.Source
-		if p, ok := base.(llm.ModelInfoProvider); ok {
-			infoSource = p
-		}
-		resolver := modelinfo.New(infoSource, cfg.Context.Windows, modelinfo.Options{
-			BudgetTokens:  cfg.Context.BudgetTokens,
-			BudgetPercent: cfg.Context.BudgetPercent,
-		})
-		return []contextmgr.Option{
-			contextmgr.WithTurns(cfg.Context.Turns),
-			contextmgr.WithCounter(counter),
-			contextmgr.WithResolver(resolver),
-			contextmgr.WithHooks(ctxSeam),
-			contextmgr.WithOnDegrade(func(msg string) { fmt.Fprintf(stderr, "context degraded: %s\n", msg) }),
-			contextmgr.WithCondenseSize(cfg.Context.CondenseSize),
-			contextmgr.WithNetDrop(cfg.Context.NetDrop),
-		}
-	}
-	ctxOpts := buildContextOpts(client)
 
 	// No -p flag: start the interactive REPL.
 	if *prompt == "" {
-		var agentReg *config.AgentReg
-		if runAgent != nil || cfg.DefaultAgent != "" {
-			agentReg = resolveAgentReg(cwd)
+		// Fail at startup when the boot instruction cannot be assembled
+		// (matches the pre-run.Handle behavior).
+		if ierr := h.LoadInstruction(); ierr != nil {
+			if cerr := h.Close(); cerr != nil {
+				slog.Error("failed to close ledger", "error", cerr)
+			}
+			fmt.Fprintf(stderr, "Error: %v\n", ierr)
+			return 1
 		}
 		replCfg := &repl.Config{
-			Client:          client,
-			Model:           runModel,
-			Provider:        provider,
-			Providers:       reg,
-			Instruction:     instruction,
-			SessionDir:      cfg.SessionDir,
-			Registry:        runRegistry,
-			Cwd:             cwd,
-			Cfg:             cfg,
-			AgentReg:        agentReg,
-			DefaultAgent:    runAgent,
-			BashTimeout:     cfg.BashTimeout,
-			CtxOpts:         ctxOpts,
-			RebuildOpts:     buildContextOpts,
-			AgentOpts:       []agent.Option{agent.WithHooks(lifecycleSeam)},
-			Commands:        &plugin.ManagerCommands{Manager: pluginMgr},
-			Stdin:           os.Stdin,
-			Stdout:          stdout,
-			Stderr:          stderr,
-			PermissionStore: permStore,
-			PermanentSink:   permSink,
+			Run:        h,
+			Cfg:        cfg,
+			SessionDir: cfg.SessionDir,
+			Cwd:        cwd,
+			Stdin:      os.Stdin,
+			Stdout:     stdout,
+			Stderr:     stderr,
 		}
 		err := repl.Run(context.Background(), replCfg)
+		if cerr := h.Close(); cerr != nil {
+			slog.Error("failed to close ledger", "error", cerr)
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "Error: %v\n", err)
 			return 1
@@ -377,15 +258,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// -p flag: run a single prompt and exit.
-	sess, err := session.New(cfg.SessionDir)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	// Create a change ledger for -p mode.
-	ldg := ledger.New(cfg.SessionDir, sess.ID)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -400,21 +272,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}()
 
-	var turnOpts []agent.Option
-	if runAgent != nil {
-		turnOpts = append(turnOpts, agent.WithAgentName(runAgent.Name))
+	// Resolve the instruction up front so an unresolvable instruction file fails
+	// the run at startup (matches the pre-run.Handle behavior).
+	if ierr := h.LoadInstruction(); ierr != nil {
+		if cerr := h.Close(); cerr != nil {
+			slog.Error("failed to close ledger", "error", cerr)
+		}
+		fmt.Fprintf(stderr, "Error: %v\n", ierr)
+		return 1
 	}
-	turnOpts = append(turnOpts, agent.WithHooks(lifecycleSeam))
-	// Non-interactive: there is no one to ask, so every uncovered requirement
-	// is resolved by the headless negotiator — auto-denied and fed back to the
-	// model by default, blanket-approved for this single run under --approve-all.
-	turnOpts = append(turnOpts, agent.WithPermissions(permissions.NewGate(permStore, headlessNeg, permSink)))
-	ctxClient := contextmgr.New(client, sess, ctxOpts...)
-	err = agent.RunTurn(ctx, ctxClient, runModel, instruction, *prompt, stdout, stderr, sess, runRegistry, ldg, cwd, turnOpts...)
 
-	// Close the ledger to flush any recorded mutations.
-	if closeErr := ldg.Close(); closeErr != nil {
-		slog.Error("failed to close ledger", "error", closeErr)
+	err = h.Turn(ctx, *prompt, stdout, stderr)
+
+	// Close the ledger to flush any recorded mutations and shut down the
+	// plugin manager regardless of the turn's outcome.
+	if cerr := h.Close(); cerr != nil {
+		slog.Error("failed to close ledger", "error", cerr)
 	}
 
 	if err != nil {
@@ -424,27 +297,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-
-	fmt.Fprintf(stderr, "session: %s\n", sess.ID)
 	return 0
-}
-
-// buildPermissionStore seeds the effective-policy store from config: the base
-// scopes plus every persisted permanent grant.
-func buildPermissionStore(cwd string, p config.Permissions) (*permissions.Store, error) {
-	store := permissions.New(cwd)
-	store.SetBaseFromConfig(p.Base)
-	for _, g := range p.Permanent {
-		if err := store.GrantPermanent(permissions.Grant{
-			Axis:    permissions.Axis(g.Permission),
-			Scope:   g.Scope,
-			Tier:    permissions.TierPermanent,
-			Granted: g.Granted,
-		}); err != nil {
-			return nil, fmt.Errorf("config: permanent grant: %w", err)
-		}
-	}
-	return store, nil
 }
 
 // resolveAgentReg creates an AgentReg from the standard directories.
@@ -457,40 +310,6 @@ func resolveAgentReg(cwd string) *config.AgentReg {
 	}
 	localDir := filepath.Join(cwd, ".genie", "agents")
 	return config.NewAgentReg(globalDir, localDir)
-}
-
-// buildRegistry creates the tool registry, registering available tools and
-// disabling any that are turned off in config. request_permission is always-on
-// — it is a negotiation channel, not a capability — and is seeded with the
-// headless negotiator (auto-deny, or blanket-approve under --approve-all); the
-// REPL swaps in the interactive one.
-func buildRegistry(cwd string, cfgTools config.Tools, bashTimeout time.Duration, store *permissions.Store, sink permissions.PermanentSink, headless permissions.Negotiator) *tools.Registry {
-	reg := tools.NewRegistry()
-
-	// Register tools.
-	reg.Register(readtool.New(cwd))
-	reg.Register(writetool.New(cwd))
-	reg.Register(edittool.New(cwd))
-	reg.Register(bashtool.New(cwd, bashTimeout))
-	reqTool := requesttool.New(store, sink)
-	reqTool.SetNegotiator(headless)
-	reg.Register(reqTool)
-
-	// Disable tools turned off in config.
-	if !cfgTools.Read {
-		reg.Disable("read")
-	}
-	if !cfgTools.Write {
-		reg.Disable("write")
-	}
-	if !cfgTools.Edit {
-		reg.Disable("edit")
-	}
-	if !cfgTools.Bash {
-		reg.Disable("bash")
-	}
-
-	return reg
 }
 
 // headlessNegotiator returns the headless negotiator for a -p run: DenyAll by
