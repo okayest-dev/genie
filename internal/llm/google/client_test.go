@@ -171,6 +171,49 @@ func TestMessagesToWireToolResult(t *testing.T) {
 	}
 }
 
+// The agent loop emits tool results as RoleTool messages immediately after
+// the assistant functionCall message. They must reach the wire as
+// functionResponse parts or the function call has no matching response.
+func TestContentsToWireRoleToolResult(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Content: "summarize a file"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+			{ID: "call_1", Name: "read", Arguments: `{"path":"README.md"}`},
+			{ID: "call_2", Name: "read", Arguments: `{"path":"Makefile"}`},
+		}},
+		{Role: llm.RoleTool, Content: "file one contents", ToolCallID: "call_1"},
+		{Role: llm.RoleTool, Content: "file two contents", ToolCallID: "call_2"},
+	}
+	contents := contentsToWire(msgs)
+	if len(contents) != 3 {
+		t.Fatalf("contents = %d, want 3 (user, model functionCall, merged functionResponse)", len(contents))
+	}
+	if contents[1]["role"] != "model" {
+		t.Errorf("contents[1].role = %v, want model", contents[1]["role"])
+	}
+	res := contents[2]
+	if res["role"] != "user" {
+		t.Fatalf("contents[2].role = %v, want user", res["role"])
+	}
+	parts := res["parts"].([]map[string]any)
+	if len(parts) != 2 {
+		t.Fatalf("parts = %d, want 2 functionResponses", len(parts))
+	}
+	for i, id := range []string{"call_1", "call_2"} {
+		fr := parts[i]["functionResponse"].(map[string]any)
+		if fr["name"] != id {
+			t.Errorf("parts[%d] name = %v, want %s", i, fr["name"], id)
+		}
+	}
+}
+
+func TestContentsToWireRoleToolWithoutIDDropped(t *testing.T) {
+	contents := contentsToWire([]llm.Message{{Role: llm.RoleTool, Content: "orphan"}})
+	if len(contents) != 0 {
+		t.Fatalf("contents = %d, want 0 (RoleTool without ToolCallID dropped)", len(contents))
+	}
+}
+
 func TestSystemInstructionToWire(t *testing.T) {
 	msgs := []llm.Message{
 		{Role: llm.RoleSystem, Content: "Be helpful"},

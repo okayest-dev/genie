@@ -283,6 +283,15 @@ func inputToWire(messages []llm.Message) []map[string]any {
 					"content": m.Content,
 				})
 			}
+		case llm.RoleTool:
+			if m.ToolCallID == "" {
+				continue
+			}
+			out = append(out, map[string]any{
+				"type":    "function_call_output",
+				"call_id": m.ToolCallID,
+				"output":  m.Content,
+			})
 		case llm.RoleAssistant:
 			if len(m.ToolCalls) > 0 {
 				for _, tc := range m.ToolCalls {
