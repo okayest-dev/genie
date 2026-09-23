@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"iter"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,17 +14,18 @@ import (
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
-	"github.com/okayest-dev/genie/internal/permissions"
-	"github.com/okayest-dev/genie/internal/session"
+	"github.com/okayest-dev/genie/internal/run"
 )
 
 func TestSlashHelp(t *testing.T) {
+	h := newTestHandle(t, nil, "", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: t.TempDir(),
 		Stdin:      strings.NewReader("/help\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
 	}
 	err := Run(context.Background(), cfg)
 	if err != nil {
@@ -34,29 +37,31 @@ func TestSlashHelp(t *testing.T) {
 }
 
 func TestSlashQuit(t *testing.T) {
+	h := newTestHandle(t, nil, "", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: t.TempDir(),
 		Stdin:      strings.NewReader("/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
 	}
-	err := Run(context.Background(), cfg)
-	if err != nil {
+	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestSlashUnknown(t *testing.T) {
+	h := newTestHandle(t, nil, "", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: t.TempDir(),
 		Stdin:      strings.NewReader("/foo\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
 	}
-	err := Run(context.Background(), cfg)
-	if err != nil {
+	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), "unknown command: /foo") {
@@ -65,15 +70,16 @@ func TestSlashUnknown(t *testing.T) {
 }
 
 func TestEmptyInputSkipped(t *testing.T) {
+	h := newTestHandle(t, nil, "", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: t.TempDir(),
 		Stdin:      strings.NewReader("\n\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
 	}
-	err := Run(context.Background(), cfg)
-	if err != nil {
+	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Empty lines should not produce any output except the prompt.
@@ -83,15 +89,16 @@ func TestEmptyInputSkipped(t *testing.T) {
 }
 
 func TestEOFExitsCleanly(t *testing.T) {
+	h := newTestHandle(t, nil, "", t.TempDir())
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: t.TempDir(),
 		Stdin:      strings.NewReader(""),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
 	}
-	err := Run(context.Background(), cfg)
-	if err != nil {
+	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error on EOF: %v", err)
 	}
 }
@@ -107,50 +114,20 @@ func writeTestLedger(t *testing.T, dir, sessionID string) {
 	}
 }
 
+// TestSlashChangesEmpty drives /changes inside the REPL loop against a fresh
+// session (no ledgers) and expects the empty listing.
 func TestSlashChangesEmpty(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	cfg := &Config{
-		Stdin:      strings.NewReader("/changes\n/quit\n"),
-		Stdout:     &stdout,
-		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
-	}
-	err := Run(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(stdout.String(), "no changes") {
-		t.Errorf("stdout = %q, want 'no changes'", stdout.String())
-	}
-}
-
-func TestSlashChangesListsBatches(t *testing.T) {
 	dir := t.TempDir()
-	// We need a known session ID to write ledger data, so write it manually.
-	sessionID := "test-session"
-	writeTestLedger(t, dir, sessionID)
-
+	h := newTestHandle(t, nil, "", dir)
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: dir,
 		Stdin:      strings.NewReader("/changes\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: dir,
 	}
-	// Inject session by pre-creating the session file. The REPL will create
-	// a new session, so we write the ledger under that ID instead.
-	// Actually, we need to match the session the REPL creates. Let's use a
-	// different approach: write ledger, then point at it.
-	// The REPL creates its own session, so we can't predict the ID.
-	// Instead, let's write the ledger for the session the REPL will create.
-	// We'll read the session ID from stderr after it's created.
-	// For simplicity, let's just test the empty case here and test the
-	// listing case via a unit test on the handler.
-
-	// The /changes command uses the session the REPL creates, which starts
-	// empty. So /changes on a fresh session should print "no changes".
-	err := Run(context.Background(), cfg)
-	if err != nil {
+	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := stdout.String()
@@ -159,16 +136,41 @@ func TestSlashChangesListsBatches(t *testing.T) {
 	}
 }
 
-func TestSlashChangesIDNotFound(t *testing.T) {
+// TestSlashChangesListsBatches preseeded under the running session's ID so the
+// REPL's /changes lists the real batch.
+func TestSlashChangesListsBatches(t *testing.T) {
+	dir := t.TempDir()
+	h := newTestHandle(t, nil, "", dir)
+	writeTestLedger(t, dir, h.Session().ID)
+
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: dir,
+		Stdin:      strings.NewReader("/changes\n/quit\n"),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "foo.txt") {
+		t.Errorf("stdout = %q, want the preseeded batch listed", stdout.String())
+	}
+}
+
+func TestSlashChangesIDNotFound(t *testing.T) {
+	dir := t.TempDir()
+	h := newTestHandle(t, nil, "", dir)
+	var stdout, stderr bytes.Buffer
+	cfg := &Config{
+		Run:        h,
+		SessionDir: dir,
 		Stdin:      strings.NewReader("/changes 99\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
 	}
-	err := Run(context.Background(), cfg)
-	if err != nil {
+	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), "no such change id: 99") {
@@ -177,15 +179,17 @@ func TestSlashChangesIDNotFound(t *testing.T) {
 }
 
 func TestSlashChangesInvalidID(t *testing.T) {
+	dir := t.TempDir()
+	h := newTestHandle(t, nil, "", dir)
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{
+		Run:        h,
+		SessionDir: dir,
 		Stdin:      strings.NewReader("/changes abc\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
 	}
-	err := Run(context.Background(), cfg)
-	if err != nil {
+	if err := Run(context.Background(), cfg); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(stdout.String(), "invalid change id: abc") {
@@ -277,25 +281,53 @@ func TestHandleChangesInvalidID(t *testing.T) {
 	}
 }
 
-// TestCurrentModelExplicitOnly pins the og-z1m.3 explicit-only rule on the
-// no-global model (og-z1m.8): the runtime model is the active provider's
-// default (cfg.Model) unless an agent declares its own model outright. An
-// agent with no declared model resolves empty and leaves the default alone.
-func TestCurrentModelExplicitOnly(t *testing.T) {
-	providerDefault := &Config{Model: "other-model"}
-
-	undeclared := &config.ResolvedAgent{Name: "a", Model: ""}
-	if got := currentModel(providerDefault, undeclared); got != "other-model" {
-		t.Errorf("undeclared agent: currentModel = %q, want provider default %q", got, "other-model")
+// testCfg returns a config every REPL test can boot a handle from (raw non-load
+// configs disable every tool; enable them all like config.Load does).
+func testCfg(dir string) *config.Config {
+	return &config.Config{
+		SessionDir: dir,
+		Tools:      config.Tools{Read: true, Write: true, Edit: true, Bash: true},
 	}
+}
 
-	declared := &config.ResolvedAgent{Name: "b", Model: "claude-sonnet-4-5"}
-	if got := currentModel(providerDefault, declared); got != "claude-sonnet-4-5" {
-		t.Errorf("declaring agent: currentModel = %q, want agent model %q", got, "claude-sonnet-4-5")
+// newTestHandle assembles a run.Handle for a REPL test. A nil source and empty
+// provider yield a provider-less handle (slash tests that don't touch
+// providers).
+func newTestHandle(t *testing.T, reg run.ProviderSource, provider, dir string) *run.Handle {
+	t.Helper()
+	h, err := run.New(run.Options{
+		Config:         testCfg(dir),
+		ProviderSource: reg,
+		Provider:       provider,
+		Stderr:         io.Discard,
+	})
+	if err != nil {
+		t.Fatalf("run.New: %v", err)
 	}
+	t.Cleanup(func() { _ = h.Close() })
+	return h
+}
 
-	if got := currentModel(providerDefault, nil); got != "other-model" {
-		t.Errorf("no agent: currentModel = %q, want provider default %q", got, "other-model")
+// newSlashCfg builds a Config whose Run satisfies the slash handlers; stdout
+// and stderr buffers capture the command output. The boot provider/model are
+// driven by reg's default (alpha-model for twoProviderReg).
+func newSlashCfg(t *testing.T, reg run.ProviderSource, provider, dir string) (*Config, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	return &Config{
+		Run:        newTestHandle(t, reg, provider, dir),
+		SessionDir: dir,
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, &stdout, &stderr
+}
+
+// runSlash drives one slash command through the handler and asserts it did not
+// request an exit.
+func runSlash(t *testing.T, cfg *Config, line string) {
+	t.Helper()
+	if handleSlashCommand(context.Background(), line, cfg) {
+		t.Fatalf("command %q requested exit", line)
 	}
 }
 
@@ -317,9 +349,9 @@ func (c *fakeLLMClient) Stream(context.Context, llm.Request) (iter.Seq[llm.Event
 // registryClient is the llm.Client lookup the fake registry satisfies.
 type registryClient = llm.Client
 
-// fakeRegistry scripts the provider surface the REPL needs: the declared
-// names, each provider's default model, its catalog, and the client a switch
-// rebuilds.
+// fakeRegistry scripts the provider surface the run handle consumes: the
+// declared names, each provider's default model, its catalog, and the client a
+// switch rebuilds. It satisfies run.ProviderSource.
 type fakeRegistry struct {
 	names       []string
 	defaults    map[string]string
@@ -356,41 +388,6 @@ func (f *fakeRegistry) Catalog(_ context.Context, name string) ([]llm.Model, err
 	return c, nil
 }
 
-// newProviderState builds a Config, replState and session for slash-command
-// tests, booting the state's context-wrapped client on provider's fake client.
-func newProviderState(t *testing.T, reg *fakeRegistry, provider, model string) (*Config, *replState, *session.Session, *bytes.Buffer, *bytes.Buffer) {
-	t.Helper()
-	var stdout, stderr bytes.Buffer
-	cfg := &Config{
-		Providers:  reg,
-		Provider:   provider,
-		Model:      model,
-		Stdin:      strings.NewReader(""),
-		Stdout:     &stdout,
-		Stderr:     &stderr,
-		SessionDir: t.TempDir(),
-	}
-	sess, err := session.New(cfg.SessionDir)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	client, err := reg.Client(provider)
-	if err != nil {
-		t.Fatalf("boot client: %v", err)
-	}
-	state := &replState{provider: provider, baseClient: client, client: wrapClient(cfg, client, sess)}
-	return cfg, state, sess, &stdout, &stderr
-}
-
-// runSlash drives one slash command through the handler and asserts it did not
-// request an exit.
-func runSlash(t *testing.T, cfg *Config, state *replState, sess *session.Session, line string) {
-	t.Helper()
-	if handleSlashCommand(context.Background(), line, cfg, state, &sess) {
-		t.Fatalf("command %q requested exit", line)
-	}
-}
-
 // twoProviderReg scripts alpha (default alpha-model, catalog [alpha-model,
 // alpha-1, alpha-2]) and beta (default beta-model, catalog [beta-model,
 // beta-1, beta-2]) as openai-ish fake clients so every part of the switch
@@ -411,8 +408,8 @@ func twoProviderReg() *fakeRegistry {
 }
 
 func TestProviderListMarksCurrent(t *testing.T) {
-	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
-	runSlash(t, cfg, state, sess, "/provider")
+	cfg, stdout, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
+	runSlash(t, cfg, "/provider")
 
 	out := stdout.String()
 	if !strings.Contains(out, "Available providers:") {
@@ -427,35 +424,34 @@ func TestProviderListMarksCurrent(t *testing.T) {
 }
 
 func TestProviderSwitchRebuildsClientAndResetsModel(t *testing.T) {
-	cfg, state, sess, stdout, stderr := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
-	oldClient := state.client
+	cfg, stdout, stderr := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
+	oldClient := cfg.Run.Client()
 
-	runSlash(t, cfg, state, sess, "/provider beta")
+	runSlash(t, cfg, "/provider beta")
 
-	if state.provider != "beta" {
-		t.Errorf("provider = %q, want beta", state.provider)
+	if cfg.Run.Provider() != "beta" {
+		t.Errorf("provider = %q, want beta", cfg.Run.Provider())
 	}
-	if cfg.Model != "beta-model" {
-		t.Errorf("model = %q, want beta-default %q", cfg.Model, "beta-model")
+	if cfg.Run.Model() != "beta-model" {
+		t.Errorf("model = %q, want beta-default %q", cfg.Run.Model(), "beta-model")
 	}
-	if state.client == oldClient {
+	if cfg.Run.Client() == oldClient {
 		t.Errorf("client not rebuilt after switch")
 	}
 	if !strings.Contains(stdout.String(), "provider: beta (model: beta-model)") {
 		t.Errorf("stdout = %q, want switch message", stdout.String())
 	}
-	stderrStr := stderr.String()
-	if stderrStr != "" {
-		t.Errorf("stderr = %q, want clean switch", stderrStr)
+	if stderr.String() != "" {
+		t.Errorf("stderr = %q, want clean switch", stderr.String())
 	}
 
-	// /model after the switch lists the new provider's catalog and marks its
-	// default (the active provider's model).
+	// /model after the switch lists the new provider's catalog and marks
+	// the active provider's model (there is no global to fall back to).
 	stdout.Reset()
-	runSlash(t, cfg, state, sess, "/model")
+	runSlash(t, cfg, "/model")
 	out := stdout.String()
-	if !strings.Contains(out, "* beta-2") && !strings.Contains(out, "* beta-model") {
-		t.Errorf("/model = %q, want asterisk on a beta catalog entry or the beta default", out)
+	if !strings.Contains(out, "* beta-model") {
+		t.Errorf("/model = %q, want asterisk on the beta default", out)
 	}
 	if strings.Contains(out, "alpha-") {
 		t.Errorf("/model = %q, must not list the old provider's catalog", out)
@@ -463,35 +459,35 @@ func TestProviderSwitchRebuildsClientAndResetsModel(t *testing.T) {
 }
 
 func TestProviderUnknownNamesTheAvailableSet(t *testing.T) {
-	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
-	runSlash(t, cfg, state, sess, "/provider gamma")
+	cfg, stdout, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
+	runSlash(t, cfg, "/provider gamma")
 
 	out := stdout.String()
 	if !strings.Contains(out, "no such provider: gamma") || !strings.Contains(out, "(available: alpha, beta)") {
 		t.Errorf("stdout = %q, want 'no such provider: gamma (available: alpha, beta)'", out)
 	}
-	if state.provider != "alpha" || cfg.Model != "alpha-model" {
-		t.Errorf("state drifted on failed switch: provider=%q model=%q", state.provider, cfg.Model)
+	if cfg.Run.Provider() != "alpha" || cfg.Run.Model() != "alpha-model" {
+		t.Errorf("state drifted on failed switch: provider=%q model=%q", cfg.Run.Provider(), cfg.Run.Model())
 	}
 }
 
 func TestBareProviderListsWithoutSwitching(t *testing.T) {
-	cfg, state, sess, _, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
-	runSlash(t, cfg, state, sess, "/provider beta")
-	runSlash(t, cfg, state, sess, "/provider  ")
+	cfg, _, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
+	runSlash(t, cfg, "/provider beta")
+	runSlash(t, cfg, "/provider  ")
 
 	// A bare /provider with only spaces lists; it must not switch.
-	if state.provider != "beta" {
-		t.Errorf("provider = %q, want beta (bare /provider must list, not switch)", state.provider)
+	if cfg.Run.Provider() != "beta" {
+		t.Errorf("provider = %q, want beta (bare /provider must list, not switch)", cfg.Run.Provider())
 	}
 }
 
 func TestModelListingUsesActiveProviderCatalog(t *testing.T) {
-	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+	cfg, stdout, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
 
-	runSlash(t, cfg, state, sess, "/provider beta")
+	runSlash(t, cfg, "/provider beta")
 	stdout.Reset()
-	runSlash(t, cfg, state, sess, "/model")
+	runSlash(t, cfg, "/model")
 
 	out := stdout.String()
 	if !strings.Contains(out, "beta-1") || !strings.Contains(out, "beta-2") {
@@ -500,46 +496,41 @@ func TestModelListingUsesActiveProviderCatalog(t *testing.T) {
 }
 
 func TestModelSwitchValidatedWithinActiveProvider(t *testing.T) {
-	cfg, state, sess, stdout, _ := newProviderState(t, twoProviderReg(), "alpha", "alpha-model")
+	cfg, stdout, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
 
 	// alpha's catalog does not contain beta-2: switching to it must fail.
-	runSlash(t, cfg, state, sess, "/model beta-2")
-	if cfg.Model != "alpha-model" {
-		t.Errorf("model = %q, want untouched after unknown model", cfg.Model)
+	runSlash(t, cfg, "/model beta-2")
+	if cfg.Run.Model() != "alpha-model" {
+		t.Errorf("model = %q, want untouched after unknown model", cfg.Run.Model())
 	}
 	if !strings.Contains(stdout.String(), "no such model: beta-2") {
 		t.Errorf("stdout = %q, want no-such-model", stdout.String())
 	}
 
 	stdout.Reset()
-	runSlash(t, cfg, state, sess, "/provider beta")
-	runSlash(t, cfg, state, sess, "/model beta-2")
-	if cfg.Model != "beta-2" {
-		t.Errorf("model = %q, want beta-2 after valid switch within beta", cfg.Model)
+	runSlash(t, cfg, "/provider beta")
+	runSlash(t, cfg, "/model beta-2")
+	if cfg.Run.Model() != "beta-2" {
+		t.Errorf("model = %q, want beta-2 after valid switch within beta", cfg.Run.Model())
 	}
 }
 
 func TestProviderSurvivesNewAfterSwitch(t *testing.T) {
-	reg := twoProviderReg()
-
-	cfg, state, sess, _, _ := newProviderState(t, reg, "alpha", "alpha-model")
-	runSlash(t, cfg, state, sess, "/provider beta")
-	if state.provider != "beta" {
-		t.Fatalf("provider = %q, want beta after switch", state.provider)
+	cfg, _, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
+	runSlash(t, cfg, "/provider beta")
+	if cfg.Run.Provider() != "beta" {
+		t.Fatalf("provider = %q, want beta after switch", cfg.Run.Provider())
 	}
 
-	// /new must keep building on the switched provider, not revert to the
-	// boot client: the pre-switch base client and post-switch base client are
-	// distinct fakes, so leaving alpha would change the baseClient's models.
-	before := state.baseClient
-	runSlash(t, cfg, state, sess, "/new alpha")
-	if cfg.Model != "beta-model" {
-		t.Errorf("model = %q, want the switched provider's default preserved", cfg.Model)
+	before := cfg.Run.BaseClient()
+	runSlash(t, cfg, "/new")
+	if cfg.Run.Model() != "beta-model" {
+		t.Errorf("model = %q, want the switched provider's default preserved", cfg.Run.Model())
 	}
-	if state.provider != "beta" {
-		t.Errorf("provider = %q, want beta preserved across /new", state.provider)
+	if cfg.Run.Provider() != "beta" {
+		t.Errorf("provider = %q, want beta preserved across /new", cfg.Run.Provider())
 	}
-	if state.baseClient != before {
+	if cfg.Run.BaseClient() != before {
 		t.Errorf("/new rebuilt from a different client than the switched provider")
 	}
 }
@@ -548,8 +539,8 @@ func TestModelCatalogFailureDegradesToDefaultModel(t *testing.T) {
 	reg := twoProviderReg()
 	reg.catalogErrs = map[string]error{"alpha": fmt.Errorf("catalog down")}
 
-	cfg, state, sess, stdout, stderr := newProviderState(t, reg, "alpha", "alpha-model")
-	runSlash(t, cfg, state, sess, "/model")
+	cfg, stdout, stderr := newSlashCfg(t, reg, "alpha", t.TempDir())
+	runSlash(t, cfg, "/model")
 
 	if !strings.Contains(stderr.String(), "Error: fetching model catalog") {
 		t.Errorf("stderr = %q, want catalog fetch error", stderr.String())
@@ -563,68 +554,58 @@ func TestModelCatalogFailureDegradesToDefaultModel(t *testing.T) {
 	}
 }
 
-// TestApplyAgentBase pins the per-agent base switch in the permission store
-// (og-uy5.7): the global base applies for nil/no-permissions agents, an
-// agent's declared [permissions] replaces it wholly (its write prompts despite
-// a global write base), and switching back restores the global base.
-func TestApplyAgentBase(t *testing.T) {
-	cwd := filepath.Join(t.TempDir(), "work")
-	store := permissions.New(cwd)
-	cfg := &Config{
-		Cfg: &config.Config{
-			Permissions: config.Permissions{Base: map[string][]string{
-				"read":  {"."},
-				"write": {"."},
-			}},
-		},
-		PermissionStore: store,
+// TestAgentSwitchReflectedOnRun drives the /agent surface against a real
+// handle and pins the switch line the e2e suite relies on.
+func TestAgentSwitchReflectedOnRun(t *testing.T) {
+	agentsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentsDir, "reader.toml"),
+		[]byte("model = \"reader-model\"\ntools = [\"read\"]\nskills = []\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	globalWrite := filepath.Join(cwd, "x.go")
-
-	// No agent, and an agent without a [permissions] section, inherit the
-	// global base.
-	applyAgentBase(cfg, nil)
-	if !store.Covered(permissions.AxisWrite, globalWrite) {
-		t.Fatalf("global write base not applied for a nil agent")
-	}
-	applyAgentBase(cfg, &config.ResolvedAgent{Name: "plain"})
-	if !store.Covered(permissions.AxisWrite, globalWrite) {
-		t.Fatalf("global write base not inherited by an agent without permissions")
-	}
-
-	// A read-only [permissions] section replaces the base wholly: the global
-	// write base is gone, so a write must escalate.
-	applyAgentBase(cfg, &config.ResolvedAgent{
-		Name:        "reader",
-		Permissions: &config.AgentPermissions{Read: []string{"."}},
+	h, err := run.New(run.Options{
+		Config:         testCfg(t.TempDir()),
+		ProviderSource: twoProviderReg(),
+		Provider:       "alpha",
+		AgentReg:       config.NewAgentReg(agentsDir, t.TempDir()),
+		Stderr:         io.Discard,
 	})
-	if store.Covered(permissions.AxisWrite, globalWrite) {
-		t.Errorf("write covered under a read-only agent base; want it prompted despite the global write base")
+	if err != nil {
+		t.Fatalf("run.New: %v", err)
 	}
-	if !store.Covered(permissions.AxisRead, filepath.Join(cwd, "a.go")) {
-		t.Errorf("read under the agent's declared read=[] base not covered")
-	}
-	if store.Covered(permissions.AxisNet, "") {
-		t.Errorf("net covered under a read-only agent base; want empty (no axis-level inheritance)")
-	}
+	t.Cleanup(func() { _ = h.Close() })
 
-	// Switching back to an inheriting agent restores the global base.
-	applyAgentBase(cfg, &config.ResolvedAgent{Name: "plain"})
-	if !store.Covered(permissions.AxisWrite, globalWrite) {
-		t.Errorf("global write base not restored on switch back to an inheriting agent")
+	var stdout, stderr bytes.Buffer
+	cfg := &Config{Run: h, Stdout: &stdout, Stderr: &stderr}
+
+	runSlash(t, cfg, "/agent reader")
+	if cmd := h.CurrentAgent(); cmd == nil || cmd.Name != "reader" {
+		t.Errorf("current agent = %+v, want reader", cmd)
+	}
+	if !strings.Contains(stdout.String(), "switched to reader (model: reader-model), tools: read") {
+		t.Errorf("stdout = %q, want the switch line", stdout.String())
+	}
+	if h.Model() != "reader-model" {
+		t.Errorf("model = %q, want the agent-declared model", h.Model())
 	}
 }
 
-// TestApplyAgentBaseRequiresStoreAndConfig reports that applyAgentBase is a
-// no-op (never a panic) for the nil-store / nil-config repl configurations
-// used by unit tests — a store without a config to resolve the global base
-// from keeps its own base untouched.
-func TestApplyAgentBaseRequiresStoreAndConfig(t *testing.T) {
-	applyAgentBase(&Config{}, &config.ResolvedAgent{Name: "x", Permissions: &config.AgentPermissions{Read: []string{"."}}})
-	cwd := t.TempDir()
-	store := permissions.New(cwd)
-	applyAgentBase(&Config{PermissionStore: store}, &config.ResolvedAgent{Name: "x", Permissions: &config.AgentPermissions{Read: []string{"."}}})
-	if store.Covered(permissions.AxisWrite, filepath.Join(cwd, "x.go")) {
-		t.Error("applyAgentBase touched a store without a config; want a no-op")
+// TestAgentUnknownPrintsErr pins the /agent error path: unknown names surface
+// through the handle's resolution error, not a blank switch.
+func TestAgentUnknownPrintsErr(t *testing.T) {
+	agentsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(agentsDir, "reader.toml"),
+		[]byte("model = \"reader-model\"\nskills = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHandle(t, twoProviderReg(), "alpha", t.TempDir())
+	t.Cleanup(func() { _ = h.Close() })
+
+	var stdout, stderr bytes.Buffer
+	cfg := &Config{Run: h, Stdout: &stdout, Stderr: &stderr}
+
+	// The handle boots without an AgentReg, so /agent switch reports none.
+	runSlash(t, cfg, "/agent nosuch")
+	if !strings.Contains(stderr.String(), "no agents configured") {
+		t.Errorf("stderr = %q, want 'no agents configured'", stderr.String())
 	}
 }

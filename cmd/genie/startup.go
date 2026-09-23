@@ -29,24 +29,6 @@ func registryFromConfig(cfg *config.Config) *llm.Registry {
 	return llm.NewRegistry(specs)
 }
 
-// resolveStartup resolves what the harness boots on: the provider named by
-// the resolved selection, its client built through the registry, and its
-// default model as the first model. There is no global model to fall back on,
-// so every model a turn can start on belongs to the active provider — the
-// "runModel mismatch" bug cannot recur. An unknown provider or unregistered
-// wire is a startup error naming it.
-func resolveStartup(reg *llm.Registry, provider string) (llm.Client, string, error) {
-	model, err := reg.DefaultModel(provider)
-	if err != nil {
-		return nil, "", fmt.Errorf("active provider: %w", err)
-	}
-	client, err := reg.Client(provider)
-	if err != nil {
-		return nil, "", fmt.Errorf("active provider: %w", err)
-	}
-	return client, model, nil
-}
-
 // selectStartupProvider resolves the provider the harness boots on. An
 // explicitly selected provider wins outright. With no selection, an
 // interactive run prompts the user to pick from the declared set; a one-shot

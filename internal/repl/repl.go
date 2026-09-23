@@ -1,6 +1,9 @@
 // Package repl implements the interactive REPL (Read-Eval-Print Loop) for genie.
 // It provides a canonical-mode line reader with live streaming, Ctrl+C handling
-// across three zones, slash commands, and interactive confirm prompts.
+// across three zones, slash commands, and interactive confirm prompts. All
+// turn assembly — session, tools, skills, plugins, permission gate, providers,
+// agents — lives in run.Handle; the REPL is a thin reader that routes lines,
+// signals, and prompts through it.
 package repl
 
 import (
@@ -10,197 +13,43 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/okayest-dev/genie/internal/agent"
 	"github.com/okayest-dev/genie/internal/config"
-	"github.com/okayest-dev/genie/internal/contextmgr"
-	"github.com/okayest-dev/genie/internal/instruct"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
-	"github.com/okayest-dev/genie/internal/permissions"
-	"github.com/okayest-dev/genie/internal/session"
-	"github.com/okayest-dev/genie/internal/skill"
-	"github.com/okayest-dev/genie/internal/tools"
-	"github.com/okayest-dev/genie/internal/tools/requesttool"
+	"github.com/okayest-dev/genie/internal/plugin"
+	"github.com/okayest-dev/genie/internal/run"
 )
-
-// requestPermissionNegotiatorSetter is implemented by the request_permission
-// tool so the REPL can hand it the interactive negotiator without coupling to
-// the concrete requesttool type. A tool that is absent from the agent's
-// subset is simply not wired and stays on the headless auto-deny default.
-type requestPermissionNegotiatorSetter interface {
-	SetNegotiator(permissions.Negotiator)
-}
 
 const prompt = "genie> "
 
-// CommandInfo describes a single command a plugin exposes.
-type CommandInfo struct {
-	Name        string
-	Description string
-}
-
-// CommandResult is the outcome of running a plugin command: the REPL prints
-// Text, or compact JSON of Data when Text is empty.
-type CommandResult struct {
-	Text string
-	Data any
-}
-
-// CommandSource is the narrow interface the REPL uses to discover and run
-// plugin commands. It is carried by Config and wired from the plugin manager
-// so the REPL stays decoupled from the manager.
-type CommandSource interface {
-	// Plugins returns the names of available plugins in deterministic order.
-	// It lets /help enumerate the flat plugin-commands section.
-	Plugins() []string
-	// ListCommands returns the commands a plugin exposes. Returns
-	// ErrUnknownPlugin when the name is not a loaded plugin.
-	ListCommands(plugin string) ([]CommandInfo, error)
-	// RunCommand invokes a plugin command and returns the result. The raw
-	// argument string is passed through unchanged.
-	RunCommand(plugin, command, args string) (*CommandResult, error)
-	// Help returns curated help text for a plugin or a single command.
-	// The plugin may not supply curated help; callers should fall back to
-	// ListCommands when Help returns an error.
-	Help(plugin, command string) (string, error)
-}
-
-var (
-	// ErrUnknownPlugin is returned by CommandSource when the plugin name
-	// does not match any loaded plugin.
-	ErrUnknownPlugin = errors.New("unknown plugin")
-	// ErrUnknownCommand is returned by CommandSource when a command name
-	// is not registered by the plugin.
-	ErrUnknownCommand = errors.New("unknown command")
-	// ErrPluginInactive is returned by CommandSource when the plugin is
-	// not currently active.
-	ErrPluginInactive = errors.New("plugin not active")
-)
-
-// providerRegistry is the narrow slice of the llm provider registry the REPL
-// needs: enumerate declared providers, resolve a provider's default model and
-// catalog, and rebuild a client for a mid-session switch. The concrete
-// *llm.Registry satisfies it; tests script a fake.
-type providerRegistry interface {
-	// Names returns the declared provider names in deterministic order.
-	Names() []string
-	// Catalog returns a provider's model catalog in order.
-	Catalog(ctx context.Context, name string) ([]llm.Model, error)
-	// DefaultModel returns a provider's default model.
-	DefaultModel(name string) (string, error)
-	// Client builds the provider's client.
-	Client(name string) (llm.Client, error)
-}
-
-// Config holds the dependencies for running the REPL.
+// Config is the thin entry-point surface a REPL needs. The run.Handle owns
+// everything a turn touches; the stream fields route the REPL's own IO.
 type Config struct {
-	Client       llm.Client
-	Model        string
-	Instruction  string // default instruction (no-agent fallback)
-	SessionDir   string
-	Registry     *tools.Registry // global registry
-	Cwd          string          // working directory for AGENTS.md lookup
-	Cfg          *config.Config  // harness config (for instruction assembly, agent resolution)
-	AgentReg     *config.AgentReg
-	DefaultAgent *config.ResolvedAgent
-	BashTimeout  time.Duration
-	// Provider is the name of the provider the harness booted on; the initial
-	// value of the session's provider, tracked in replState and switched by
-	// /provider.
-	Provider string
-	// Providers is the provider registry used to list providers, resolve
-	// catalogs, and rebuild clients for a mid-session /provider switch. When
-	// nil, /provider reports no providers and /model falls back to the
-	// wrapped client's own catalog.
-	Providers providerRegistry
-	// CtxOpts are the ContextManager options (turns window, counter,
-	// resolver, hooks) applied wherever a context-wrapped client is constructed.
-	CtxOpts []contextmgr.Option
-	// RebuildOpts, when non-nil, returns the ContextManager options for a
-	// freshly built provider client (e.g. re-sourcing modelinfo from the new
-	// client per ADR-0004). When nil, CtxOpts are reused for a /provider
-	// switch.
-	RebuildOpts func(client llm.Client) []contextmgr.Option
-	// AgentOpts are the agent.RunTurn options (e.g. the lifecycle-hooks seam
-	// via agent.WithHooks) applied to every turn.
-	AgentOpts []agent.Option
-	// PermissionStore is the effective-policy store the deny-point escalation
-	// gate consults. Nil disables the gate (tool calls run ungated).
-	PermissionStore *permissions.Store
-	// PermanentSink persists permanent-tier grants. Nil keeps them in-memory.
-	PermanentSink permissions.PermanentSink
-	// Commands is the plugin command source. When nil, plugin slash
-	// commands are not available.
-	Commands CommandSource
-	Stdin    io.Reader
-	Stdout   io.Writer
-	Stderr   io.Writer
-}
-
-// contextTurns returns the history window from the harness config, defaulting
-// to unlimited (0) when no config is present (e.g. unit tests).
-func contextTurns(cfg *Config) int {
-	if cfg.Cfg == nil {
-		return 0
-	}
-	return cfg.Cfg.Context.Turns
-}
-
-// wrapClient builds the context-wrapped client for a base client and session.
-// The option set comes from CtxOpts, or from RebuildOpts when set — a
-// /provider switch hands the freshly built client to RebuildOpts so modelinfo
-// is re-sourced from the new provider, not the old one (ADR-0004).
-func wrapClient(cfg *Config, base llm.Client, sess *session.Session) llm.Client {
-	opts := cfg.CtxOpts
-	if cfg.RebuildOpts != nil {
-		opts = cfg.RebuildOpts(base)
-	}
-	merged := append([]contextmgr.Option{contextmgr.WithTurns(contextTurns(cfg))}, opts...)
-	return contextmgr.New(base, sess, merged...)
-}
-
-// replState holds mutable agent state for the duration of a REPL session.
-type replState struct {
-	currentAgent  *config.ResolvedAgent
-	previousAgent *config.ResolvedAgent
-	instruction   string
-	// provider is the session's active provider name, switched by /provider.
-	provider string
-	// baseClient is the raw (unwrapped) client of the active provider, so a
-	// provider switch — and /new after one — keeps building on the live
-	// provider instead of reverting to the boot client.
-	baseClient llm.Client
-	// client is the context-wrapped Client (around baseClient) bound to the
-	// current session. It owns history injection so each turn's request
-	// carries earlier turns' messages.
-	client llm.Client
+	// Run is the fully assembled run. It must be non-nil.
+	Run *run.Handle
+	// Cfg is the harness config the run was assembled from.
+	Cfg *config.Config
+	// SessionDir is the harness session directory (/changes reads ledgers).
+	SessionDir string
+	// Cwd is the working directory the run uses.
+	Cwd    string
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 // Run starts the interactive REPL loop. It reads user input, runs agent
 // turns, and handles slash commands. The REPL exits on /quit or EOF.
 func Run(ctx context.Context, cfg *Config) error {
-	sess, err := session.New(cfg.SessionDir)
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
+	if cfg.Run == nil {
+		return errors.New("repl: no run handle")
 	}
-	fmt.Fprintf(cfg.Stderr, "session: %s\n", sess.ID)
-
-	state := &replState{
-		currentAgent: cfg.DefaultAgent,
-		baseClient:   cfg.Client,
-		client:       wrapClient(cfg, cfg.Client, sess),
-		provider:     cfg.Provider,
-	}
-	applyAgentBase(cfg, state.currentAgent)
-	state.instruction = resolveInstruction(cfg, state.currentAgent)
 
 	// One goroutine owns stdin and fans lines out over a channel. Sharing the
 	// buffered reader with the escalation prompt is what lets ^C interrupt a
@@ -227,23 +76,10 @@ func Run(ctx context.Context, cfg *Config) error {
 		}
 	}()
 
-	// Build the deny-point escalation gate when a policy store is supplied.
-	var gate *permissions.Gate
-	if cfg.PermissionStore != nil {
-		neg := &interactiveNegotiator{lines: lines, out: cfg.Stdout, router: router}
-		gate = permissions.NewGate(cfg.PermissionStore, neg, cfg.PermanentSink)
-		// The request_permission tool shares the interactive negotiator, so a
-		// pre-negotiation prompt is byte-identical to inline escalation. When
-		// the tool is absent (an agent tool subset scoped it out) this is a
-		// quiet no-op.
-		if cfg.Registry != nil {
-			if t, ok := cfg.Registry.Get(requesttool.ToolName); ok {
-				if setter, ok := t.(requestPermissionNegotiatorSetter); ok {
-					setter.SetNegotiator(neg)
-				}
-			}
-		}
-	}
+	// Swap in the interactive negotiator: the deny-point gate and the
+	// request_permission tool both follow, so inline escalation prompts are
+	// byte-identical to pre-negotiation prompts.
+	cfg.Run.SetNegotiator(&interactiveNegotiator{lines: lines, out: cfg.Stdout, router: router})
 
 	for {
 		fmt.Fprint(cfg.Stdout, prompt)
@@ -266,117 +102,22 @@ func Run(ctx context.Context, cfg *Config) error {
 
 			// 1. Parse @name one-shot (before slash commands).
 			if agentName, rest, ok := parseInlineAgent(line); ok {
-				handleInlineAgent(ctx, agentName, rest, cfg, state, sess, router, gate)
+				handleInlineAgent(ctx, agentName, rest, cfg, router)
 				continue
 			}
 
 			// 2. Handle slash commands.
 			if strings.HasPrefix(line, "/") {
-				if handleSlashCommand(ctx, line, cfg, state, &sess) {
+				if handleSlashCommand(ctx, line, cfg) {
 					return nil
 				}
 				continue
 			}
 
 			// 3. Normal turn.
-			runTurn(ctx, cfg, state, line, sess, router, gate)
+			runTurn(ctx, cfg, line, router)
 		}
 	}
-}
-
-// resolveInstruction assembles the instruction for the current agent,
-// re-running the skill pipeline (discover → filter → bind → build) each turn
-// so SKILL.md edits are picked up without a config reload.
-func resolveInstruction(cfg *Config, agent *config.ResolvedAgent) string {
-	if agent == nil && cfg.Cfg == nil {
-		return cfg.Instruction
-	}
-
-	// Run the skill pipeline with the current agent's bindings.
-	var agentSkills []string
-	agentName := ""
-	if agent != nil {
-		agentSkills = agent.Skills
-		agentName = agent.Name
-	}
-
-	skillLayer, warns, err := skill.Pipeline(
-		cfg.Cfg.Skills.Dirs, cfg.Cfg.Skills.Enable, cfg.Cfg.Skills.Disable,
-		agentSkills, agentName,
-	)
-	if err != nil {
-		slog.Error("skill pipeline failed", "error", err)
-		// Fall through — instruction without skills is still usable.
-	}
-
-	for _, w := range warns {
-		slog.Warn(w.Message)
-	}
-
-	var base map[permissions.Axis][]string
-	if cfg.PermissionStore != nil {
-		base = cfg.PermissionStore.BaseSnapshot()
-	}
-	s, err := instruct.LoadWithAgentAndPermissions(cfg.Cfg, agent, skillLayer, cfg.Cwd, base)
-	if err != nil {
-		slog.Error("failed to resolve instruction", "error", err)
-		return cfg.Instruction
-	}
-	return s
-}
-
-// applyAgentBase sets the permission store's base for the active agent: an
-// agent with a declared [permissions] section replaces the global base wholly
-// (unnamed axes empty, no axis-level inheritance), otherwise the global base
-// is inherited (og-uy5.7). The store is the shared deny-point source, so the
-// gate and the instruction snapshot (BaseSnapshot) both follow the switch.
-// PermissionStore and Cfg may be nil in unit-test repls; both must be present
-// for the base to apply.
-func applyAgentBase(cfg *Config, agent *config.ResolvedAgent) {
-	if cfg.PermissionStore == nil || cfg.Cfg == nil {
-		return
-	}
-	cfg.PermissionStore.SetBaseFromConfig(agent.EffectiveBase(cfg.Cfg.Permissions.Base))
-}
-
-// skillPoolNames returns the globally-filtered discovered skill names for
-// agent resolution validation. The pool is discover-filter at the config
-// level; an agent's explicit skills list is validated against it.
-func skillPoolNames(cfg *Config) []string {
-	if cfg.Cfg == nil {
-		return nil
-	}
-	names, warns, err := skill.PoolNames(cfg.Cfg.Skills.Dirs, cfg.Cfg.Skills.Enable, cfg.Cfg.Skills.Disable)
-	if err != nil {
-		slog.Warn("skillPoolNames: discover failed", "error", err)
-		return nil
-	}
-	for _, w := range warns {
-		slog.Warn(w.Message)
-	}
-	return names
-}
-
-// resolveRegistry returns the tool registry scoped to the current agent.
-func resolveRegistry(cfg *Config, agent *config.ResolvedAgent) *tools.Registry {
-	if agent == nil {
-		return cfg.Registry
-	}
-	if agent.Tools == nil {
-		return cfg.Registry
-	}
-	return cfg.Registry.Subset(agent.Tools)
-}
-
-// currentModel returns the model for the current agent, falling back to the
-// active provider's default. There is no config global (og-z1m.8): an agent
-// declares its own model or it does not, and only a declared model may leave
-// the active provider's default (og-z1m.3).
-func currentModel(cfg *Config, agent *config.ResolvedAgent) string {
-	if agent != nil && agent.HasExplicitModel() {
-		return agent.Model
-	}
-	return cfg.Model
 }
 
 // inlineAgentName matches a valid agent name at the start of a line.
@@ -392,66 +133,39 @@ func parseInlineAgent(line string) (agentName, prompt string, ok bool) {
 	return m[1], strings.TrimSpace(line[len(m[0]):]), true
 }
 
-// handleInlineAgent runs a one-shot agent turn, then reverts state.
-func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Config, state *replState, sess *session.Session, router *interruptRouter, gate *permissions.Gate) {
+// handleInlineAgent runs a one-shot agent turn, then reverts to the previous
+// agent (or the default flow).
+func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Config, router *interruptRouter) {
 	if prompt == "" {
 		fmt.Fprintf(cfg.Stderr, "genie: @%s requires a prompt\n", agentName)
 		return
 	}
 
-	// Look up the agent against the discovered skill pool so explicit skill
-	// bindings validate against real skills.
-	poolNames := skillPoolNames(cfg)
-	resolved, err := cfg.AgentReg.GetResolved(agentName, cfg.Cfg, poolNames)
-	if err != nil {
+	previous := cfg.Run.CurrentAgent()
+	if _, err := cfg.Run.SwitchAgent(agentName); err != nil {
 		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 		return
 	}
 
-	// Validate tools.
-	if err := cfg.Registry.ValidateTools(resolved.Tools); err != nil {
-		fmt.Fprintf(cfg.Stderr, "genie: agent %q: %v\n", agentName, err)
-		return
+	runTurn(ctx, cfg, prompt, router)
+
+	if previous != nil {
+		_, _ = cfg.Run.SwitchAgent(previous.Name)
+	} else {
+		cfg.Run.ResetAgent()
 	}
-
-	// Save and switch.
-	state.previousAgent = state.currentAgent
-	state.currentAgent = resolved
-	applyAgentBase(cfg, state.currentAgent)
-
-	// Run the turn.
-	runTurn(ctx, cfg, state, prompt, sess, router, gate)
-
-	// Revert.
-	state.currentAgent = state.previousAgent
-	state.previousAgent = nil
-	applyAgentBase(cfg, state.currentAgent)
-	state.instruction = resolveInstruction(cfg, state.currentAgent)
 }
 
-// runTurn executes a single agent turn with the current agent state.
-func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, sess *session.Session, router *interruptRouter, gate *permissions.Gate) {
-	// Resolve instruction for this turn.
-	instruction := resolveInstruction(cfg, state.currentAgent)
-	registry := resolveRegistry(cfg, state.currentAgent)
-	model := currentModel(cfg, state.currentAgent)
-
-	var opts []agent.Option
-	opts = append(opts, cfg.AgentOpts...)
-	if state.currentAgent != nil {
-		opts = append(opts, agent.WithAgentName(state.currentAgent.Name))
-	}
-	if gate != nil {
-		opts = append(opts, agent.WithPermissions(gate))
-	}
-
+// runTurn executes a single agent turn. The run handle owns instruction
+// resolution, model precedence, registry scoping, and the session; the repl
+// only frames the turn so ^C can cancel it.
+func runTurn(ctx context.Context, cfg *Config, prompt string, router *interruptRouter) {
 	router.drainTurn()
 	router.set(modeTurn)
 	turnCtx, cancel := context.WithCancel(ctx)
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- agent.RunTurn(turnCtx, state.client, model, instruction, prompt,
-			cfg.Stdout, cfg.Stderr, sess, registry, nil, cfg.Cwd, opts...)
+		errCh <- cfg.Run.Turn(turnCtx, prompt, cfg.Stdout, cfg.Stderr)
 	}()
 
 	select {
@@ -469,7 +183,7 @@ func runTurn(ctx context.Context, cfg *Config, state *replState, prompt string, 
 
 // handleSlashCommand processes a slash command and returns true if the REPL
 // should exit.
-func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *replState, sess **session.Session) bool {
+func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 	parts := strings.SplitN(line, " ", 2)
 	cmd := strings.ToLower(parts[0])
 
@@ -492,23 +206,15 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		fmt.Fprintln(cfg.Stdout, "  /agent <name>     switch to a named agent")
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "  @<name> <prompt>  one-shot agent switch")
-		if cfg.Commands != nil {
-			printPluginCommandsHelp(cfg)
+		if cmds := cfg.Run.Commands(); cmds != nil {
+			printPluginCommandsHelp(cmds, cfg.Stdout)
 		}
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
 
 	case "/new":
-		var err error
-		*sess, err = session.New(cfg.SessionDir)
-		if err != nil {
+		if _, err := cfg.Run.NewSession(); err != nil {
 			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
-		} else {
-			fmt.Fprintf(cfg.Stderr, "session: %s\n", (*sess).ID)
-			// Rebind the context client to the new session so history
-			// injection follows the current session, not the discarded one.
-			// The provider (and its model) is untouched by /new.
-			state.client = wrapClient(cfg, state.baseClient, *sess)
 		}
 
 	case "/changes":
@@ -516,125 +222,31 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 		if len(parts) > 1 {
 			args = parts[1]
 		}
-		handleChanges(args, cfg, (*sess).ID, cfg.Stdout)
+		handleChanges(args, cfg, cfg.Run.Session().ID, cfg.Stdout)
 
 	case "/provider":
 		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-			// List providers.
-			listProviders(cfg, state)
+			listProviders(cfg)
 		} else {
-			// Switch provider.
-			switchProvider(ctx, strings.TrimSpace(parts[1]), cfg, state, *sess)
+			switchProvider(strings.TrimSpace(parts[1]), cfg)
 		}
 
 	case "/model":
 		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-			// List models.
-			models, err := activeCatalog(ctx, cfg, state)
-			if err != nil {
-				// Degrade: show the active provider's default model. Streaming
-				// still runs on it.
-				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
-				fmt.Fprintln(cfg.Stdout, "Available models:")
-				fmt.Fprintf(cfg.Stdout, "* %s\n", cfg.Model)
-				fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Model)
-				return false
-			}
-			fmt.Fprintln(cfg.Stdout, "Available models:")
-			for _, m := range models {
-				_marker := "  "
-				if m.ID == cfg.Model {
-					_marker = "* "
-				}
-				fmt.Fprintf(cfg.Stdout, "%s%s\n", _marker, m.ID)
-			}
-			fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Model)
+			listModels(ctx, cfg)
 		} else {
-			// Switch model.
-			target := strings.TrimSpace(parts[1])
-			models, err := activeCatalog(ctx, cfg, state)
-			if err != nil {
-				fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
-				return false
-			}
-			found := false
-			for _, m := range models {
-				if m.ID == target {
-					found = true
-					break
-				}
-			}
-			if !found {
-				fmt.Fprintf(cfg.Stdout, "genie: no such model: %s\n", target)
-				return false
-			}
-			cfg.Model = target
-			fmt.Fprintf(cfg.Stdout, "model: %s\n", cfg.Model)
+			setModel(ctx, strings.TrimSpace(parts[1]), cfg)
 		}
 
 	case "/agent":
-		if cfg.AgentReg == nil {
-			fmt.Fprintln(cfg.Stdout, "no agents configured")
-			return false
-		}
 		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-			// List agents.
-			names := cfg.AgentReg.List()
-			if len(names) == 0 {
-				fmt.Fprintln(cfg.Stdout, "no agents configured")
-				return false
-			}
-			fmt.Fprintln(cfg.Stdout, "Available agents:")
-			for _, name := range names {
-				_marker := "  "
-				if state.currentAgent != nil && state.currentAgent.Name == name {
-					_marker = "* "
-				}
-				def, _ := cfg.AgentReg.Get(name)
-				resolved, _ := cfg.AgentReg.GetResolved(name, cfg.Cfg, skillPoolNames(cfg))
-				modelStr := ""
-				if resolved != nil && resolved.Model != "" {
-					modelStr = fmt.Sprintf("  model: %s", resolved.Model)
-				}
-				toolsStr := ""
-				if def != nil && def.Tools != nil && resolved != nil {
-					toolsStr = fmt.Sprintf("  tools: %s", strings.Join(resolved.Tools, ", "))
-				}
-				fmt.Fprintf(cfg.Stdout, "%s%s%s%s\n", _marker, name, modelStr, toolsStr)
-			}
-			if state.currentAgent != nil {
-				fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", state.currentAgent.Name)
-			} else {
-				fmt.Fprintln(cfg.Stdout, "\nCurrent: (default)")
-			}
-			return false
+			listAgents(cfg)
+		} else {
+			switchAgent(strings.TrimSpace(parts[1]), cfg)
 		}
-		// Switch agent.
-		target := strings.TrimSpace(parts[1])
-		resolved, err := cfg.AgentReg.GetResolved(target, cfg.Cfg, skillPoolNames(cfg))
-		if err != nil {
-			fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
-			return false
-		}
-		if err := cfg.Registry.ValidateTools(resolved.Tools); err != nil {
-			fmt.Fprintf(cfg.Stderr, "genie: agent %q: %v\n", target, err)
-			return false
-		}
-		state.currentAgent = resolved
-		applyAgentBase(cfg, state.currentAgent)
-		state.instruction = resolveInstruction(cfg, state.currentAgent)
-		toolsStr := ""
-		if resolved.Tools != nil {
-			toolsStr = fmt.Sprintf(", tools: %s", strings.Join(resolved.Tools, ", "))
-		}
-		modelStr := ""
-		if resolved.Model != "" {
-			modelStr = fmt.Sprintf(" (model: %s)", resolved.Model)
-		}
-		fmt.Fprintf(cfg.Stdout, "switched to %s%s%s\n", resolved.Name, modelStr, toolsStr)
 
 	default:
-		if cfg.Commands != nil && handlePluginCommand(line, cfg) {
+		if cmds := cfg.Run.Commands(); cmds != nil && handlePluginCommand(line, cmds, cfg) {
 			break
 		}
 		fmt.Fprintf(cfg.Stdout, "unknown command: %s (try /help)\n", cmd)
@@ -643,88 +255,152 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config, state *re
 	return false
 }
 
-// activeCatalog returns the active provider's model catalog: the declared
-// catalog from the registry when one is present (the authoritative provider
-// surface), else the wrapped client's own listing (registry-less repls).
-func activeCatalog(ctx context.Context, cfg *Config, state *replState) ([]llm.Model, error) {
-	if cfg.Providers != nil {
-		return cfg.Providers.Catalog(ctx, state.provider)
-	}
-	return state.client.ListModels(ctx)
-}
-
 // listProviders prints the declared providers and marks the session's current
-// one. A registry-less config reports no providers.
-func listProviders(cfg *Config, state *replState) {
-	if cfg.Providers == nil {
-		fmt.Fprintln(cfg.Stdout, "no providers configured")
-		return
-	}
-	names := cfg.Providers.Names()
+// one.
+func listProviders(cfg *Config) {
+	names := cfg.Run.ProviderNames()
 	if len(names) == 0 {
 		fmt.Fprintln(cfg.Stdout, "no providers configured")
 		return
 	}
+	cur := cfg.Run.Provider()
 	fmt.Fprintln(cfg.Stdout, "Available providers:")
 	for _, name := range names {
 		marker := "  "
-		if name == state.provider {
+		if name == cur {
 			marker = "* "
 		}
 		fmt.Fprintf(cfg.Stdout, "%s%s\n", marker, name)
 	}
-	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", state.provider)
+	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cur)
 }
 
-// switchProvider switches the session to the named provider, rebuilding its
-// client from the registry, re-wrapping it over the same session (the
-// transcript continues; a switch never starts a new session), and resetting
-// the session model to the new provider's default. An unknown name prints the
-// available set and leaves the session untouched.
-func switchProvider(ctx context.Context, target string, cfg *Config, state *replState, sess *session.Session) {
-	if cfg.Providers == nil {
-		fmt.Fprintln(cfg.Stdout, "no providers configured")
+// switchProvider switches the run to the named provider. The transcript
+// continues (a switch never starts a new session) and the run model resets to
+// the new provider's default. An unknown name prints the available set and
+// leaves the session untouched.
+func switchProvider(target string, cfg *Config) {
+	if err := cfg.Run.SwitchProvider(target); err != nil {
+		fmt.Fprintf(cfg.Stdout, "%s\n", err)
 		return
 	}
-	names := cfg.Providers.Names()
-	found := false
-	for _, name := range names {
-		if name == target {
-			found = true
-			break
+	fmt.Fprintf(cfg.Stdout, "provider: %s (model: %s)\n", cfg.Run.Provider(), cfg.Run.Model())
+}
+
+// listModels prints the active provider's model catalog, marking the current
+// model. A catalog failure degrades to the active model alone.
+func listModels(ctx context.Context, cfg *Config) {
+	models, err := activeCatalog(ctx, cfg)
+	if err != nil {
+		// Degrade: show the active model. Streaming still runs on it.
+		fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
+		fmt.Fprintln(cfg.Stdout, "Available models:")
+		fmt.Fprintf(cfg.Stdout, "* %s\n", cfg.Run.Model())
+		fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Run.Model())
+		return
+	}
+	fmt.Fprintln(cfg.Stdout, "Available models:")
+	for _, m := range models {
+		marker := "  "
+		if m.ID == cfg.Run.Model() {
+			marker = "* "
+		}
+		fmt.Fprintf(cfg.Stdout, "%s%s\n", marker, m.ID)
+	}
+	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Run.Model())
+}
+
+// setModel switches the run model, validating it against the active
+// provider's catalog.
+func setModel(ctx context.Context, target string, cfg *Config) {
+	models, err := activeCatalog(ctx, cfg)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
+		return
+	}
+	for _, m := range models {
+		if m.ID == target {
+			cfg.Run.SetModel(target)
+			fmt.Fprintf(cfg.Stdout, "model: %s\n", target)
+			return
 		}
 	}
-	if !found {
-		fmt.Fprintf(cfg.Stdout, "no such provider: %s (available: %s)\n", target, strings.Join(names, ", "))
+	fmt.Fprintf(cfg.Stdout, "genie: no such model: %s\n", target)
+}
+
+// activeCatalog returns the active provider's model catalog from the run's
+// provider source.
+func activeCatalog(ctx context.Context, cfg *Config) ([]llm.Model, error) {
+	return cfg.Run.ProviderCatalog(ctx)
+}
+
+// listAgents prints the available agents and marks the current one.
+func listAgents(cfg *Config) {
+	reg := cfg.Run.AgentReg()
+	if reg == nil {
+		fmt.Fprintln(cfg.Stdout, "no agents configured")
 		return
 	}
-	model, err := cfg.Providers.DefaultModel(target)
-	if err != nil {
-		fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+	names := reg.List()
+	if len(names) == 0 {
+		fmt.Fprintln(cfg.Stdout, "no agents configured")
 		return
 	}
-	client, err := cfg.Providers.Client(target)
-	if err != nil {
-		fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+	cur := cfg.Run.CurrentAgent()
+	fmt.Fprintln(cfg.Stdout, "Available agents:")
+	for _, name := range names {
+		marker := "  "
+		if cur != nil && cur.Name == name {
+			marker = "* "
+		}
+		def, _ := reg.Get(name)
+		modelStr := ""
+		if def != nil && def.Model != "" {
+			modelStr = fmt.Sprintf("  model: %s", def.Model)
+		}
+		toolsStr := ""
+		if def != nil && def.Tools != nil {
+			toolsStr = fmt.Sprintf("  tools: %s", strings.Join(def.Tools, ", "))
+		}
+		fmt.Fprintf(cfg.Stdout, "%s%s%s%s\n", marker, name, modelStr, toolsStr)
+	}
+	if cur != nil {
+		fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cur.Name)
+	} else {
+		fmt.Fprintln(cfg.Stdout, "\nCurrent: (default)")
+	}
+}
+
+// switchAgent activates the named agent on the run: its tool subset becomes
+// the active registry and its [permissions] base replaces the global base
+// wholly.
+func switchAgent(target string, cfg *Config) {
+	if _, err := cfg.Run.SwitchAgent(target); err != nil {
+		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 		return
 	}
-	state.provider = target
-	state.baseClient = client
-	state.client = wrapClient(cfg, client, sess)
-	cfg.Model = model
-	fmt.Fprintf(cfg.Stdout, "provider: %s (model: %s)\n", target, cfg.Model)
+	resolved := cfg.Run.CurrentAgent()
+	toolsStr := ""
+	if resolved.Tools != nil {
+		toolsStr = fmt.Sprintf(", tools: %s", strings.Join(resolved.Tools, ", "))
+	}
+	modelStr := ""
+	if resolved.Model != "" {
+		modelStr = fmt.Sprintf(" (model: %s)", resolved.Model)
+	}
+	fmt.Fprintf(cfg.Stdout, "switched to %s%s%s\n", resolved.Name, modelStr, toolsStr)
 }
 
 // handlePluginCommand routes /<plugin> ... to the plugin command source. It
 // returns true when the command was handled (hit or miss).
-func handlePluginCommand(line string, cfg *Config) bool {
+func handlePluginCommand(line string, cmds plugin.CommandSource, cfg *Config) bool {
 	rest := strings.TrimPrefix(line, "/")
 	pluginName, rest, _ := strings.Cut(rest, " ")
 	pluginName = strings.ToLower(pluginName)
 	rest = strings.TrimLeft(rest, " \t")
 
 	if rest == "" {
-		return handlePluginBare(pluginName, cfg)
+		return handlePluginBare(pluginName, cmds, cfg)
 	}
 
 	command := rest
@@ -734,7 +410,7 @@ func handlePluginCommand(line string, cfg *Config) bool {
 		command = command[:idx]
 	}
 
-	result, err := cfg.Commands.RunCommand(pluginName, command, args)
+	result, err := cmds.RunCommand(pluginName, command, args)
 	if err != nil {
 		fmt.Fprintf(cfg.Stdout, "%s\n", formatPluginError(pluginName, command, err))
 		return true
@@ -755,24 +431,24 @@ func handlePluginCommand(line string, cfg *Config) bool {
 
 // handlePluginBare handles a bare /<plugin> by showing curated help or listing
 // the plugin's commands.
-func handlePluginBare(pluginName string, cfg *Config) bool {
-	text, err := cfg.Commands.Help(pluginName, "")
+func handlePluginBare(pluginName string, cmds plugin.CommandSource, cfg *Config) bool {
+	text, err := cmds.Help(pluginName, "")
 	if err == nil && text != "" {
 		fmt.Fprintln(cfg.Stdout, text)
 		return true
 	}
 
-	cmds, err := cfg.Commands.ListCommands(pluginName)
+	cmds2, err := cmds.ListCommands(pluginName)
 	if err != nil {
 		fmt.Fprintf(cfg.Stdout, "%s\n", formatPluginError(pluginName, "", err))
 		return true
 	}
-	if len(cmds) == 0 {
+	if len(cmds2) == 0 {
 		fmt.Fprintf(cfg.Stdout, "%s has no commands\n", pluginName)
 		return true
 	}
 	fmt.Fprintf(cfg.Stdout, "%s commands:\n", pluginName)
-	for _, c := range cmds {
+	for _, c := range cmds2 {
 		fmt.Fprintf(cfg.Stdout, "  %s  %s\n", c.Name, c.Description)
 	}
 	return true
@@ -781,11 +457,11 @@ func handlePluginBare(pluginName string, cfg *Config) bool {
 // formatPluginError produces a user-facing message for plugin command errors.
 func formatPluginError(pluginName, command string, err error) string {
 	switch {
-	case errors.Is(err, ErrUnknownPlugin):
+	case errors.Is(err, plugin.ErrUnknownPlugin):
 		return fmt.Sprintf("unknown command: /%s (try /help)", pluginName)
-	case errors.Is(err, ErrPluginInactive):
+	case errors.Is(err, plugin.ErrPluginInactive):
 		return fmt.Sprintf("plugin %s is not active", pluginName)
-	case errors.Is(err, ErrUnknownCommand):
+	case errors.Is(err, plugin.ErrUnknownCommand):
 		return fmt.Sprintf("%s: no such command: %s", pluginName, command)
 	default:
 		return fmt.Sprintf("%s: %v", pluginName, err)
@@ -794,16 +470,16 @@ func formatPluginError(pluginName, command string, err error) string {
 
 // printPluginCommandsHelp prints a flat plugin-commands section for /help,
 // enumerating each plugin's command (name + one-line description).
-func printPluginCommandsHelp(cfg *Config) {
-	fmt.Fprintln(cfg.Stdout, "")
-	fmt.Fprintln(cfg.Stdout, "Plugin commands:")
-	for _, name := range cfg.Commands.Plugins() {
-		cmds, err := cfg.Commands.ListCommands(name)
+func printPluginCommandsHelp(cmds plugin.CommandSource, out io.Writer) {
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, "Plugin commands:")
+	for _, name := range cmds.Plugins() {
+		list, err := cmds.ListCommands(name)
 		if err != nil {
 			continue
 		}
-		for _, c := range cmds {
-			fmt.Fprintf(cfg.Stdout, "  /%s %s  %s\n", name, c.Name, c.Description)
+		for _, c := range list {
+			fmt.Fprintf(out, "  /%s %s  %s\n", name, c.Name, c.Description)
 		}
 	}
 }
