@@ -54,10 +54,10 @@ type Request struct {
 type Provider struct {
 	URL string
 
-	mu       sync.Mutex
-	behavior Behavior
-	requests []Request
-	server   *httptest.Server
+	mu        sync.Mutex
+	behaviors []Behavior
+	requests  []Request
+	server    *httptest.Server
 }
 
 // New starts a provider with no configured behavior; tests set Behavior
@@ -74,11 +74,31 @@ func (p *Provider) Close() {
 	p.server.Close()
 }
 
-// SetBehavior scripts the next chat/completions response.
+// SetBehavior scripts every chat/completions response with the same behavior.
 func (p *Provider) SetBehavior(b Behavior) {
+	p.SetBehaviors(b)
+}
+
+// SetBehaviors scripts the next chat/completions responses: each request
+// consumes the next behavior in order, and once the queue is exhausted the
+// last behavior is served for every further request.
+func (p *Provider) SetBehaviors(bs ...Behavior) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.behavior = b
+	p.behaviors = bs
+}
+
+// nextBehavior pops the behavior for the next request. A single queued
+// behavior is sticky: it serves every request without being consumed.
+func (p *Provider) nextBehavior() Behavior {
+	if len(p.behaviors) == 0 {
+		return Behavior{}
+	}
+	b := p.behaviors[0]
+	if len(p.behaviors) > 1 {
+		p.behaviors = p.behaviors[1:]
+	}
+	return b
 }
 
 // Requests returns the requests received so far.
@@ -99,7 +119,7 @@ func (p *Provider) serve(w http.ResponseWriter, r *http.Request) {
 		Auth:   r.Header.Get("Authorization"),
 		Body:   string(body),
 	})
-	behavior := p.behavior
+	behavior := p.nextBehavior()
 	p.mu.Unlock()
 
 	if r.Method == http.MethodPost && r.URL.Path == "/chat/completions" {
@@ -371,7 +391,7 @@ func GoogleFinish(reason string) string {
 	b, _ := json.Marshal(map[string]any{
 		"candidates": []map[string]any{
 			{
-				"content": map[string]any{},
+				"content":      map[string]any{},
 				"finishReason": reason,
 			},
 		},

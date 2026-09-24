@@ -28,5 +28,5 @@ We decided this because the naive approach burned tokens and bloated context: `i
 ## Consequences
 
 - The brittle "last system message splits the current turn" heuristic (the old `injectHistory` turn boundary) disappears; layers make the boundary structural.
-- The `turns` window config (`[context] turns`, `OG_CONTEXT_TURNS`) still governs intent-layer retention.
+- The `turns` window config (`[context] turns`, `GENIE_CONTEXT_TURNS`) still governs intent-layer retention.
 - Compaction markers must migrate the JSONL metadata surface so a resumed session recognises an already-compacted intent layer.
