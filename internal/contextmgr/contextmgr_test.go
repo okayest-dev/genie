@@ -967,6 +967,52 @@ func TestCompactionSummarySurvivesNextRequest(t *testing.T) {
 	}
 }
 
+// TestCompactionKeepsMostRecentPriorIntentRaw verifies that when a budget
+// cross only forces the oldest prior turns out, the most recent prior intent
+// stays verbatim in the next request, alongside the compaction summary and the
+// current turn. The fake counter (one token per character) makes the eviction
+// boundary exact: four prior turns at ~21 tokens each plus a current turn,
+// against a budget of 40, evicts exactly the oldest three.
+func TestCompactionKeepsMostRecentPriorIntentRaw(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 40})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	for i := 1; i <= 4; i++ {
+		simulateTurn(t, s, "sys", fmt.Sprintf("question %d", i))
+		if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("answer %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := simulateTurn(t, s, "sys", "current question")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var messages []llm.Message
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleSystem {
+			continue
+		}
+		messages = append(messages, msg)
+		if msg.Role == llm.RoleUser && strings.Contains(msg.Content, "[compacted earlier turns]") {
+			messages[len(messages)-1] = llm.Message{Role: llm.RoleUser, Content: "<summary>"}
+		}
+	}
+
+	want := []string{"<summary>", "question 4", "answer 4", "current question"}
+	if len(messages) != len(want) {
+		t.Fatalf("forwarded messages = %+v, want %v", messages, want)
+	}
+	for i, w := range want {
+		if messages[i].Content != w {
+			t.Errorf("forwarded message %d = %q, want %q (full request: %+v)", i, messages[i].Content, w, inner.gotReq.Messages)
+		}
+	}
+}
+
 // TestHooksWithoutSeamMarkerAreExternal verifies a Hooks implementation that
 // does not implement the singleActiveSeam marker interface is treated as
 // supplying its own compact/condense implementations (the built-in does not

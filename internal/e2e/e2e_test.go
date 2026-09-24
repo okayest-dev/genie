@@ -2198,6 +2198,318 @@ func TestContextBudgetTokensOverrideWins(t *testing.T) {
 	}
 }
 
+// wireMessage is the message shape the OpenAI chat wire actually sends, so
+// tests can assert tool calls and condensed or dropped tool results.
+type wireMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCallID string `json:"tool_call_id"`
+	ToolCalls  []struct {
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	} `json:"tool_calls"`
+}
+
+// decodeWireMessages unmarshals the messages array of a chat request body,
+// preserving tool calls and tool-result linkage.
+func decodeWireMessages(t *testing.T, body string) []wireMessage {
+	t.Helper()
+	var req struct {
+		Messages []wireMessage `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	return req.Messages
+}
+
+func countRole(msgs []wireMessage, role string) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == role {
+			n++
+		}
+	}
+	return n
+}
+
+// hasToolCall reports whether an assistant message carries a tool call for
+// the named function.
+func hasToolCall(msgs []wireMessage, name string) bool {
+	for _, m := range msgs {
+		for _, tc := range m.ToolCalls {
+			if tc.Function.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasUserContent reports whether a user message's content matches want
+// exactly — summary text that merely mentions a phrase never matches.
+func hasUserContent(msgs []wireMessage, want string) bool {
+	for _, m := range msgs {
+		if m.Role == "user" && m.Content == want {
+			return true
+		}
+	}
+	return false
+}
+
+// readSessionTranscript returns the .jsonl transcript in dir.
+func readSessionTranscript(t *testing.T, dir string) []byte {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read session dir: %v", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".jsonl") {
+			data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatalf("read session transcript: %v", err)
+			}
+			return data
+		}
+	}
+	t.Fatalf("no session transcript in %q", dir)
+	return nil
+}
+
+// TestContextCondensationNarrowsPriorTurnOutput is the og-wn8 E2E seam: a
+// prior turn's oversized tool result is condensed in the next turn's request
+// (a bounded excerpt, never the full body) while the full output stays in the
+// session transcript. The current-turn spine carries the instruction exactly
+// once, and prior instruction messages never ship.
+func TestContextCondensationNarrowsPriorTurnOutput(t *testing.T) {
+	big := "log line of data " + strings.Repeat("x", 4000)
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workDir, "big.txt"), []byte(big), 0o644); err != nil {
+		t.Fatalf("write big.txt: %v", err)
+	}
+
+	p := fake.New()
+	t.Cleanup(p.Close)
+	p.SetBehaviors(
+		fake.Behavior{Chunks: []string{
+			fake.ToolCallDelta(0, "call_1", "read", `{"path":"big.txt"}`),
+			fake.Finish("tool_calls"),
+			fake.Done,
+		}},
+		fake.Behavior{Chunks: []string{fake.TextDelta("first reply"), fake.Finish("stop"), fake.Done}},
+		fake.Behavior{Chunks: []string{fake.TextDelta("second reply"), fake.Finish("stop"), fake.Done}},
+	)
+
+	dir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n\n[context]\ncondense_size = 10\n", p.URL))
+	sessionDir := t.TempDir()
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "read big.txt and reply\nanother thing\n/quit\n",
+		[]string{
+			"XDG_CONFIG_HOME=" + dir,
+			"OPENCODE_API_KEY=test-key",
+			"GENIE_SESSION_DIR=" + sessionDir,
+			"GENIE_SKILL_DIR=" + t.TempDir(),
+		})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "second reply") {
+		t.Errorf("stdout = %q, want the second turn's reply", stdout)
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("requests = %d, want 3 (tool call, tool result, second turn)", len(reqs))
+	}
+	second := decodeWireMessages(t, reqs[2].Body)
+
+	if sys := countRole(second, "system"); sys != 1 {
+		t.Errorf("second-turn request carries %d system messages, want exactly 1 (instruction once)", sys)
+	}
+	if !hasToolCall(second, "read") {
+		t.Errorf("second-turn request missing the prior turn's read tool call: %+v", second)
+	}
+	condensed := false
+	for _, m := range second {
+		if m.Role != "tool" {
+			continue
+		}
+		if !strings.Contains(m.Content, "[result condensed") {
+			t.Errorf("tool result not condensed: %q…", m.Content[:min(80, len(m.Content))])
+		} else {
+			condensed = true
+		}
+		if strings.Contains(m.Content, big) {
+			t.Error("second-turn request shipped the full tool output; want the condensed form")
+		}
+	}
+	if !condensed {
+		t.Errorf("no condensed tool result in second-turn request: %+v", second)
+	}
+
+	if data := readSessionTranscript(t, sessionDir); !strings.Contains(string(data), big) {
+		t.Error("session transcript lost the full tool output")
+	}
+}
+
+// TestContextNetDropKeepsCallDropsResult is the og-wn8 E2E net-drop seam: with
+// net_drop opted in, an oversized prior tool result is absent from the next
+// request while its assistant tool-call message survives.
+func TestContextNetDropKeepsCallDropsResult(t *testing.T) {
+	workDir := t.TempDir()
+	big := strings.Repeat("x", 4000)
+	if err := os.WriteFile(filepath.Join(workDir, "big.txt"), []byte(big), 0o644); err != nil {
+		t.Fatalf("write big.txt: %v", err)
+	}
+
+	p := fake.New()
+	t.Cleanup(p.Close)
+	p.SetBehaviors(
+		fake.Behavior{Chunks: []string{
+			fake.ToolCallDelta(0, "call_1", "read", `{"path":"big.txt"}`),
+			fake.Finish("tool_calls"),
+			fake.Done,
+		}},
+		fake.Behavior{Chunks: []string{fake.TextDelta("first reply"), fake.Finish("stop"), fake.Done}},
+		fake.Behavior{Chunks: []string{fake.TextDelta("second reply"), fake.Finish("stop"), fake.Done}},
+	)
+
+	dir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n\n[context]\ncondense_size = 10\nnet_drop = true\n", p.URL))
+	sessionDir := t.TempDir()
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "read big.txt and reply\nanother thing\n/quit\n",
+		[]string{
+			"XDG_CONFIG_HOME=" + dir,
+			"OPENCODE_API_KEY=test-key",
+			"GENIE_SESSION_DIR=" + sessionDir,
+			"GENIE_SKILL_DIR=" + t.TempDir(),
+		})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "second reply") {
+		t.Errorf("stdout = %q, want the second turn's reply", stdout)
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("requests = %d, want 3 (tool call, tool result, second turn)", len(reqs))
+	}
+	second := decodeWireMessages(t, reqs[2].Body)
+
+	if n := countRole(second, "tool"); n != 0 {
+		t.Errorf("net-drop request carries %d tool messages, want 0: %+v", n, second)
+	}
+	if !hasToolCall(second, "read") {
+		t.Errorf("net-drop request lost the read tool call: %+v", second)
+	}
+}
+
+// TestContextCompactionPersistsSummaryAcrossTurns is the og-wn8 E2E compaction
+// seam: with a tiny budget, a request that crosses it ships a summary in place
+// of the oldest intent turns, the current turn is never evicted, and the
+// summary reconstructs on the next turn from the persisted marker while the
+// session transcript records the marker with its line range. (The finer
+// "most recent prior intent stays raw" property is asserted at the unit seam,
+// where token sizes are deterministic.)
+func TestContextCompactionPersistsSummaryAcrossTurns(t *testing.T) {
+	p := fake.New()
+	t.Cleanup(p.Close)
+	p.SetBehaviors(
+		fake.Behavior{Chunks: []string{fake.TextDelta("a-one"), fake.Finish("stop"), fake.Done}},
+		fake.Behavior{Chunks: []string{fake.TextDelta("a-two"), fake.Finish("stop"), fake.Done}},
+		fake.Behavior{Chunks: []string{fake.TextDelta("a-three"), fake.Finish("stop"), fake.Done}},
+	)
+
+	dir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n\n[context]\nbudget_tokens = 5\n", p.URL))
+	sessionDir := t.TempDir()
+	_, stderr, code := runInDirWithStdin(t, "", "one\ntwo\nthree\n/quit\n",
+		[]string{
+			"XDG_CONFIG_HOME=" + dir,
+			"OPENCODE_API_KEY=test-key",
+			"GENIE_SESSION_DIR=" + sessionDir,
+			"GENIE_SKILL_DIR=" + t.TempDir(),
+		})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	reqs := p.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("requests = %d, want 3 (one per turn)", len(reqs))
+	}
+
+	// The first request with prior intent (turn 2) crosses the budget: turn 1
+	// is evicted into a summary message, the current turn stays raw.
+	second := decodeWireMessages(t, reqs[1].Body)
+	if sys := countRole(second, "system"); sys != 1 {
+		t.Errorf("turn-2 request carries %d system messages, want exactly 1", sys)
+	}
+	if !hasSummary(second) {
+		t.Errorf("turn-2 request missing the compaction summary: %+v", second)
+	}
+	if !hasUserContent(second, "two") {
+		t.Errorf("turn-2 request missing its own raw message: %+v", second)
+	}
+	if hasUserContent(second, "one") {
+		t.Errorf("turn-2 request still ships the evicted first turn verbatim: %+v", second)
+	}
+
+	// The next turn reconstructs the summary from the persisted marker, keeps
+	// the current turn raw, and never resurrects the evicted content.
+	third := decodeWireMessages(t, reqs[2].Body)
+	if sys := countRole(third, "system"); sys != 1 {
+		t.Errorf("turn-3 request carries %d system messages, want exactly 1", sys)
+	}
+	if !hasSummary(third) {
+		t.Errorf("turn-3 request missing the persisted compaction summary: %+v", third)
+	}
+	if !hasUserContent(third, "three") {
+		t.Errorf("turn-3 request missing the current turn: %+v", third)
+	}
+	if hasUserContent(third, "one") {
+		t.Errorf("turn-3 request resurrected the evicted first turn: %+v", third)
+	}
+
+	// The marker persisted with its line range.
+	marker := false
+	for _, ln := range strings.Split(string(readSessionTranscript(t, sessionDir)), "\n") {
+		if ln == "" {
+			continue
+		}
+		var l struct {
+			Role          string `json:"role"`
+			CompactedFrom int    `json:"compacted_from"`
+			CompactedTo   int    `json:"compacted_to"`
+		}
+		if err := json.Unmarshal([]byte(ln), &l); err != nil {
+			t.Fatalf("session line is not JSON: %v", err)
+		}
+		if l.Role == "compaction" {
+			marker = true
+			if l.CompactedTo < l.CompactedFrom {
+				t.Errorf("compaction marker range %d..%d is inverted", l.CompactedFrom, l.CompactedTo)
+			}
+		}
+	}
+	if !marker {
+		t.Error("session transcript has no compaction marker")
+	}
+}
+
+// hasSummary reports whether a user message carries the compaction summary.
+func hasSummary(msgs []wireMessage) bool {
+	for _, m := range msgs {
+		if m.Role == "user" && strings.Contains(m.Content, "[compacted earlier turns]") {
+			return true
+		}
+	}
+	return false
+}
+
 // TestStartsOnActiveProvidersDefaultModel is the og-z1m.3 acceptance at the
 // binary seam: of two declared providers, the selected one's own default model
 // is what starts — never another provider's model, never a global fallback.
