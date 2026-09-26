@@ -57,14 +57,21 @@ type Config struct {
 
 ## main.go Wiring (`cmd/genie/main.go`)
 
+Historical snapshot: the line numbers refer to the code as studied, and the
+startup has since moved into `internal/run` (which assembles the tools,
+plugins, sessions and the boot client).
+
 Startup sequence (line 53, `run()`):
 1. Pre-scan args for `-p` flag (lines 57–93)
 2. Parse flags (lines 95–103)
 3. `config.Load()` → `*config.Config` (line 116)
 4. `os.Getwd()` (line 121)
 5. `instruct.Load(cfg, cwd)` → instruction string (line 126)
-6. Wire detection: `cfg.Wire` or `llm.DetectWire(cfg.Model)` (lines 131–134)
-7. `llm.NewClient(wire, baseURL, cfg.APIKey)` (line 139)
+6. Provider resolution: `llm.NewRegistry(cfg.Providers)`, then
+   `selectStartupProvider` picks the active name
+7. Client building: `Registry.Client(name)` — the registry is the only
+   client-builder, parameterised from that provider's own base_url, api_key_env
+   and opts
 8. `buildRegistry(cwd, cfg.Tools, cfg.BashTimeout)` → `*tools.Registry` (line 146)
 9. Plugin loading (lines 149–153)
 10. Provider/route-table from plugin wires (lines 157–182)

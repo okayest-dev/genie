@@ -15,25 +15,16 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/modelinfo"
 )
-
-// validWire is the set of wire names accepted by the config. Must stay in
-// sync with the llm.Wire* constants.
-var validWire = map[string]bool{
-	"openai":    true,
-	"anthropic": true,
-	"responses": true,
-	"google":    true,
-	"copilot":   true,
-	"bedrock":   true,
-}
 
 // Defaults for every configurable scalar.
 const (
@@ -53,23 +44,23 @@ const (
 // overrides only what they set.
 var defaultProviders = map[string]Provider{
 	"zen": {
-		Wire: "openai", BaseURL: defaultBaseURL,
+		Wire: llm.WireOpenAI, BaseURL: defaultBaseURL,
 		APIKeyEnv: defaultAPIKeyEnv, Model: defaultModel,
 	},
 	"openai": {
-		Wire: "openai", BaseURL: "https://api.openai.com/v1",
+		Wire: llm.WireOpenAI, BaseURL: "https://api.openai.com/v1",
 		APIKeyEnv: "OPENAI_API_KEY", Model: "gpt-4o",
 	},
 	"anthropic": {
-		Wire: "anthropic", BaseURL: "https://api.anthropic.com",
+		Wire: llm.WireAnthropic, BaseURL: "https://api.anthropic.com",
 		APIKeyEnv: "ANTHROPIC_API_KEY", Model: "claude-sonnet-4-5",
 	},
 	"responses": {
-		Wire: "responses", BaseURL: "https://api.openai.com/v1",
+		Wire: llm.WireOpenAIResponses, BaseURL: "https://api.openai.com/v1",
 		APIKeyEnv: "OPENAI_API_KEY", Model: "gpt-4o",
 	},
 	"google": {
-		Wire: "google", BaseURL: "https://generativelanguage.googleapis.com/v1beta",
+		Wire: llm.WireGoogle, BaseURL: "https://generativelanguage.googleapis.com/v1beta",
 		APIKeyEnv: "GEMINI_API_KEY", Model: "gemini-2.5-pro",
 	},
 	"copilot": {
@@ -78,7 +69,7 @@ var defaultProviders = map[string]Provider{
 		// exchange's endpoints.api rather than a configured base_url. The
 		// active GitHub host defaults to github.com; a GHE tenant sets
 		// opts.domain.
-		Wire:  "copilot",
+		Wire:  llm.WireCopilot,
 		Model: "gpt-4o",
 	},
 	"bedrock": {
@@ -87,7 +78,7 @@ var defaultProviders = map[string]Provider{
 		// no api_key_env, no base_url (the SDK resolves the regional
 		// endpoint). A specific AWS profile or region is selected with
 		// opts.profile / opts.region; absent, the chain's defaults apply.
-		Wire:  "bedrock",
+		Wire:  llm.WireBedrock,
 		Model: "anthropic.claude-sonnet-4-6",
 	},
 }
@@ -160,30 +151,16 @@ type Skills struct {
 
 // Provider is one declared provider, named by its [providers.<name>] table
 // key. A provider is the config unit the harness boots on and switches
-// between: one wire, one endpoint, one default model.
+// between: one wire, one endpoint, one default model. The shape itself is
+// llm.Provider — this alias keeps config's public surface without a second
+// declaration of the same six fields.
 //
 // The surface is exactly six keys — wire, base_url, api_key_env, model,
 // models, opts — each a multi-valued knob. Singleton settings (which provider
 // is active, which wire hosts a provider) live in code or the top-level
 // selector, never as a fixed-value config key, so a user cannot configure them
 // wrong.
-type Provider struct {
-	// Wire names the bundled in-process wire that serves the provider.
-	Wire string
-	// BaseURL is the provider's endpoint for that wire.
-	BaseURL string
-	// APIKeyEnv names the env var the API key lives in. A wire with its own
-	// auth leaves it empty.
-	APIKeyEnv string
-	// Model is the provider's default model and is required. The active
-	// provider always has a model.
-	Model string
-	// Models optionally overrides the catalog; absent, the catalog comes
-	// from the wire's model listing.
-	Models []string
-	// Opts passes wire-specific settings.
-	Opts map[string]any
-}
+type Provider = llm.Provider
 
 // Config is the resolved harness configuration.
 type Config struct {
@@ -606,15 +583,17 @@ func cloneProviders(src map[string]Provider) map[string]Provider {
 }
 
 // validateProviders enforces that every provider in the resolved set can serve
-// a model: it names a known wire and carries a default model. Errors name the
-// provider and are reported in sorted order for determinism.
+// a model: it names a bundled wire and carries a default model, so a typo in a
+// [providers.*] table fails at load rather than at the first turn. Errors name
+// the provider and are reported in sorted order for determinism.
 func validateProviders(providers map[string]Provider) error {
+	wires := llm.WireNames()
 	for _, name := range sortedProviderNames(providers) {
 		p := providers[name]
 		switch {
 		case p.Wire == "":
 			return fmt.Errorf("config: provider %q: missing wire", name)
-		case !validWire[p.Wire]:
+		case !slices.Contains(wires, p.Wire):
 			return fmt.Errorf("config: provider %q: unknown wire %q", name, p.Wire)
 		case p.Model == "":
 			return fmt.Errorf("config: provider %q: missing default model", name)

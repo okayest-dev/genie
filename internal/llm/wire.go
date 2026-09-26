@@ -12,5 +12,11 @@ const (
 	WireBedrock         Wire = "bedrock"
 )
 
-// ValidWires is the set of registered wire names. Populated by RegisterWire.
-var ValidWires = map[Wire]bool{}
+// WireNames returns every bundled wire name, built from the Wire* constants.
+// It is the one list the config validates a provider's wire against and the
+// one a new wire joins, alongside its constant — so the harness's wire
+// vocabulary has a single home. A wire reaches this list when it ships, not
+// when a subpackage happens to register it.
+func WireNames() []string {
+	return []string{WireOpenAI, WireAnthropic, WireOpenAIResponses, WireGoogle, WireCopilot, WireBedrock}
+}

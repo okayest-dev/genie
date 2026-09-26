@@ -4,7 +4,6 @@ import (
 	"context"
 	"iter"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 
@@ -49,40 +48,12 @@ func registerCaptureWire(name string, models []llm.Model) *[]llm.Client {
 	return &built
 }
 
-// specsFromConfig bridges the parsed config tables into registry specs, the
-// same shape main.go's startup will use.
-func specsFromConfig(cfg *config.Config) map[string]llm.ProviderSpec {
-	specs := make(map[string]llm.ProviderSpec, len(cfg.Providers))
-	for name, p := range cfg.Providers {
-		specs[name] = llm.ProviderSpec{
-			Wire:      p.Wire,
-			BaseURL:   p.BaseURL,
-			APIKeyEnv: p.APIKeyEnv,
-			Model:     p.Model,
-			Models:    p.Models,
-			Opts:      p.Opts,
-		}
-	}
-	return specs
-}
-
-// sortedConfigProviderNames is the expected Names() output for a config's
-// provider map.
-func sortedConfigProviderNames(cfg *config.Config) []string {
-	names := make([]string, 0, len(cfg.Providers))
-	for name := range cfg.Providers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
 func TestRegistryClientForEveryBundledWire(t *testing.T) {
 	cfg, err := config.Parse(nil, "/home/u", nil)
 	if err != nil {
 		t.Fatalf("config.Parse: %v", err)
 	}
-	r := llm.NewRegistry(specsFromConfig(cfg))
+	r := llm.NewRegistry(cfg.Providers)
 
 	type tv struct{ name, wire string }
 	var tests []tv
@@ -105,28 +76,16 @@ func TestRegistryClientForEveryBundledWire(t *testing.T) {
 	for _, tc := range tests {
 		wires[tc.wire] = true
 	}
-	for _, wire := range []string{"openai", "anthropic", "responses", "google", "copilot", "bedrock"} {
+	for _, wire := range llm.WireNames() {
 		if !wires[wire] {
 			t.Errorf("no declared provider on bundled wire %q", wire)
 		}
-	}
-
-	// The registry was seeded from the parsed config tables: its default model
-	// and name listing must match what config resolved, so a client is proven
-	// to come from that provider's own config, not a global default.
-	for name, p := range cfg.Providers {
-		if got, err := r.DefaultModel(name); err != nil || got != p.Model {
-			t.Errorf("DefaultModel(%q) = %q, %v; want %q from config", name, got, err, p.Model)
-		}
-	}
-	if got, want := r.Names(), sortedConfigProviderNames(cfg); !reflect.DeepEqual(got, want) {
-		t.Errorf("Names = %v, want config's sorted providers %v", got, want)
 	}
 }
 
 func TestRegistryClientParameterisedPerProvider(t *testing.T) {
 	built := registerCaptureWire("registrytest-capture", nil)
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"one": {
 			Wire: "registrytest-capture", BaseURL: "https://one.example/v1",
 			APIKeyEnv: "REG_KEY_ONE", Model: "m1", Opts: map[string]any{"a": 1},
@@ -166,7 +125,7 @@ func TestRegistryClientParameterisedPerProvider(t *testing.T) {
 }
 
 func TestRegistryClientUnknownProvider(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen": {Wire: "openai", Model: "big-pickle"},
 	})
 	_, err := r.Client("nothing")
@@ -179,7 +138,7 @@ func TestRegistryClientUnknownProvider(t *testing.T) {
 }
 
 func TestRegistryClientUnregisteredWire(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"p": {Wire: "no-such-wire", Model: "m"},
 	})
 	_, err := r.Client("p")
@@ -192,7 +151,7 @@ func TestRegistryClientUnregisteredWire(t *testing.T) {
 }
 
 func TestRegistryCatalogUsesDeclaredModels(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"p": {Wire: "openai", Model: "default", Models: []string{"a", "b", "c"}},
 	})
 	models, err := r.Catalog(context.Background(), "p")
@@ -210,7 +169,7 @@ func TestRegistryCatalogUsesDeclaredModels(t *testing.T) {
 
 func TestRegistryCatalogFallsBackToWireListing(t *testing.T) {
 	registerCaptureWire("registrytest-listing", []llm.Model{{ID: "w1"}, {ID: "w2"}})
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"p": {Wire: "registrytest-listing", Model: "m"},
 	})
 	models, err := r.Catalog(context.Background(), "p")
@@ -227,14 +186,14 @@ func TestRegistryCatalogFallsBackToWireListing(t *testing.T) {
 }
 
 func TestRegistryCatalogUnknownProvider(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{})
+	r := llm.NewRegistry(map[string]llm.Provider{})
 	if _, err := r.Catalog(context.Background(), "nothing"); err == nil {
 		t.Fatal("Catalog(unknown) should error")
 	}
 }
 
 func TestRegistryCatalogUnregisteredWire(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"p": {Wire: "no-such-wire", Model: "m"},
 	})
 	if _, err := r.Catalog(context.Background(), "p"); err == nil {
@@ -243,7 +202,7 @@ func TestRegistryCatalogUnregisteredWire(t *testing.T) {
 }
 
 func TestRegistryNames(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen": {Wire: "openai", Model: "m"},
 		"abc": {Wire: "openai", Model: "m"},
 		"mid": {Wire: "openai", Model: "m"},
@@ -254,7 +213,7 @@ func TestRegistryNames(t *testing.T) {
 }
 
 func TestRegistryDefaultModel(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"p": {Wire: "openai", Model: "mm"},
 	})
 	m, err := r.DefaultModel("p")
