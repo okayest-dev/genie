@@ -7,20 +7,20 @@ import (
 	"sort"
 )
 
-// ProviderSpec is one declared provider in the shape the registry builds from.
-// It mirrors the [providers.*] config tables but is deliberately free of an
-// internal/config import: the config package sits downstream of llm (via
-// modelinfo), so the registry cannot reference its types without an import
-// cycle. Seeding is a mechanical bridge over the parsed tables.
-type ProviderSpec struct {
+// Provider is one declared provider: the unit the harness boots on and switches
+// between — one wire, one endpoint, one default model. It is the canonical
+// shape of a [providers.*] config table: the config package aliases it, so a
+// parsed provider table is seedable into a Registry with no conversion.
+type Provider struct {
 	// Wire names the bundled in-process wire that serves the provider.
-	Wire string
+	Wire Wire
 	// BaseURL is the provider's endpoint for that wire.
 	BaseURL string
 	// APIKeyEnv names the env var the provider's API key lives in. Empty
 	// means the wire authenticates some other way and builds unauthenticated.
 	APIKeyEnv string
-	// Model is the provider's default model.
+	// Model is the provider's default model. It is required: the active
+	// provider always has a model.
 	Model string
 	// Models optionally overrides the provider's catalog. Empty means the
 	// catalog comes from the wire's model listing.
@@ -35,11 +35,11 @@ type ProviderSpec struct {
 // parameterised from its own provider's base_url, api_key_env and opts — there
 // are no global defaults to fall back on.
 type Registry struct {
-	providers map[string]ProviderSpec
+	providers map[string]Provider
 }
 
 // NewRegistry seeds a Registry with the declared providers, keyed by name.
-func NewRegistry(providers map[string]ProviderSpec) *Registry {
+func NewRegistry(providers map[string]Provider) *Registry {
 	return &Registry{providers: providers}
 }
 
@@ -52,7 +52,7 @@ func (r *Registry) Client(name string) (Client, error) {
 	if !ok {
 		return nil, fmt.Errorf("registry: no such provider %q", name)
 	}
-	f, ok := registry[p.Wire]
+	f, ok := wireFactories[p.Wire]
 	if !ok {
 		return nil, fmt.Errorf("registry: provider %q names unregistered wire %q", name, p.Wire)
 	}

@@ -6,28 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/llm"
 )
-
-// registryFromConfig bridges the parsed [providers.*] config tables into the
-// llm registry's spec shape. It lives here rather than in internal/llm
-// because of the package layering: config imports modelinfo, which imports
-// llm, so llm cannot reference config types without an import cycle.
-func registryFromConfig(cfg *config.Config) *llm.Registry {
-	specs := make(map[string]llm.ProviderSpec, len(cfg.Providers))
-	for name, p := range cfg.Providers {
-		specs[name] = llm.ProviderSpec{
-			Wire:      p.Wire,
-			BaseURL:   p.BaseURL,
-			APIKeyEnv: p.APIKeyEnv,
-			Model:     p.Model,
-			Models:    p.Models,
-			Opts:      p.Opts,
-		}
-	}
-	return llm.NewRegistry(specs)
-}
 
 // selectStartupProvider resolves the provider the harness boots on. An
 // explicitly selected provider wins outright. With no selection, an

@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/okayest-dev/genie/internal/llm"
 )
 
 // env builds a minimal env map from key/value pairs.
@@ -812,12 +815,13 @@ func TestShippedProviderDefaults(t *testing.T) {
 	if len(cfg.Providers) != 7 {
 		t.Fatalf("len(Providers) = %d, want 7 shipped defaults", len(cfg.Providers))
 	}
+	wires := llm.WireNames()
 	for name, p := range cfg.Providers {
 		if p.Wire == "" {
 			t.Errorf("%s: no wire", name)
 		}
-		if !validWire[p.Wire] {
-			t.Errorf("%s: wire %q is not a known wire", name, p.Wire)
+		if !slices.Contains(wires, p.Wire) {
+			t.Errorf("%s: wire %q is not a bundled wire", name, p.Wire)
 		}
 		switch name {
 		case "copilot", "bedrock":

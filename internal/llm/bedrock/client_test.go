@@ -645,11 +645,22 @@ func TestMapConverseError(t *testing.T) {
 
 // ---------- wire registration ----------
 
+// TestWireRegistered: the bedrock wire is registered under its Wire* constant
+// and the registry builds a client for a provider on it. The client is
+// constructible with no credentials — the AWS SDK resolves them at request
+// time — so this proves the factory is wired without touching AWS.
 func TestWireRegistered(t *testing.T) {
 	if llm.WireBedrock != "bedrock" {
 		t.Errorf("WireBedrock = %q, want bedrock", llm.WireBedrock)
 	}
-	if !llm.ValidWires["bedrock"] {
-		t.Error("bedrock wire not registered with the llm registry")
+	r := llm.NewRegistry(map[string]llm.Provider{
+		"b": {Wire: llm.WireBedrock, Model: "anthropic.claude-sonnet-4-6"},
+	})
+	c, err := r.Client("b")
+	if err != nil {
+		t.Fatalf("Client: %v", err)
+	}
+	if c == nil {
+		t.Fatal("registry returned a nil client for the bedrock wire")
 	}
 }

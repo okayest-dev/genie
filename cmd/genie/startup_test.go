@@ -11,15 +11,15 @@ import (
 	"github.com/okayest-dev/genie/internal/permissions"
 )
 
-// TestRegistryFromConfigResolvesDefaults is the integration seam: the parsed
-// config tables (shipped defaults) bridge into the registry and boot the
-// named provider on its own default model.
-func TestRegistryFromConfigResolvesDefaults(t *testing.T) {
+// TestRegistrySeededFromConfigResolvesDefaults is the integration seam: the
+// parsed config tables seed the registry directly and boot the named provider
+// on its own default model.
+func TestRegistrySeededFromConfigResolvesDefaults(t *testing.T) {
 	cfg, err := config.Parse(nil, "/home/u", nil)
 	if err != nil {
 		t.Fatalf("config.Parse: %v", err)
 	}
-	r := registryFromConfig(cfg)
+	r := llm.NewRegistry(cfg.Providers)
 	model, err := r.DefaultModel("zen")
 	if err != nil {
 		t.Fatalf("DefaultModel(zen): %v", err)
@@ -39,7 +39,7 @@ func TestRegistryFromConfigResolvesDefaults(t *testing.T) {
 // TestSelectStartupProviderExplicitWins: an explicitly selected provider is
 // returned as-is in both modes — no prompt, no fallback, no warning.
 func TestSelectStartupProviderExplicitWins(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen": {Wire: "openai", Model: "big-pickle"},
 	})
 	for _, interactive := range []bool{true, false} {
@@ -60,7 +60,7 @@ func TestSelectStartupProviderExplicitWins(t *testing.T) {
 // TestSelectStartupProviderInteractivePrompts: with the selection key unset,
 // an interactive run prompts for a pick from the declared set and returns it.
 func TestSelectStartupProviderInteractivePrompts(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen": {Wire: "openai", Model: "big-pickle"},
 	})
 	var stdout bytes.Buffer
@@ -80,7 +80,7 @@ func TestSelectStartupProviderInteractivePrompts(t *testing.T) {
 // -p rule: with no selection, the run starts on the first declared provider —
 // the registry's deterministic sorted order — and warns on stderr naming it.
 func TestSelectStartupProviderOneShotFallsBackToFirstDeclared(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{
+	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen":   {Wire: "openai", Model: "zen-model"},
 		"alpha": {Wire: "openai", Model: "alpha-model"},
 		"mid":   {Wire: "openai", Model: "mid-model"},
@@ -103,7 +103,7 @@ func TestSelectStartupProviderOneShotFallsBackToFirstDeclared(t *testing.T) {
 // shipped defaults make this unreachable through config alone, so it is pinned
 // at the unit seam on an empty registry.
 func TestSelectStartupProviderZeroProvidersError(t *testing.T) {
-	r := llm.NewRegistry(map[string]llm.ProviderSpec{})
+	r := llm.NewRegistry(map[string]llm.Provider{})
 	for _, interactive := range []bool{true, false} {
 		_, err := selectStartupProvider(r, "", interactive, strings.NewReader(""), io.Discard, io.Discard)
 		if err == nil {

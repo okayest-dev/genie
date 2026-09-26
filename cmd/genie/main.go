@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/okayest-dev/genie/internal/config"
+	"github.com/okayest-dev/genie/internal/llm"
 	_ "github.com/okayest-dev/genie/internal/llm/anthropic"
 	_ "github.com/okayest-dev/genie/internal/llm/bedrock"
 	_ "github.com/okayest-dev/genie/internal/llm/copilot"
@@ -195,7 +196,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// declared providers is a startup error (og-z1m.4). The boot client and
 	// model are resolved inside run.New — the registry is only the named
 	// provider surface here.
-	reg := registryFromConfig(cfg)
+	reg := llm.NewRegistry(cfg.Providers)
 	provider, err := selectStartupProvider(reg, cfg.Provider, *prompt == "", os.Stdin, stdout, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
