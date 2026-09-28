@@ -468,8 +468,12 @@ func formatPluginError(pluginName, command string, err error) string {
 	}
 }
 
-// printPluginCommandsHelp prints a flat plugin-commands section for /help,
-// enumerating each plugin's command (name + one-line description).
+// printPluginCommandsHelp prints a plugin-commands section for /help, grouped
+// per plugin (name + one-line description per command). A plugin whose hooks
+// the circuit breaker has tripped is labelled with the events it is out of:
+// breaker state is process-lifetime, so a session that starts with a plugin
+// already tripped is degraded from its first turn with no new notice, and
+// /help is the only place the user can go looking.
 func printPluginCommandsHelp(cmds plugin.CommandSource, out io.Writer) {
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Plugin commands:")
@@ -478,10 +482,20 @@ func printPluginCommandsHelp(cmds plugin.CommandSource, out io.Writer) {
 		if err != nil {
 			continue
 		}
+		fmt.Fprintf(out, "  %s%s\n", name, trippedLabel(cmds.TrippedHooks(name)))
 		for _, c := range list {
 			fmt.Fprintf(out, "  /%s %s  %s\n", name, c.Name, c.Description)
 		}
 	}
+}
+
+// trippedLabel renders the breaker annotation for a plugin's block, or "" when
+// the plugin is participating on every event it declared.
+func trippedLabel(events []string) string {
+	if len(events) == 0 {
+		return ""
+	}
+	return "  [hooks disabled: " + strings.Join(events, ", ") + "]"
 }
 
 // fileNames returns a comma-separated list of file paths from a batch's files.

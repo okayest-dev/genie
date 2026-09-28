@@ -185,6 +185,13 @@ bash = true
 | `plugins.dir` | string | `~/.config/genie/plugins` | `GENIE_PLUGIN_DIR` | directory where plugin executables are discovered |
 | `plugins.enable` | array of strings | `[]` (all) | — | allowlist of plugin names to load |
 | `plugins.disable` | array of strings | `[]` | — | denylist of plugin names to skip (wins over `enable`) |
+| `plugins.hook_failure_threshold` | int | `3` | — | consecutive failures of one plugin hook before the breaker holds it out of that event; `0` disables the breaker |
+| `plugins.hook_recovery_seconds` | int | `60` | — | how long a tripped event stays out before one trial call is allowed through; `0` never recovers |
+
+Both keys must be zero or positive; a negative value is a config error. A trip
+is scoped to one `(plugin, event)` pair, so a plugin that is broken on
+`response_ready` keeps its `tool_before` hook. See
+[installing and using plugins](plugins/using.md#when-a-plugin-hook-starts-failing).
 
 See [installing and using plugins](plugins/using.md) for the plugin layouts and discovery rules.
 

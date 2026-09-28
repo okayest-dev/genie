@@ -33,6 +33,15 @@ const (
 	defaultAPIKeyEnv   = "OPENCODE_API_KEY"
 	defaultBashTimeout = 120 * time.Second
 
+	// defaultHookFailureThreshold is the consecutive-failure count at which a
+	// (plugin, event) hook is dropped from participation. Three is the smallest
+	// value that both tolerates a single transient hiccup and still bounds a
+	// deterministically-broken hook within a few calls.
+	defaultHookFailureThreshold = 3
+	// defaultHookRecovery is the cooldown before a single half-open probe is
+	// admitted on a tripped (plugin, event) hook.
+	defaultHookRecovery = 60 * time.Second
+
 	configFileName = "config.toml"
 )
 
@@ -138,6 +147,20 @@ type Lifecycle struct {
 	PluginsOrder []string
 }
 
+// Hooks is the plugin-hook circuit-breaker policy (og-9xd). It governs every
+// hook seam — the five lifecycle events and the four context events — which
+// share one per-(plugin, event) breaker.
+type Hooks struct {
+	// FailureThreshold is the number of *consecutive* failures on one
+	// (plugin, event) before that hook is dropped from participation for the
+	// cooldown. Zero disables the breaker (every failure degrades as before).
+	FailureThreshold int
+	// Recovery is the cooldown before a single half-open probe is admitted on a
+	// tripped event. Zero makes the breaker a one-way door for the process
+	// lifetime.
+	Recovery time.Duration
+}
+
 // Skills holds the skill-discovery knobs (og-uem.12.2). Defaults to a
 // three-directory stack in priority order: the project-local .genie/skills,
 // the external ecosystem at ~/.agents/skills, and the user config dir.
@@ -196,8 +219,11 @@ type Config struct {
 	// Context configures harness-level context management (history window).
 	Context   Context
 	Lifecycle Lifecycle
-	Skills    Skills
-	AgentReg  *AgentReg
+	// Hooks is the plugin-hook circuit-breaker policy, resolved from
+	// [plugins] hook_failure_threshold / hook_recovery_seconds.
+	Hooks    Hooks
+	Skills   Skills
+	AgentReg *AgentReg
 }
 
 // Permissions is the resolved permission policy. Base maps each axis name
@@ -279,6 +305,12 @@ type pluginsFile struct {
 	Dir     string   `toml:"dir"`
 	Enable  []string `toml:"enable"`
 	Disable []string `toml:"disable"`
+	// HookFailureThreshold is the consecutive-failure count at which a
+	// (plugin, event) hook is dropped from participation. HookRecoverySeconds
+	// is the cooldown before a single half-open probe is admitted. Both are
+	// pointers so an explicit 0 is distinguishable from unset.
+	HookFailureThreshold *int `toml:"hook_failure_threshold"`
+	HookRecoverySeconds  *int `toml:"hook_recovery_seconds"`
 }
 
 type skillsFile struct {
@@ -347,7 +379,10 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 			cfg.BashTimeout = time.Duration(*fc.BashTimeout) * time.Second
 		}
 		applyTools(&cfg.Tools, fc.Tools)
-		applyPlugins(&cfg, fc.Plugins, userConfigDir)
+		applyPluginsErr := applyPlugins(&cfg, fc.Plugins, userConfigDir)
+		if applyPluginsErr != nil {
+			return nil, applyPluginsErr
+		}
 		applySkills(&cfg, fc.Skills)
 		if err := applyPermissions(&cfg.Permissions, fc.Permissions); err != nil {
 			return nil, err
@@ -477,6 +512,7 @@ func defaults(userConfigDir string) Config {
 		PluginDir:   filepath.Join(userConfigDir, "genie", "plugins"),
 		Skills:      Skills{Dirs: defaultSkillDirs(userConfigDir)},
 		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
+		Hooks:       Hooks{FailureThreshold: defaultHookFailureThreshold, Recovery: defaultHookRecovery},
 		Permissions: Permissions{Base: map[string][]string{"read": {"."}}},
 	}
 }
@@ -732,7 +768,7 @@ func validateBudgetPercent(p float64) error {
 	return nil
 }
 
-func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) {
+func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) error {
 	if src.Dir != "" {
 		cfg.PluginDir = expandPath(src.Dir)
 	} else {
@@ -740,6 +776,19 @@ func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) {
 	}
 	cfg.PluginEnable = src.Enable
 	cfg.PluginDisable = src.Disable
+	if src.HookFailureThreshold != nil {
+		if *src.HookFailureThreshold < 0 {
+			return fmt.Errorf("config: plugins.hook_failure_threshold must be non-negative, got %d", *src.HookFailureThreshold)
+		}
+		cfg.Hooks.FailureThreshold = *src.HookFailureThreshold
+	}
+	if src.HookRecoverySeconds != nil {
+		if *src.HookRecoverySeconds < 0 {
+			return fmt.Errorf("config: plugins.hook_recovery_seconds must be non-negative, got %d", *src.HookRecoverySeconds)
+		}
+		cfg.Hooks.Recovery = time.Duration(*src.HookRecoverySeconds) * time.Second
+	}
+	return nil
 }
 
 // applySkills overlays the [skills] table on the defaults. A non-empty dirs

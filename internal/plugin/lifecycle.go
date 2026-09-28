@@ -11,7 +11,6 @@ package plugin
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 
 	"github.com/okayest-dev/genie/internal/agent"
@@ -75,18 +74,23 @@ func reversed(ps []*Plugin) []*Plugin {
 func (s *LifecycleSeam) RequestBuilt(ctx context.Context, req llm.Request) (llm.Request, error) {
 	cur := req
 	for _, p := range s.requestBuilt {
+		if !p.AdmitHook(HookRequestBuilt) {
+			continue
+		}
 		out, fatal, err := p.CallLifecycleRequestBuilt(ctx, cur)
 		if err != nil {
-			s.degrade("request_built hook %q: %v", p.Name, err)
+			s.degradeHook(p, HookRequestBuilt, err)
 			continue
 		}
 		if fatal {
 			// A fatal declaration aborts the turn: do NOT commit the aborting
 			// hook's own rewrite into the request. Return the request as it was
 			// before this hook so nothing its plugin mutated leaks into the
-			// (aborted) turn.
+			// (aborted) turn. A declaration is policy, not breakage, so it
+			// neither counts as a failure nor clears the event's counter.
 			return cur, s.fatalNoCause(p.Name, "lifecycle/request_built")
 		}
+		p.HookSucceeded(HookRequestBuilt)
 		cur = out
 	}
 	return cur, nil
@@ -98,9 +102,12 @@ func (s *LifecycleSeam) RequestBuilt(ctx context.Context, req llm.Request) (llm.
 func (s *LifecycleSeam) ToolBefore(ctx context.Context, name, id, args string) (string, bool, error) {
 	cur := args
 	for _, p := range s.toolBefore {
+		if !p.AdmitHook(HookToolBefore) {
+			continue
+		}
 		out, fatal, err := p.CallLifecycleToolBefore(ctx, name, id, cur)
 		if err != nil {
-			s.degrade("tool_before hook %q: %v", p.Name, err)
+			s.degradeHook(p, HookToolBefore, err)
 			continue
 		}
 		// An explicit set_empty (distinct from an empty arguments, which means
@@ -116,6 +123,7 @@ func (s *LifecycleSeam) ToolBefore(ctx context.Context, name, id, args string) (
 		if fatal {
 			return cur, false, s.fatalNoCause(p.Name, "lifecycle/tool_before")
 		}
+		p.HookSucceeded(HookToolBefore)
 		if out.Suppress {
 			slog.Info("lifecycle: tool suppressed", "plugin", p.Name, "tool", name)
 			return cur, true, nil
@@ -128,33 +136,42 @@ func (s *LifecycleSeam) ToolBefore(ctx context.Context, name, id, args string) (
 func (s *LifecycleSeam) ToolAfter(ctx context.Context, name, id, args, result, errText string) (string, error) {
 	cur := result
 	for _, p := range s.toolAfter {
+		if !p.AdmitHook(HookToolAfter) {
+			continue
+		}
 		out, fatal, err := p.CallLifecycleToolAfter(ctx, name, id, args, cur, errText)
 		if err != nil {
-			s.degrade("tool_after hook %q: %v", p.Name, err)
+			s.degradeHook(p, HookToolAfter, err)
 			continue
 		}
 		cur = out.Result
 		if fatal {
 			return cur, s.fatalNoCause(p.Name, "lifecycle/tool_after")
 		}
+		p.HookSucceeded(HookToolAfter)
 	}
 	return cur, nil
 }
 
 // ResponseReady runs the response_ready chain over one streaming delta (or the
-// final release) in onion order.
+// final release) in onion order. It fires per delta, so it is also the event
+// the circuit breaker has the most to say about.
 func (s *LifecycleSeam) ResponseReady(ctx context.Context, chunk string, final bool, finish llm.FinishReason, usage llm.Usage) (string, error) {
 	cur := chunk
 	for _, p := range s.responseReady {
+		if !p.AdmitHook(HookResponseReady) {
+			continue
+		}
 		out, fatal, err := p.CallLifecycleResponseReady(ctx, cur, final, finish, usage)
 		if err != nil {
-			s.degrade("response_ready hook %q: %v", p.Name, err)
+			s.degradeHook(p, HookResponseReady, err)
 			continue
 		}
 		cur = out.Chunk
 		if fatal {
 			return cur, s.fatalNoCause(p.Name, "lifecycle/response_ready")
 		}
+		p.HookSucceeded(HookResponseReady)
 	}
 	return cur, nil
 }
@@ -164,14 +181,18 @@ func (s *LifecycleSeam) ResponseReady(ctx context.Context, chunk string, final b
 // turn error is never masked by the escalation.
 func (s *LifecycleSeam) TurnError(ctx context.Context, errText, phase, partial string) error {
 	for _, p := range s.turnError {
+		if !p.AdmitHook(HookTurnError) {
+			continue
+		}
 		fatal, err := p.CallLifecycleTurnError(ctx, errText, phase, partial)
 		if err != nil {
-			s.degrade("turn_error hook %q: %v", p.Name, err)
+			s.degradeHook(p, HookTurnError, err)
 			continue
 		}
 		if fatal {
 			return s.fatal(p.Name, "lifecycle/turn_error", errText)
 		}
+		p.HookSucceeded(HookTurnError)
 	}
 	return nil
 }
@@ -194,10 +215,19 @@ func (s *LifecycleSeam) fatal(pluginName, event, causeText string) error {
 
 // degrade surfaces a visible degradation message to the terminal (via onDegrade)
 // and logs it. A failed hook never fails the turn.
-func (s *LifecycleSeam) degrade(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
+func (s *LifecycleSeam) degrade(msg string) {
 	slog.Warn("lifecycle degradation", "detail", msg)
 	if s.onDegrade != nil {
 		s.onDegrade(msg)
 	}
+}
+
+// degradeHook records a failed hook call against the plugin's per-(plugin,
+// event) circuit breaker and surfaces the per-occurrence message the breaker
+// asks for. A tripped event returns no message: its one trip notice already
+// covers the event, and repeating it per occurrence is the noise this exists to
+// stop. The breaker, not this seam, owns the counter and the suppression, so
+// both seams behave identically for the same (plugin, event).
+func (s *LifecycleSeam) degradeHook(p *Plugin, event string, err error) {
+	degradeHook(s.degrade, p, event, err)
 }

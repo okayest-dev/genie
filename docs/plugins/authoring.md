@@ -83,6 +83,16 @@ Hooks run as **ordered chains**. Request-side events (`request_built`, `tool_bef
 
 **Failure semantics.** Hooks degrade: if a hook errors it is skipped, earlier hooks' contributions are kept, and the turn proceeds. To fail a turn on a hook failure, return `"fatal": true` on the result — Genie aborts the turn with a `FatalHookError` naming your plugin and the event. In `tool_before`: `suppress` kills the tool call (the harness reports `Tool call suppressed by lifecycle hook.`); `set_empty: true` wipes the arguments to `""` and the wiped call still goes through normal argument validation — so it fails closed unless an empty string is valid for the tool. The two are deliberately different: a suppressed call never executes, a wiped call still runs the tool path.
 
+**Repeated failures are cut out, not just reported.** Each `(plugin, event)` pair gets a circuit breaker. Degrade-and-continue is the right behaviour for a hook that fails *once*; a hook that fails every single call is worse than useless, because the user pays for it in warnings on every delta and gets nothing for it. After `plugins.hook_failure_threshold` consecutive failures (default 3) that one event stops being called, and the warning is replaced by a single notice. After `plugins.hook_recovery_seconds` (default 60) one trial call goes through: success restores the hook, failure re-trips it. See [when a plugin hook starts failing](using.md#when-a-plugin-hook-starts-failing) for what this looks like from the outside.
+
+Three consequences worth designing around:
+
+- **The breaker is per event.** A plugin with a broken `response_ready` keeps its `tool_before`, `request_built`, and commands. Fix one leg and only that leg comes back.
+- **`"fatal": true` is not a failure.** A fatal declaration is your plugin asserting policy, so it neither counts toward the threshold nor clears a counter that is already climbing. Reserve it for real aborts; do not use it as a "stop calling me" signal, and do not expect a fatal result to reset anything.
+- **A trial call after the cooldown may be your only call.** If your hook is stateful, a trip can discard work in flight: a `response_ready` hook that trips mid-stream has already lost that delta's contribution. Design hooks so a dropped contribution is recoverable, not a resource that must be delivered exactly once.
+
+Hook timeouts and crashes are handled separately: those mark the whole plugin inactive, which is reported once and does not consume the hook-failure threshold.
+
 ## Command plugins
 
 Declare `commands: true`. Command plugins expose user-typed slash commands. Genie calls `commands/list` once at load, `commands/run` per invocation, and probes an optional `commands/help` lazily.
@@ -110,6 +120,8 @@ Declare `context_before`, `context_after`, `context_compact`, or `context_conden
 - `context/after_response` — observe a completed turn; return a narrow `usage` delta. Never rewrite history.
 - `context/compact` — summarise / evict history to keep a conversation within its budget. **Single-active**: exactly one implementation runs. Genie's built-in compactor is the default; when two or more plugins declare this hook the host fails startup until the operator names one in `[context.plugins] active_compact`.
 - `context/condense` — narrow (condense) oversized tool-output history before a request ships. Single-active like compact, governed by `active_condense`.
+
+All four context hooks are covered by the same per-event circuit breaker as the lifecycle hooks, with one difference that matters to a single-active plugin: when `context/compact` or `context/condense` trips, Genie's built-in takes over for the rest of the cooldown rather than leaving the context window unmanaged. Your hook is simply not called, and the built-in does the job — so a compaction hook should be safe to miss entirely, because that is exactly what will happen while it is out.
 
 ## RPC plumbing everyone needs
 

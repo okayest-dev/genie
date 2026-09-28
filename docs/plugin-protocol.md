@@ -313,6 +313,131 @@ Each command definition contains:
 }
 ```
 
+### lifecycle/request_built
+
+**Direction**: Host → Plugin
+
+**Purpose**: Observe and optionally rewrite the assembled turn request (agent instruction + current turn + injected history) before it is sent to the model. Request-side lifecycle hooks (`request_built`, `tool_before`) fire in `[lifecycle.plugins] order`; response-side hooks fire in the reverse (onion) order so paired plugins can pack and unpack.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "lifecycle/request_built",
+  "params": { "model": "claude-sonnet-4-5", "messages": [ { "role": "user", "content": "hi" } ] },
+  "id": 20
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": { "request": { "model": "claude-sonnet-4-5", "messages": [ { "role": "user", "content": "hi [rewritten]" } ] }, "fatal": false },
+  "id": 20
+}
+```
+
+### lifecycle/tool_before
+
+**Direction**: Host → Plugin
+
+**Purpose**: Guardrail slot before a tool call executes. The hook may rewrite `arguments` (an empty `arguments` means "no change"), `suppress` the call entirely, or `set_empty` to wipe the arguments to `""` so the call still runs the tool path and fails closed unless an empty string is valid. A `fatal: true` result aborts the turn.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "lifecycle/tool_before",
+  "params": { "name": "sed", "id": "call_1", "arguments": "--version" },
+  "id": 21
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": { "arguments": "--version", "suppress": false, "set_empty": false, "fatal": false },
+  "id": 21
+}
+```
+
+### lifecycle/tool_after
+
+**Direction**: Host → Plugin
+
+**Purpose**: Observe a completed tool call. The call's `error` is carried as a field, not a JSON-RPC error, so a failing call is still observable to every hook in the chain. The hook may rewrite `result` text and/or escalate with `fatal`.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "lifecycle/tool_after",
+  "params": { "name": "sed", "id": "call_1", "arguments": "--version", "result": "GNU sed 4.8" },
+  "id": 22
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": { "result": "GNU sed 4.8", "fatal": false },
+  "id": 22
+}
+```
+
+### lifecycle/response_ready
+
+**Direction**: Host → Plugin
+
+**Purpose**: Observe one response text delta. **This hook fires per streaming delta**, so it is the worst place for anything slow or noisy — a failing `response_ready` that is not cut out warns per delta (see the circuit breaker below). The final call carries `final: true`, the `finish_reason`, and the usage observed at end-of-stream. The hook may rewrite `chunk` and/or escalate with `fatal`.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "lifecycle/response_ready",
+  "params": { "chunk": "Hello" },
+  "id": 23
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": { "chunk": "Hello", "fatal": false },
+  "id": 23
+}
+```
+
+### lifecycle/turn_error
+
+**Direction**: Host → Plugin
+
+**Purpose**: Observe a hard turn error; observe-only, but a `fatal` result escalates a failing turn for downstream hooks. `phase` names where the turn failed; `partial` carries the assistant text accumulated before the failure.
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "lifecycle/turn_error",
+  "params": { "error": "model timed out", "phase": "stream", "partial": "Hello" },
+  "id": 24
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": { "fatal": false },
+  "id": 24
+}
+```
+
 ### context/before_request
 
 **Direction**: Host → Plugin
@@ -534,6 +659,10 @@ Environment variable override: `GENIE_PLUGIN_DIR`
 | Plugin returns unknown method | Error response (-32601), plugin stays active |
 | Plugin command exceeds RequestTimeout (5s) | Timeout, mark plugin inactive (mirrors tools/call) |
 | Plugin command returns JSON-RPC error | Error response printed, plugin stays active |
+| Hook fails repeatedly | After `plugins.hook_failure_threshold` consecutive failures of that one event, trip the breaker for `(plugin, event)`: the hook stops being called and one trip notice replaces the per-occurrence warnings |
+| Breaker recovers | After `plugins.hook_recovery_seconds`, one trial call is allowed; success restores the event with a notice, failure re-trips |
+| `active_compact`/`active_condense` hook trips | Built-in compactor/condenser takes over for the cooldown |
+| `fatal: true` hook result | Turn aborts with `FatalHookError`; neither counts toward the threshold nor resets a counter |
 
 ## Name Collision Handling
 

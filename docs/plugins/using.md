@@ -89,3 +89,64 @@ Plugins are sandboxed by failure. A plugin that crashes or hangs is marked inact
 | `unknown command: /X` | not a loaded plugin | check `[plugins] enable`; check the name |
 | plugin tools/commands missing | plugin hidden from discovery | `chmod +x` the executable; use a supported layout; check the 16-plugin cap |
 | logs look garbled | plugin wrote to stdout | plugins must log to stderr only |
+
+## When a plugin hook starts failing
+
+A plugin that is alive but whose hook keeps erroring is a different problem from
+a plugin that crashed. Before the breaker existed, every failure of a
+`response_ready` hook printed a warning *per streaming delta* — a hook failing
+once could bury the terminal in thousands of lines.
+
+Each `(plugin, event)` pair now has a circuit breaker. The first
+`hook_failure_threshold` consecutive failures (default 3) degrade one at a time,
+as before. The failure that crosses the threshold trips the breaker and prints
+one notice instead, naming the plugin, the events it is out of, and the
+threshold and cooldown in force. While tripped, that event is not called at all
+and the per-occurrence warnings stop.
+
+After `hook_recovery_seconds` (default 60) one trial call is allowed through. If
+it succeeds the event comes back and a notice says so; if it fails the breaker
+re-trips and waits out another cooldown.
+
+The scope is deliberately narrow:
+
+- **Per event.** A plugin broken on `response_ready` keeps its `tool_before`
+  hook. One broken leg does not disarm the rest of the plugin.
+- **Per session, not per turn.** A successful trial resets only that event's
+  counter.
+- **Fatal declarations are not failures.** A hook that declares a fatal error is
+  the plugin asserting policy; it neither counts toward the threshold nor
+  clears a counter.
+- **Crashes are not hook failures.** An inactive plugin is excluded on liveness
+  grounds and reported once, not counted toward the threshold.
+
+When an `active_compact` or `active_condense` plugin is tripped, the built-in
+compactor takes over for the rest of the cooldown, so a single broken compaction
+hook cannot leave the context window unmanaged.
+
+Tripped events re-enter the hook, but never the process: the breaker re-admits
+*participation* only — a tripped plugin is still the same running process,
+inactive plugins are still never respawned (ADR-0003's "never respawns" is
+untouched).
+
+A tripped plugin is still active: its tools and commands remain available, and
+`/help` labels the plugin block with the events it is out of —
+
+```
+  myplugin  [hooks disabled: response_ready]
+  /myplugin greet  say hi
+```
+
+so a session that starts with a plugin already tripped (breaker state is
+process-lifetime) is never silently degraded.
+
+Tune it, or turn it off, under `[plugins]` in [configuration](../configuration.md):
+
+```toml
+[plugins]
+hook_failure_threshold = 5   # tolerate more flaky calls before cutting out
+hook_recovery_seconds = 300 # wait longer before retrying a broken hook
+
+# hook_failure_threshold = 0  # never cut out; warn on every failure
+# hook_recovery_seconds = 0   # cut out for the rest of the session
+```

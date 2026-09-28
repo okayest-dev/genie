@@ -622,6 +622,64 @@ order = ["b-plugin", "a-plugin"]
 	}
 }
 
+func TestHookBreakerDefaults(t *testing.T) {
+	cfg, err := Parse(nil, "/tmp", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Hooks.FailureThreshold != 3 {
+		t.Errorf("FailureThreshold = %d, want 3", cfg.Hooks.FailureThreshold)
+	}
+	if cfg.Hooks.Recovery != 60*time.Second {
+		t.Errorf("Recovery = %v, want 60s", cfg.Hooks.Recovery)
+	}
+}
+
+func TestHookBreakerParses(t *testing.T) {
+	file := `[plugins]
+hook_failure_threshold = 5
+hook_recovery_seconds = 10
+`
+	cfg, err := Parse([]byte(file), "/tmp", map[string]string{})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Hooks.FailureThreshold != 5 {
+		t.Errorf("FailureThreshold = %d, want 5", cfg.Hooks.FailureThreshold)
+	}
+	if cfg.Hooks.Recovery != 10*time.Second {
+		t.Errorf("Recovery = %v, want 10s", cfg.Hooks.Recovery)
+	}
+}
+
+func TestHookBreakerZeroIsNotDefault(t *testing.T) {
+	// 0 is a meaningful value for both keys: threshold 0 disables the
+	// breaker, recovery 0 makes it a one-way door. Neither may be read as
+	// "unset".
+	file := `[plugins]
+hook_failure_threshold = 0
+hook_recovery_seconds = 0
+`
+	cfg, err := Parse([]byte(file), "/tmp", map[string]string{})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Hooks.FailureThreshold != 0 || cfg.Hooks.Recovery != 0 {
+		t.Errorf("Hooks = %+v, want both zero", cfg.Hooks)
+	}
+}
+
+func TestHookBreakerRejectsNegative(t *testing.T) {
+	for _, file := range []string{
+		"[plugins]\nhook_failure_threshold = -1\n",
+		"[plugins]\nhook_recovery_seconds = -5\n",
+	} {
+		if _, err := Parse([]byte(file), "/tmp", map[string]string{}); err == nil {
+			t.Errorf("Parse(%q) = nil error, want rejection", file)
+		}
+	}
+}
+
 // wantDefaultSkillDirs is the fresh-install three-directory stack: a local
 // .genie/skills, the external ecosystem at ~/.agents/skills, and the global
 // config dir. Returned in priority order (lowest index wins).

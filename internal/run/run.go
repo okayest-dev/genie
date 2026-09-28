@@ -212,7 +212,16 @@ func New(opts Options) (*Handle, error) {
 
 	// Load plugins over the scoped registry and build the context/lifecycle
 	// seams. On any hard seam error the manager is shut down before returning.
-	plug := plugin.NewManager(opts.Config.PluginDir, opts.Config.PluginEnable, opts.Config.PluginDisable, scoped)
+	//
+	// The hook circuit-breaker policy and its notice sink are installed here
+	// rather than on either seam: a plugin's breaker state is per (plugin, event)
+	// and spans both seams, so a trip noticed in one has to be reported through
+	// one sink as one line.
+	plug := plugin.NewManager(opts.Config.PluginDir, opts.Config.PluginEnable, opts.Config.PluginDisable, scoped,
+		plugin.WithHookBreaker(plugin.HookBreakerPolicy{
+			Threshold: opts.Config.Hooks.FailureThreshold,
+			Recovery:  opts.Config.Hooks.Recovery,
+		}, func(msg string) { h.degrade("plugin hooks degraded: " + msg) }))
 	if err := plug.LoadPlugins(); err != nil {
 		return nil, err
 	}

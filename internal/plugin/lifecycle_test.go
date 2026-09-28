@@ -7,8 +7,14 @@ package plugin
 //	tmpl-a / tmpl-b        marker plugins (append per-event suffixes)
 //	tmpl-fatal             request_built AND turn_error declare fatal
 //	tmpl-tafatal           tool_after declares fatal
+//	tmpl-tbfatal           tool_before declares fatal
 //	tmpl-rrfatal           response_ready (final) declares fatal
 //	tmpl-err               every hook returns a JSON-RPC error (degrades)
+//	tmpl-errcount          same, and appends each hook method to $GENIE_HOOK_LOG
+//	tmpl-onlytbcount       tool_before alone errors, the rest are healthy
+//	tmpl-flakycount        each hook errors its first $GENIE_FLAKY_FAILS calls
+//	tmpl-fcount            every hook declares fatal, and logs each call
+//	tmpl-diecount          kills its process on tool_before, and logs each call
 //	tmpl-suppress          tool_before suppresses the tool named "x"
 //	tmpl-wipe              tool_before wipes the arguments to empty (set_empty)
 //	tmpl-pass              tool_before observes only, returns an empty result
@@ -19,6 +25,7 @@ package plugin
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,20 +38,47 @@ import (
 
 const lifecycleScript = `#!/bin/bash
 name=$(basename "$0")
-fatal_req=false; fatal_ta=false; fatal_rr=false; err_all=false; suppress=""; wipe=false; pass=false
+fatal_req=false; fatal_tb=false; fatal_ta=false; fatal_rr=false; err_all=false; err_tb=false
+suppress=""; wipe=false; pass=false; count=false; die=false; flaky=false
 case "$name" in
+    *tbfatal*)    fatal_tb=true;;
     *tafatal*)    fatal_ta=true;;
     *rrfatal*)    fatal_rr=true;;
+    *fcount*)     fatal_req=true; fatal_tb=true; fatal_ta=true; fatal_rr=true; count=true;;
     *fatal*)      fatal_req=true;;
+    *diecount*)   die=true; count=true;;
+    *flakycount*) flaky=true; count=true;;
+    *errcount*)   err_all=true; count=true;;
+    *onlytb*)     err_tb=true;;
     *err*)        err_all=true;;
     *suppress*)   suppress="x";;
     *wipe*)       wipe=true;;
     *pass*)       pass=true;;
 esac
+case "$name" in
+    *count*)      count=true;;
+esac
+
+# flaky: fail the calls whose 1-based ordinal is listed in $GENIE_FLAKY_FAILS
+# ("1,2,4,5"), so a test can interleave failures and successes on one event and
+# drive the counter to a chosen shape.
+flaky_fail() {
+    local f="$GENIE_HOOK_LOG/flaky-$1"
+    echo x >> "$f"
+    case ",${GENIE_FLAKY_FAILS:-}," in *",$(wc -l < "$f"),"*) return 0;; esac
+    return 1
+}
 
 while IFS= read -r line; do
     method=$(echo "$line" | jq -r .method)
     id=$(echo "$line" | jq -r .id)
+    if $count && [ -n "$GENIE_HOOK_LOG" ]; then
+        echo "$method" >> "$GENIE_HOOK_LOG/$name.log"
+    fi
+    if $flaky && [ "$method" != "ping" ] && [ "$method" != "shutdown" ] && [ "$method" != "capabilities/list" ] && flaky_fail "$(echo "$method" | tr / .)"; then
+        echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal explosion"},"id":'"$id"'}'
+        continue
+    fi
     case "$method" in
         "capabilities/list")
             echo '{"jsonrpc":"2.0","result":{"lifecycle_request_built":true,"lifecycle_tool_before":true,"lifecycle_tool_after":true,"lifecycle_response_ready":true,"lifecycle_turn_error":true,"version":1},"id":'"$id"'}'
@@ -63,8 +97,12 @@ while IFS= read -r line; do
             fi
             ;;
         "lifecycle/tool_before")
-            if $err_all; then
+            if $die; then
+                exit 0
+            elif $err_all || $err_tb; then
                 echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal explosion"},"id":'"$id"'}'
+            elif $fatal_tb; then
+                echo '{"jsonrpc":"2.0","result":{"arguments":"","fatal":true},"id":'"$id"'}'
             elif $wipe; then
                 echo '{"jsonrpc":"2.0","result":{"set_empty":true},"id":'"$id"'}'
             elif $pass; then
@@ -124,6 +162,15 @@ done
 // successfully-loaded plugins in registration (discovery) order.
 func loadLifecycleScripts(t *testing.T, names ...string) (*Manager, []*Plugin) {
 	t.Helper()
+	mgr, plugs := loadLifecycleScriptsOpt(t, nil, nil, names...)
+	return mgr, plugs
+}
+
+// loadLifecycleScriptsOpt is loadLifecycleScripts with the hook circuit-breaker
+// policy and its notice sink, so a test can drive the cooldown and count
+// notices.
+func loadLifecycleScriptsOpt(t *testing.T, policy *HookBreakerPolicy, notify func(string), names ...string) (*Manager, []*Plugin) {
+	t.Helper()
 	dir := t.TempDir()
 	for _, name := range names {
 		path := filepath.Join(dir, name)
@@ -131,7 +178,11 @@ func loadLifecycleScripts(t *testing.T, names ...string) (*Manager, []*Plugin) {
 			t.Fatalf("write plugin script %s: %v", name, err)
 		}
 	}
-	mgr := NewManager(dir, nil, nil, tools.NewRegistry())
+	var opts []Option
+	if policy != nil {
+		opts = append(opts, WithHookBreaker(*policy, notify))
+	}
+	mgr := NewManager(dir, nil, nil, tools.NewRegistry(), opts...)
 	done := make(chan error, 1)
 	go func() { done <- mgr.LoadPlugins() }()
 	select {
@@ -147,6 +198,41 @@ func loadLifecycleScripts(t *testing.T, names ...string) (*Manager, []*Plugin) {
 		t.Fatalf("loaded %d plugins, want %d: %v", len(plug), len(names), names)
 	}
 	return mgr, plug
+}
+
+// hookLog turns on per-method call logging for the counting plugins and
+// returns a function reporting how many times each hook method was called. The
+// log is the counting fake: it asserts how many times the harness actually
+// called a hook, not merely that no error surfaced.
+func hookLog(t *testing.T) func() map[string]int {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("GENIE_HOOK_LOG", dir)
+	return func() map[string]int {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("read hook log dir: %v", err)
+		}
+		counts := make(map[string]int)
+		for _, e := range entries {
+			// flaky-* files are the plugin's own per-method call counters, not
+			// the harness's call log.
+			if strings.HasPrefix(e.Name(), "flaky-") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatalf("read hook log %s: %v", e.Name(), err)
+			}
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				if line != "" {
+					counts[strings.TrimSuffix(e.Name(), ".log")+":"+line]++
+				}
+			}
+		}
+		return counts
+	}
 }
 
 func userContent(req llm.Request) string {
@@ -401,5 +487,263 @@ func TestLifecycleSeamFatalEscalationOnResponseEvents(t *testing.T) {
 	_, err = seam2.ResponseReady(context.Background(), "", true, llm.FinishStop, llm.Usage{})
 	if !errors.As(err, &fatalErr) || fatalErr.Event != "lifecycle/response_ready" {
 		t.Errorf("response_ready fatal = %v, want lifecycle/response_ready", err)
+	}
+}
+
+// --- hook circuit breaker (og-9xd) -----------------------------------------
+
+// newBrokenSeam loads one always-failing plugin wired to a breaker with the
+// given threshold, plus a counting sink for the seam's own degrade output and a
+// second sink for the breaker's trip/recovery notices.
+func newBrokenSeam(t *testing.T, threshold int, recovery time.Duration, name string) (*LifecycleSeam, *Plugin, *[]string, *[]string) {
+	t.Helper()
+	var degraded, notices []string
+	policy := HookBreakerPolicy{Threshold: threshold, Recovery: recovery}
+	mgr, plugs := loadLifecycleScriptsOpt(t, &policy, func(msg string) {
+		notices = append(notices, msg)
+	}, name)
+	t.Cleanup(mgr.Shutdown)
+	seam := NewLifecycleSeam(plugs, LifecycleConfig{}, func(msg string) {
+		degraded = append(degraded, msg)
+	})
+	return seam, plugs[0], &degraded, &notices
+}
+
+func TestLifecycleBreakerStopsCallingAfterThreshold(t *testing.T) {
+	calls := hookLog(t)
+	seam, plug, degraded, notices := newBrokenSeam(t, 3, time.Minute, "tmpl-errcount")
+
+	for i := 0; i < 20; i++ {
+		if _, _, err := seam.ToolBefore(context.Background(), "y", "1", "{}"); err != nil {
+			t.Fatalf("ToolBefore %d should degrade, not fail: %v", i, err)
+		}
+	}
+	if got := calls()["tmpl-errcount:lifecycle/tool_before"]; got != 3 {
+		t.Errorf("tool_before called %d times, want exactly the threshold of 3", got)
+	}
+	if len(*degraded) != 2 {
+		// The failure that trips is covered by the trip notice, not a degrade
+		// line, so only the two below-threshold failures reach the sink.
+		t.Errorf("degrade sink called %d times, want 2 (one per failure below the threshold)", len(*degraded))
+	}
+	if len(*notices) != 1 {
+		t.Errorf("notices = %v, want exactly one trip notice", *notices)
+	}
+	if !plug.HookTripped(HookToolBefore) {
+		t.Error("want tool_before tripped")
+	}
+}
+
+func TestLifecycleBreakerEventsAreIndependent(t *testing.T) {
+	calls := hookLog(t)
+	var degraded []string
+	policy := HookBreakerPolicy{Threshold: 2, Recovery: time.Minute}
+	mgr, plugs := loadLifecycleScriptsOpt(t, &policy, nil, "tmpl-onlytbcount")
+	defer mgr.Shutdown()
+	seam := NewLifecycleSeam(plugs, LifecycleConfig{}, func(msg string) { degraded = append(degraded, msg) })
+
+	// Break tool_before hard: threshold 2, then it is held out.
+	for i := 0; i < 6; i++ {
+		if _, _, err := seam.ToolBefore(context.Background(), "y", "1", "{}"); err != nil {
+			t.Fatalf("ToolBefore: %v", err)
+		}
+	}
+	if got := calls()["tmpl-onlytbcount:lifecycle/tool_before"]; got != 2 {
+		t.Errorf("tool_before called %d times, want 2", got)
+	}
+	if !plugs[0].HookTripped(HookToolBefore) {
+		t.Fatal("tool_before should be tripped")
+	}
+
+	// Every other event keeps participating: it is a different hook.
+	for i := 0; i < 4; i++ {
+		if _, err := seam.ToolAfter(context.Background(), "y", "1", "{}", "out", ""); err != nil {
+			t.Fatalf("ToolAfter: %v", err)
+		}
+		if err := seam.TurnError(context.Background(), "boom", "turn", ""); err != nil {
+			t.Fatalf("TurnError: %v", err)
+		}
+	}
+	if got := calls()["tmpl-onlytbcount:lifecycle/tool_after"]; got != 4 {
+		t.Errorf("tool_after called %d times, want 4 — a healthy event is unaffected", got)
+	}
+	if got := calls()["tmpl-onlytbcount:lifecycle/turn_error"]; got != 4 {
+		t.Errorf("turn_error called %d times, want 4", got)
+	}
+}
+
+func TestLifecycleBreakerSuccessResetsCounter(t *testing.T) {
+	hookLog(t)
+	// Ordinals 1, 2, 4 and 5 fail; 3 succeeds.
+	t.Setenv("GENIE_FLAKY_FAILS", "1,2,4,5")
+	policy := HookBreakerPolicy{Threshold: 3, Recovery: time.Minute}
+	var degraded, notices []string
+	mgr, plugs := loadLifecycleScriptsOpt(t, &policy, func(msg string) { notices = append(notices, msg) }, "tmpl-flakycount")
+	defer mgr.Shutdown()
+	seam := NewLifecycleSeam(plugs, LifecycleConfig{}, func(msg string) { degraded = append(degraded, msg) })
+
+	// Two failures, a success, two more failures: five calls, no trip.
+	for i := 0; i < 5; i++ {
+		_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+	}
+	if plugs[0].HookTripped(HookToolBefore) {
+		t.Error("two failures, a success, two more failures must not trip")
+	}
+	if len(degraded) != 4 {
+		t.Errorf("degrade sink called %d times, want 4 (one per failure, none suppressed)", len(degraded))
+	}
+	if degraded[0] == "" {
+		t.Error("every failure below the threshold should still degrade")
+	}
+	if len(notices) != 0 {
+		t.Errorf("notices = %v, want none", notices)
+	}
+}
+
+func TestLifecycleBreakerResponseReadyNoticesOncePerTurn(t *testing.T) {
+	seam, _, degraded, notices := newBrokenSeam(t, 2, time.Minute, "tmpl-errcount")
+
+	// response_ready fires per text delta, so 20 deltas is one turn.
+	for i := 0; i < 20; i++ {
+		if _, err := seam.ResponseReady(context.Background(), "d", false, "", llm.Usage{}); err != nil {
+			t.Fatalf("ResponseReady %d: %v", i, err)
+		}
+	}
+	if len(*degraded) != 1 {
+		t.Errorf("degrade sink called %d times for 20 deltas, want 1 (the trip notice replaces the rest)", len(*degraded))
+	}
+	if len(*notices) != 1 {
+		t.Errorf("notices = %v, want exactly one trip notice for the whole turn", *notices)
+	}
+}
+
+func TestLifecycleBreakerFatalNeitherCountsNorResets(t *testing.T) {
+	calls := hookLog(t)
+	policy := HookBreakerPolicy{Threshold: 2, Recovery: time.Minute}
+	var notices []string
+	mgr, plugs := loadLifecycleScriptsOpt(t, &policy, func(msg string) { notices = append(notices, msg) }, "tmpl-fcount")
+	defer mgr.Shutdown()
+	seam := NewLifecycleSeam(plugs, LifecycleConfig{}, nil)
+
+	// Every event declares fatal. A deliberate abort is policy, not breakage, so
+	// the plugin is never tripped and never degraded.
+	for i := 0; i < 5; i++ {
+		seam.RequestBuilt(context.Background(), llm.Request{Model: "m", Messages: []llm.Message{{Role: llm.RoleUser, Content: "hi"}}})
+		_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+		seam.ToolAfter(context.Background(), "y", "1", "{}", "out", "")
+		seam.ResponseReady(context.Background(), "d", false, "", llm.Usage{})
+		seam.TurnError(context.Background(), "boom", "turn", "")
+	}
+	for _, event := range []string{HookRequestBuilt, HookToolBefore, HookToolAfter, HookResponseReady, HookTurnError} {
+		if plugs[0].HookTripped(event) {
+			t.Errorf("event %s tripped on fatal declarations", event)
+		}
+	}
+	if got := plugs[0].TrippedHooks(); len(got) != 0 {
+		t.Errorf("TrippedHooks = %v, want none", got)
+	}
+	if len(notices) != 0 {
+		t.Errorf("notices = %v, want none", notices)
+	}
+	if got := calls()["tmpl-fcount:lifecycle/tool_before"]; got != 5 {
+		t.Errorf("tool_before called %d times, want 5 — a fatal plugin keeps being called", got)
+	}
+}
+
+func TestLifecycleBreakerProbeAfterCooldown(t *testing.T) {
+	calls := hookLog(t)
+	seam, plug, _, notices := newBrokenSeam(t, 1, 30*time.Millisecond, "tmpl-errcount")
+
+	// Fail once, which trips.
+	_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+	if !plug.HookTripped(HookToolBefore) {
+		t.Fatal("want tripped")
+	}
+	tripCount := len(*notices)
+
+	// Inside the cooldown nothing is called, however many times we ask.
+	for i := 0; i < 10; i++ {
+		_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+	}
+	if got := calls()["tmpl-errcount:lifecycle/tool_before"]; got != 1 {
+		t.Fatalf("tool_before called %d times inside the cooldown, want 1", got)
+	}
+
+	// After it, exactly one probe is admitted — response_ready-style
+	// single-flight, asserted on the call count.
+	time.Sleep(60 * time.Millisecond)
+	for i := 0; i < 10; i++ {
+		_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+	}
+	if got := calls()["tmpl-errcount:lifecycle/tool_before"]; got != 2 {
+		t.Errorf("tool_before called %d times after the cooldown, want 2 (one probe)", got)
+	}
+	if len(*notices) != tripCount {
+		t.Errorf("a re-tripping probe emitted a new notice: %v", *notices)
+	}
+}
+
+func TestLifecycleBreakerZeroRecoveryIsOneWayDoor(t *testing.T) {
+	calls := hookLog(t)
+	seam, plug, _, _ := newBrokenSeam(t, 1, 0, "tmpl-errcount")
+
+	_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+	for i := 0; i < 10; i++ {
+		_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+	}
+	if got := calls()["tmpl-errcount:lifecycle/tool_before"]; got != 1 {
+		t.Errorf("tool_before called %d times, want 1 — hook_recovery_seconds = 0 is a one-way door", got)
+	}
+	if !plug.HookTripped(HookToolBefore) {
+		t.Error("want tripped")
+	}
+}
+
+func TestLifecycleBreakerThresholdOneTripsImmediately(t *testing.T) {
+	calls := hookLog(t)
+	seam, plug, degraded, notices := newBrokenSeam(t, 1, time.Minute, "tmpl-errcount")
+
+	_, _, _ = seam.ToolBefore(context.Background(), "y", "1", "{}")
+	if got := calls()["tmpl-errcount:lifecycle/tool_before"]; got != 1 {
+		t.Errorf("tool_before called %d times, want 1", got)
+	}
+	if !plug.HookTripped(HookToolBefore) {
+		t.Error("want tripped on the first failure")
+	}
+	if len(*degraded) != 0 {
+		t.Errorf("degrade sink called %d times, want 0 — the trip notice replaces it", len(*degraded))
+	}
+	if len(*notices) != 1 {
+		t.Errorf("notices = %v, want one trip notice", *notices)
+	}
+}
+
+func TestLifecycleBreakerLivenessIsNotHealth(t *testing.T) {
+	calls := hookLog(t)
+	policy := HookBreakerPolicy{Threshold: 1, Recovery: time.Minute}
+	var notices []string
+	mgr, plugs := loadLifecycleScriptsOpt(t, &policy, func(msg string) {
+		notices = append(notices, msg)
+	}, "tmpl-diecount")
+	defer mgr.Shutdown()
+	seam := NewLifecycleSeam(plugs, LifecycleConfig{}, nil)
+
+	for i := 0; i < 5; i++ {
+		if _, _, err := seam.ToolBefore(context.Background(), "y", "1", "{}"); err != nil {
+			t.Fatalf("ToolBefore %d should degrade past a dead plugin: %v", i, err)
+		}
+	}
+	// The process died on the first call; the other four never reached it.
+	if got := calls()["tmpl-diecount:lifecycle/tool_before"]; got != 1 {
+		t.Errorf("tool_before reached the plugin %d times, want 1", got)
+	}
+	if plugs[0].HookTripped(HookToolBefore) {
+		t.Error("a liveness failure must not trip the breaker")
+	}
+	if len(notices) != 1 {
+		t.Fatalf("notices = %v, want exactly one liveness notice", notices)
+	}
+	if !strings.Contains(notices[0], "killed") || !strings.Contains(notices[0], "tool_before") {
+		t.Errorf("liveness notice %q should name the plugin being killed and the event", notices[0])
 	}
 }

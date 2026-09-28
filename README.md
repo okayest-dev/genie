@@ -116,6 +116,8 @@ bash = true
 # dir = "~/.config/genie/plugins"
 # enable = ["my-plugin"]
 # disable = ["broken-plugin"]
+# hook_failure_threshold = 3    # consecutive hook failures before (plugin, event) is tripped; 0 = never trip
+# hook_recovery_seconds = 60    # cooldown before one trial call; 0 = never recover
 
 [skills]
 # dirs = ["/custom/skills"]   # replaces the default three-directory stack
@@ -374,7 +376,14 @@ capabilities: `lifecycle_request_built`, `lifecycle_tool_before`,
 
 **Failure semantics.** Hooks degrade by default: if a hook errors, it is
 skipped and any earlier hooks' contributions are kept — a failing plugin never
-fails a turn. A plugin may opt in to a stricter per-event contract by setting
+fails a turn. Repeated failure is cut out, not just reported: after
+`plugins.hook_failure_threshold` consecutive failures (default 3) that one
+`(plugin, event)` pair stops being called, with a single notice replacing the
+per-occurrence warnings; after `plugins.hook_recovery_seconds` (default 60) one trial call
+goes through — success restores the hook, failure re-trips it. A tripped
+`active_compact`/`active_condense` hook hands the job to genie's built-in for
+the cooldown, and `/help` labels the plugin with the events it is out of. A
+plugin may opt in to a stricter per-event contract by setting
 `"fatal": true` on its result; the turn then aborts with a
 `FatalHookError` naming the plugin and event (a fatal `turn_error` preserves
 the original error it aborted on). Suppressing in `tool_before` kills the tool

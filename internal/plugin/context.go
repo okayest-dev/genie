@@ -70,6 +70,15 @@ func NewContextSeam(plugins []*Plugin, cfg ContextConfig, onDegrade func(msg str
 	if seam.condense, err = resolveSingleActive(byName, plugins, cfg.ActiveCondense, "condense", func(p *Plugin) bool { return p.Capabilities.CondenseHook }); err != nil {
 		return nil, err
 	}
+	// The single-active plugins are the ones the breaker can strand with no
+	// working implementation at all, so the trip notice has to say the built-in
+	// has taken over.
+	if seam.compact != nil {
+		seam.compact.markSingleActive(HookCompact)
+	}
+	if seam.condense != nil {
+		seam.condense.markSingleActive(HookCondense)
+	}
 
 	return seam, nil
 }
@@ -157,11 +166,15 @@ func pluginNames2(ps []*Plugin) string {
 func (s *ContextSeam) BeforeRequest(ctx context.Context, req llm.Request) (llm.Request, error) {
 	cur := req
 	for _, p := range s.before {
-		out, err := p.CallContextBefore(ctx, cur)
-		if err != nil {
-			s.degrade("before_request hook %q: %v", p.Name, err)
+		if !p.AdmitHook(HookBeforeRequest) {
 			continue
 		}
+		out, err := p.CallContextBefore(ctx, cur)
+		if err != nil {
+			s.degradeHook(p, HookBeforeRequest, err)
+			continue
+		}
+		p.HookSucceeded(HookBeforeRequest)
 		cur = out
 	}
 	return cur, nil
@@ -171,47 +184,87 @@ func (s *ContextSeam) BeforeRequest(ctx context.Context, req llm.Request) (llm.R
 // usage. Failing hooks are skipped and surfaced; history is never rewritten.
 func (s *ContextSeam) AfterResponse(ctx context.Context, req llm.Request, usage llm.Usage) error {
 	for _, p := range s.after {
-		if _, err := p.CallContextAfter(ctx, req, usage); err != nil {
-			s.degrade("after_response hook %q: %v", p.Name, err)
+		if !p.AdmitHook(HookAfterResponse) {
+			continue
 		}
+		if _, err := p.CallContextAfter(ctx, req, usage); err != nil {
+			s.degradeHook(p, HookAfterResponse, err)
+			continue
+		}
+		p.HookSucceeded(HookAfterResponse)
 	}
 	return nil
 }
 
 // CompactBuiltin reports whether the harness's built-in compactor is the
-// active single-active implementation (no plugin selected): the ContextManager
-// then runs its own compactor instead of calling this seam. An external Hooks
+// active single-active implementation: no plugin is selected, or the selected
+// one is tripped and the built-in has taken over. The ContextManager then runs
+// its own compactor instead of calling this seam. An external Hooks
 // implementation without this marker is treated as supplying its own.
-func (s *ContextSeam) CompactBuiltin() bool { return s.compact == nil }
+//
+// The fallback matters because a broken compact plugin is otherwise a silent
+// failure: s.compact stays non-nil, so the ContextManager skips its built-in,
+// the seam call fails, and the context window quietly stops being managed for
+// the length of the cooldown. active_compact names a preference about which
+// implementation to use, not an agreement that none is better than no.
+func (s *ContextSeam) CompactBuiltin() bool {
+	return s.compact == nil || !s.compact.HookAdmitted(HookCompact)
+}
 
 // CondenseBuiltin mirrors CompactBuiltin for the condense seam.
-func (s *ContextSeam) CondenseBuiltin() bool { return s.condense == nil }
+func (s *ContextSeam) CondenseBuiltin() bool {
+	return s.condense == nil || !s.condense.HookAdmitted(HookCondense)
+}
 
 // Compact invokes the single-active compact implementation, or returns the
 // request unchanged when the built-in default is active (the ContextManager
-// then runs the built-in).
+// then runs the built-in) or when the plugin's event is tripped (the built-in
+// has taken over). The outcome is recorded against the same breaker the
+// lifecycle seam uses, so a plugin broken on compact is held out on the same
+// terms as one broken on request_built.
 func (s *ContextSeam) Compact(ctx context.Context, req llm.Request) (llm.Request, error) {
-	if s.compact == nil {
+	if s.compact == nil || !s.compact.AdmitHook(HookCompact) {
 		return req, nil
 	}
-	return s.compact.CallContextCompact(ctx, req)
+	out, err := s.compact.CallContextCompact(ctx, req)
+	if err != nil {
+		s.degradeHook(s.compact, HookCompact, err)
+		return req, err
+	}
+	s.compact.HookSucceeded(HookCompact)
+	return out, nil
 }
 
 // Condense invokes the single-active condense implementation, or returns the
-// request unchanged when the built-in default is active.
+// request unchanged when the built-in default is active or the plugin's event
+// is tripped.
 func (s *ContextSeam) Condense(ctx context.Context, req llm.Request) (llm.Request, error) {
-	if s.condense == nil {
+	if s.condense == nil || !s.condense.AdmitHook(HookCondense) {
 		return req, nil
 	}
-	return s.condense.CallContextCondense(ctx, req)
+	out, err := s.condense.CallContextCondense(ctx, req)
+	if err != nil {
+		s.degradeHook(s.condense, HookCondense, err)
+		return req, err
+	}
+	s.condense.HookSucceeded(HookCondense)
+	return out, nil
 }
 
 // degrade surfaces a visible degradation message to the terminal (via onDegrade)
 // and logs it. A failed hook never fails the request.
-func (s *ContextSeam) degrade(format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
+func (s *ContextSeam) degrade(msg string) {
 	slog.Warn("context degradation", "detail", msg)
 	if s.onDegrade != nil {
 		s.onDegrade(msg)
 	}
+}
+
+// degradeHook records a failed hook call against the plugin's per-(plugin,
+// event) circuit breaker and surfaces the per-occurrence message the breaker
+// asks for. A tripped event returns no message: its one trip notice already
+// covers the event. The breaker, not this seam, owns the counter and the
+// suppression, so both seams behave identically for the same (plugin, event).
+func (s *ContextSeam) degradeHook(p *Plugin, event string, err error) {
+	degradeHook(s.degrade, p, event, err)
 }

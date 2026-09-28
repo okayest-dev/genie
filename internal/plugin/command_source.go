@@ -86,6 +86,17 @@ func (mc *ManagerCommands) Help(plugin, command string) (string, error) {
 	return result.Text, nil
 }
 
+// TrippedHooks returns the hook events the plugin's circuit breaker is holding
+// it out of, or nil when none are tripped and the plugin is participating
+// everywhere it declared.
+func (mc *ManagerCommands) TrippedHooks(name string) []string {
+	p := mc.Manager.pluginByName(name)
+	if p == nil {
+		return nil
+	}
+	return p.TrippedHooks()
+}
+
 func (m *Manager) pluginByName(name string) *Plugin {
 	m.pluginsMu.RLock()
 	defer m.pluginsMu.RUnlock()
