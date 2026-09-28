@@ -975,7 +975,7 @@ done
 	if !ok {
 		t.Fatal("plugin should remain registered (inactive) after a commands/list RPC error")
 	}
-	if p.Active {
+	if p.isActive() {
 		t.Error("plugin should be inactive after a commands/list RPC error")
 	}
 	mgr.Shutdown()
@@ -1025,7 +1025,7 @@ done
 	if !ok {
 		t.Fatal("plugin should remain registered (inactive) after a malformed commands/list")
 	}
-	if p.Active {
+	if p.isActive() {
 		t.Error("plugin should be inactive after a malformed commands/list")
 	}
 	mgr.Shutdown()

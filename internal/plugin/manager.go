@@ -51,6 +51,10 @@ type Plugin struct {
 	Cancel       context.CancelFunc
 	Done         chan struct{}
 	wg           sync.WaitGroup
+	// hooks is the per-(plugin, event) circuit breaker guarding the hook
+	// seams. It carries its own mutex: mu is held for a whole RPC round-trip
+	// (up to the 5s request budget), so state work must not queue behind it.
+	hooks hookBreaker
 }
 
 type Manager struct {
@@ -64,10 +68,23 @@ type Manager struct {
 	wg          sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
+	hookPolicy  HookBreakerPolicy
+	hookNotify  func(string)
 }
 
 // Option configures a Manager.
 type Option func(*Manager)
+
+// WithHookBreaker installs the per-(plugin, event) hook circuit-breaker policy
+// and the sink its one-time notices go to. Both are Manager-wide because the
+// policy is a single [plugins] setting and a notice is a per-plugin transition
+// that must read as one line however many seams observe it.
+func WithHookBreaker(policy HookBreakerPolicy, notify func(string)) Option {
+	return func(m *Manager) {
+		m.hookPolicy = policy
+		m.hookNotify = notify
+	}
+}
 
 func NewManager(pluginDir string, enableList, disableList []string, toolReg *tools.Registry, opts ...Option) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -220,6 +237,7 @@ func (m *Manager) loadPlugin(path string) error {
 		Cancel:   cancel,
 		Done:     make(chan struct{}),
 	}
+	p.initHooks(m.hookPolicy, m.hookNotify)
 
 	m.pluginsMu.Lock()
 	m.plugins[name] = p
@@ -440,10 +458,20 @@ func (p *Plugin) monitor(ctx context.Context) {
 				return
 			}
 		case <-waitCh:
-			p.Active = false
+			p.setInactive()
 			return
 		}
 	}
+}
+
+// setInactive latches Active=false under the plugin mutex. Every mutation of
+// Active must go through here (or hold mu): the monitor's process-exit case
+// runs on its own goroutine while callContext holds mu for a whole RPC, and an
+// unlocked write races the locked reads in isActive and the other writers.
+func (p *Plugin) setInactive() {
+	p.mu.Lock()
+	p.Active = false
+	p.mu.Unlock()
 }
 
 func (p *Plugin) ping() bool {
@@ -660,12 +688,20 @@ func (p *Plugin) CallCommand(name, args string) (*CommandsRunResult, error) {
 // callContext performs a single context-hook RPC round-trip with the plugin
 // and returns the raw result for the caller to decode. It holds the plugin's
 // mutex so a hook cannot interleave with a tool call.
+//
+// The three liveness failures — already inactive, RPC timeout, closed
+// connection — all latch Active=false and all wrap ErrPluginInactive, so a
+// caller can tell "the process is gone" from "the hook is broken" with
+// errors.Is rather than by matching message text. The breaker counts the second
+// kind of failure and deliberately not the first: a plugin that was killed
+// minutes ago is not a hook that suddenly went bad, and every rejection since
+// was a call that was never made.
 func (p *Plugin) callContext(method string, params any) (json.RawMessage, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if !p.Active {
-		return nil, fmt.Errorf("plugin %s is not active", p.Name)
+		return nil, fmt.Errorf("%w: plugin %s rejected %s", ErrPluginInactive, p.Name, method)
 	}
 
 	req := &Request{
@@ -690,11 +726,11 @@ func (p *Plugin) callContext(method string, params any) (json.RawMessage, error)
 	select {
 	case <-ctx.Done():
 		p.Active = false
-		return nil, fmt.Errorf("context hook %s timeout", method)
+		return nil, fmt.Errorf("%w: %s exceeded the %s RPC budget and plugin %s was marked inactive", ErrPluginInactive, method, RequestTimeout, p.Name)
 	case resp := <-respCh:
 		if resp == nil {
 			p.Active = false
-			return nil, fmt.Errorf("plugin closed connection")
+			return nil, fmt.Errorf("%w: plugin %s closed the connection during %s", ErrPluginInactive, p.Name, method)
 		}
 		if resp.Error != nil {
 			return nil, fmt.Errorf("context hook %s error: %s", method, resp.Error.Message)

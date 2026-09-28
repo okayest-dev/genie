@@ -32,6 +32,11 @@ type CommandSource interface {
 	// The plugin may not supply curated help; callers should fall back to
 	// ListCommands when Help returns an error.
 	Help(plugin, command string) (string, error)
+	// TrippedHooks returns the hook events the plugin's circuit breaker is
+	// currently holding it out of, or nil when none. A tripped plugin is still
+	// Active and still returns commands, so this is the only place the user can
+	// go looking to find out a session is running degraded.
+	TrippedHooks(plugin string) []string
 }
 
 var (

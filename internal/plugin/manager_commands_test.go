@@ -361,3 +361,41 @@ func TestScriptHasHelp(t *testing.T) {
 		t.Error("help script should handle commands/help")
 	}
 }
+
+// TestManagerCommandsTrippedHooks checks the /help label is backed by real
+// breaker state: nil while healthy, the tripped events after a trip, and gone
+// again once the plugin recovers. A tripped plugin stays in Plugins() because it
+// is still Active — that is exactly why the label has to exist.
+func TestManagerCommandsTrippedHooks(t *testing.T) {
+	p := mkPlugin("a", Capabilities{Commands: true})
+	p.Active = true
+	p.initHooks(HookBreakerPolicy{Threshold: 1, Recovery: time.Minute}, nil)
+	mgr := &Manager{plugins: map[string]*Plugin{"a": p}, pluginOrder: []string{"a"}}
+	mc := &ManagerCommands{Manager: mgr}
+
+	if got := mc.TrippedHooks("a"); got != nil {
+		t.Errorf("TrippedHooks on a healthy plugin = %v, want nil", got)
+	}
+	if got := mc.Plugins(); len(got) != 1 {
+		t.Fatalf("Plugins = %v, want the plugin listed", got)
+	}
+
+	p.HookFailed(HookToolAfter, errors.New("boom"))
+	got := mc.TrippedHooks("a")
+	if len(got) != 1 || got[0] != HookToolAfter {
+		t.Errorf("TrippedHooks = %v, want [%s]", got, HookToolAfter)
+	}
+	// Still listed: a tripped plugin is still Active, so /help must be able to
+	// say which plugin it is and which hooks it is out of.
+	if names := mc.Plugins(); len(names) != 1 || names[0] != "a" {
+		t.Errorf("Plugins = %v, want a still listed after a trip", names)
+	}
+
+	p.HookSucceeded(HookToolAfter)
+	if got := mc.TrippedHooks("a"); got != nil {
+		t.Errorf("TrippedHooks after recovery = %v, want nil", got)
+	}
+	if got := mc.TrippedHooks("nope"); got != nil {
+		t.Errorf("TrippedHooks for an unknown plugin = %v, want nil", got)
+	}
+}

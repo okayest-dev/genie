@@ -17,8 +17,8 @@ We decided this because ADR-0002's rejection was conditional on genie having "no
 ## Consequences
 
 - Built-in slash names are reserved — `help`, `quit`, `exit`, `new`, `changes`, `model`, `agent` — and a plugin using one as its display name is rejected at startup with a warning.
-- `commands/run` shares `tools/call` failure semantics: the `RequestTimeout` (5s) budget applies, a timeout marks the plugin inactive, a JSON-RPC error prints its message and the plugin stays active, and failed plugins are never respawned (a command on one surfaces "plugin <name> is not active").
-- The np REPL gains a narrow `CommandSource` interface (list, run, optional help) wired from the plugin manager; `repl.Config` carries the interface, not the manager.
+- `commands/run` shares `tools/call` failure semantics: the `RequestTimeout` (5s) budget applies, a timeout marks the plugin inactive, a JSON-RPC error prints its message and the plugin stays active, and failed plugins are never respawned (a command on one surfaces "plugin <name> is not active"). The hook circuit breaker (ADR-0013) does not change this: it re-admits *hook participation* after a cooldown, never a *process*.
+- The np REPL gains a narrow `CommandSource` interface (list, run, optional help) wired from the plugin manager; `repl.Config` carries the interface, not the manager. (Amended by the hook circuit breaker: `CommandSource` also exposes `TrippedHooks`, so `/help` can label a plugin whose hooks are currently cut out — a tripped plugin is still Active, so without that method a session running degraded is indistinguishable from a healthy one.)
 - Three distinct miss messages: `/foo …` → "unknown command: /foo (try /help)"; `/copilot nope` → "copilot: no such command: nope"; inactive plugin → "plugin copilot is not active".
 - The copilot plugin is the first adopter: `auth` (login/refresh/status) as `/copilot auth …`.
 - ADR-0002's "native harness slash-command rejected for P2" stance is obsolete — this seam is the mechanism the map decided to build.

@@ -783,3 +783,86 @@ func TestNewSessionBadDir(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 }
+
+// TestHookBreakerConfigReachesTheManager is the wiring test for the
+// [plugins] breaker keys: config in, per-(plugin, event) state out. Without it
+// a typo in the key name, or a manager constructed without the option, still
+// looks like a working breaker in the plugin package's own tests.
+func TestHookBreakerConfigReachesTheManager(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq required for the JSON-RPC plugin harness")
+	}
+	pluginDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pluginDir, "bad_ctx.sh"), []byte(degradePluginScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testCfg(t.TempDir())
+	cfg.PluginDir = pluginDir
+	cfg.Hooks.FailureThreshold = 2
+	cfg.Hooks.Recovery = time.Minute
+
+	var degrades []string
+	h := newTestHandle(t, Options{
+		Config:         cfg,
+		ProviderSource: twoProviderSource(), Provider: "alpha", Stderr: io.Discard,
+		OnUsageDegrade: func(msg string) { degrades = append(degrades, msg) },
+	})
+
+	// Two failing before_request calls: the first degrades, the second trips.
+	for i := 1; i <= 2; i++ {
+		var out bytes.Buffer
+		if err := h.Turn(context.Background(), "hi", &out, io.Discard); err != nil {
+			t.Fatalf("Turn %d: %v", i, err)
+		}
+	}
+
+	var trip string
+	for _, d := range degrades {
+		if strings.HasPrefix(d, "plugin hooks degraded:") {
+			trip = d
+		}
+	}
+	if trip == "" {
+		t.Fatalf("threshold 2 should have tripped on the second failure; degrades = %v", degrades)
+	}
+	if !strings.Contains(trip, "before_request") || !strings.Contains(trip, "bad_ctx.sh") {
+		t.Errorf("trip notice = %q, want the plugin and the tripped event named", trip)
+	}
+	if !strings.Contains(trip, "hook_failure_threshold") {
+		t.Errorf("trip notice = %q, want the config key that governs it", trip)
+	}
+}
+
+// TestHookBreakerDefaultThresholdHoldsOffOnTheFirstFailure checks the other
+// half: with no config the breaker must not fire early and replace the
+// per-occurrence degrade line with a trip notice.
+func TestHookBreakerDefaultThresholdHoldsOffOnTheFirstFailure(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq required for the JSON-RPC plugin harness")
+	}
+	pluginDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(pluginDir, "bad_ctx.sh"), []byte(degradePluginScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testCfg(t.TempDir())
+	cfg.PluginDir = pluginDir
+
+	var degrades []string
+	h := newTestHandle(t, Options{
+		Config:         cfg,
+		ProviderSource: twoProviderSource(), Provider: "alpha", Stderr: io.Discard,
+		OnUsageDegrade: func(msg string) { degrades = append(degrades, msg) },
+	})
+	var out bytes.Buffer
+	if err := h.Turn(context.Background(), "hi", &out, io.Discard); err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if len(degrades) == 0 {
+		t.Fatal("the failing hook should still degrade")
+	}
+	for _, d := range degrades {
+		if strings.HasPrefix(d, "plugin hooks degraded:") {
+			t.Errorf("the default threshold should not trip on the first failure; got %q", d)
+		}
+	}
+}

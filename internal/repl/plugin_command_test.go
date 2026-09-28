@@ -18,6 +18,7 @@ type fakeCommandSource struct {
 	runs     []struct{ plugin, command, args string }
 	runErr   func(plugin, command, args string) error
 	inactive map[string]bool
+	tripped  map[string][]string
 }
 
 func (f *fakeCommandSource) Plugins() []string {
@@ -60,6 +61,10 @@ func (f *fakeCommandSource) RunCommand(pluginName, command, args string) (*plugi
 		}
 	}
 	return nil, plugin.ErrUnknownCommand
+}
+
+func (f *fakeCommandSource) TrippedHooks(pluginName string) []string {
+	return f.tripped[pluginName]
 }
 
 func (f *fakeCommandSource) Help(pluginName, command string) (string, error) {
@@ -130,6 +135,7 @@ func (d *dataSource) RunCommand(pluginName, command, args string) (*plugin.Comma
 	return &plugin.CommandResult{Data: map[string]any{"ok": true}}, nil
 }
 func (d *dataSource) Help(pluginName, command string) (string, error) { return "", nil }
+func (d *dataSource) TrippedHooks(string) []string                    { return nil }
 
 func TestSlashPluginUnknownPlugin(t *testing.T) {
 	src := &fakeCommandSource{plugins: map[string][]plugin.CommandInfo{}}
@@ -238,5 +244,52 @@ func TestSlashHelpIncludesPluginSection(t *testing.T) {
 	}
 	if !strings.Contains(out, "/copilot greet  say hi") {
 		t.Errorf("stdout = %q, want enumerated plugin command with description", out)
+	}
+}
+
+func TestSlashHelpLabelsTrippedHooks(t *testing.T) {
+	src := &fakeCommandSource{
+		plugins: map[string][]plugin.CommandInfo{
+			"copilot": {{Name: "greet", Description: "say hi"}},
+			"quiet":   {{Name: "peek", Description: "look"}},
+		},
+		order:   []string{"copilot", "quiet"},
+		tripped: map[string][]string{"copilot": {"response_ready", "tool_after"}},
+	}
+	var stdout bytes.Buffer
+	printPluginCommandsHelp(src, &stdout)
+	out := stdout.String()
+
+	// A tripped plugin is still Active, so it is still listed — unlabelled it
+	// would be silently degraded with nowhere for the user to go looking.
+	if !strings.Contains(out, "/copilot greet  say hi") {
+		t.Errorf("stdout = %q, want a tripped plugin still listed", out)
+	}
+	if !strings.Contains(out, "response_ready") || !strings.Contains(out, "tool_after") {
+		t.Errorf("stdout = %q, want the tripped events named", out)
+	}
+	if strings.Contains(out, "peek  look  ") && strings.Contains(strings.Split(out, "quiet")[1], "response_ready") {
+		t.Errorf("stdout = %q, want no label on a healthy plugin", out)
+	}
+}
+
+func TestSlashHelpDropsTrippedLabelAfterRecovery(t *testing.T) {
+	src := &fakeCommandSource{
+		plugins: map[string][]plugin.CommandInfo{"copilot": {{Name: "greet", Description: "say hi"}}},
+		tripped: map[string][]string{"copilot": {"response_ready"}},
+	}
+	var tripped bytes.Buffer
+	printPluginCommandsHelp(src, &tripped)
+
+	// The breaker's recovery notice is emitted on the transition; the label
+	// follows breaker state, so it goes with it.
+	src.tripped = map[string][]string{}
+	var healed bytes.Buffer
+	printPluginCommandsHelp(src, &healed)
+	if strings.Contains(healed.String(), "response_ready") {
+		t.Errorf("stdout = %q, want the label gone after recovery", healed.String())
+	}
+	if !strings.Contains(tripped.String(), "response_ready") {
+		t.Errorf("stdout = %q, want the label present while tripped", tripped.String())
 	}
 }
