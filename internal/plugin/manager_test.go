@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
@@ -1029,4 +1031,185 @@ done
 		t.Error("plugin should be inactive after a malformed commands/list")
 	}
 	mgr.Shutdown()
+}
+
+// hookPluginScript is a plugin that answers the context hooks, exposes one
+// tool, and honours a trigger file: the moment the file appears, the hook
+// named by $GENIE_TRIGGER_HOOK sleeps for $GENIE_HANG_SECS and then exits
+// without replying. A hook call made after the trigger is in flight across the
+// process death, which is the interleaving the monitor's Active write must
+// survive.
+func hookPluginScript() string {
+	return `#!/bin/bash
+while IFS= read -r line; do
+    method=$(echo "$line" | jq -r .method)
+    id=$(echo "$line" | jq -r .id)
+    case "$method" in
+        "capabilities/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            ;;
+        "tools/list")
+            echo '{"jsonrpc":"2.0","result":{"tools":[]},"id":'"$id"'}'
+            ;;
+        "commands/list")
+            echo '{"jsonrpc":"2.0","result":{"commands":[]},"id":'"$id"'}'
+            ;;
+        "context/before_request"|"lifecycle/response_ready")
+            if [ -n "$GENIE_TRIGGER" ] && [ -f "$GENIE_TRIGGER" ] && [ "$method" = "$GENIE_TRIGGER_HOOK" ]; then
+                sleep "${GENIE_HANG_SECS:-2}"
+                exit 1
+            fi
+            echo '{"jsonrpc":"2.0","result":{"request":{}},"id":'"$id"'}'
+            ;;
+        "ping")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            ;;
+        "shutdown")
+            echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'
+            exit 0
+            ;;
+        *)
+            echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
+            ;;
+    esac
+done
+`
+}
+
+// loadHookPlugin writes hookPluginScript as a plugin and loads it, returning the
+// manager and the loaded plugin. No manifest is written: the flat layout probes
+// capabilities, so the script is self-describing and a manifest would be dead
+// setup (the directory layout is not what a flat script is parsed for).
+func loadHookPlugin(t *testing.T, env ...string) (*Manager, *Plugin) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "hook-plugin")
+	if err := os.WriteFile(pluginPath, []byte(hookPluginScript()), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(tmpDir, nil, nil, tools.NewRegistry())
+	if len(env) > 0 {
+		for _, kv := range env {
+			k, v, _ := strings.Cut(kv, "=")
+			t.Setenv(k, v)
+		}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- mgr.LoadPlugins() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("LoadPlugins failed: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("LoadPlugins timed out")
+	}
+
+	p, ok := mgr.GetPlugins()["hook-plugin"]
+	if !ok {
+		t.Fatal("hook-plugin not found")
+	}
+	return mgr, p
+}
+
+// waitInactive polls the plugin until it reports inactive or the budget runs
+// out. The monitor latches Active on its own goroutine after the process exits,
+// and p.Done closes before that happens, so the only sound way to wait for the
+// latch is to poll the same accessor the race is about.
+func waitInactive(t *testing.T, p *Plugin, budget time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for time.Now().Before(deadline) {
+		if !p.isActive() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("plugin still active after the exit-detection budget")
+}
+
+// TestMonitorLatchesInactiveOnProcessExitDuringHookCall is the regression test
+// for the monitor's process-exit case writing Active without the plugin mutex.
+// A hook call is parked inside the plugin's read loop when the process dies, so
+// the monitor's write lands concurrently with the call's own read of Active.
+// Run under -race; the assertion alone cannot distinguish the locked and
+// unlocked write, only the detector can.
+func TestMonitorLatchesInactiveOnProcessExitDuringHookCall(t *testing.T) {
+	dir := t.TempDir()
+	trigger := filepath.Join(dir, "trigger")
+	mgr, p := loadHookPlugin(t, "GENIE_TRIGGER="+trigger, "GENIE_TRIGGER_HOOK=context/before_request", "GENIE_HANG_SECS=2")
+	defer mgr.Shutdown()
+
+	hookErr := make(chan error, 1)
+	go func() {
+		_, err := p.CallContextBefore(t.Context(), llm.Request{})
+		hookErr <- err
+	}()
+
+	// Let the hook request reach the plugin's read loop, then kill the process
+	// underneath it so the call is in flight across the exit.
+	if err := os.WriteFile(trigger, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-hookErr:
+		if !errors.Is(err, ErrPluginInactive) {
+			t.Errorf("expected an inactive-plugin error from the in-flight hook, got %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the in-flight hook call never returned")
+	}
+
+	waitInactive(t, p, 5*time.Second)
+}
+
+// TestMonitorLatchesInactiveWhenPluginExitsOnItsOwn covers the same write from
+// the other side: the plugin exits by itself, unannounced, while another
+// goroutine polls isActive. Nothing kills the process here, so the latch can
+// only come from the monitor noticing the exit. Run under -race.
+func TestMonitorLatchesInactiveWhenPluginExitsOnItsOwn(t *testing.T) {
+	dir := t.TempDir()
+	trigger := filepath.Join(dir, "trigger")
+	mgr, p := loadHookPlugin(t, "GENIE_TRIGGER="+trigger, "GENIE_TRIGGER_HOOK=context/before_request", "GENIE_HANG_SECS=0")
+	defer mgr.Shutdown()
+
+	// Drive the plugin into exiting on its own: it reads the trigger, skips the
+	// sleep, and exits mid-hook.
+	hookErr := make(chan error, 1)
+	go func() {
+		_, err := p.CallContextBefore(t.Context(), llm.Request{})
+		hookErr <- err
+	}()
+	if err := os.WriteFile(trigger, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-hookErr:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the hook call never returned")
+	}
+
+	// Concurrently poll the accessor the monitor races against until the latch
+	// lands, so the detector sees a read overlapping the write.
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = p.isActive()
+			}
+		}
+	}()
+
+	waitInactive(t, p, 5*time.Second)
+	close(stop)
+	wg.Wait()
 }
