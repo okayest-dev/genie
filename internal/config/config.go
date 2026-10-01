@@ -95,10 +95,12 @@ var defaultProviders = map[string]Provider{
 // Tools holds the four per-tool toggles. All default to enabled; a disabled
 // tool is omitted from the tools array sent to the provider.
 type Tools struct {
-	Read  bool
-	Write bool
-	Edit  bool
-	Bash  bool
+	Read      bool
+	Write     bool
+	Edit      bool
+	Bash      bool
+	Code      bool
+	CodeTimeout time.Duration
 }
 
 // Context holds the harness-level context-management knobs. These control how
@@ -277,10 +279,12 @@ type providerFile struct {
 }
 
 type toolsFile struct {
-	Read  *bool `toml:"read"`
-	Write *bool `toml:"write"`
-	Edit  *bool `toml:"edit"`
-	Bash  *bool `toml:"bash"`
+	Read        *bool `toml:"read"`
+	Write       *bool `toml:"write"`
+	Edit        *bool `toml:"edit"`
+	Bash        *bool `toml:"bash"`
+	Code        *bool `toml:"code"`
+	CodeTimeout *int  `toml:"code_timeout"` // seconds
 }
 
 // permissionsFile is the TOML schema for [permissions]: per-axis base scopes
@@ -379,6 +383,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 			cfg.BashTimeout = time.Duration(*fc.BashTimeout) * time.Second
 		}
 		applyTools(&cfg.Tools, fc.Tools)
+		if fc.Tools.CodeTimeout != nil {
+			if *fc.Tools.CodeTimeout <= 0 {
+				return nil, fmt.Errorf("config: tools.code_timeout must be a positive number of seconds, got %d", *fc.Tools.CodeTimeout)
+			}
+			cfg.Tools.CodeTimeout = time.Duration(*fc.Tools.CodeTimeout) * time.Second
+		}
 		applyPluginsErr := applyPlugins(&cfg, fc.Plugins, userConfigDir)
 		if applyPluginsErr != nil {
 			return nil, applyPluginsErr
@@ -463,10 +473,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		"instruction_file", cfg.InstructionFile,
 		"session_dir", cfg.SessionDir,
 		"bash_timeout_s", int(cfg.BashTimeout.Seconds()),
+		"code_timeout_s", int(cfg.Tools.CodeTimeout.Seconds()),
 		"tools_read", cfg.Tools.Read,
 		"tools_write", cfg.Tools.Write,
 		"tools_edit", cfg.Tools.Edit,
 		"tools_bash", cfg.Tools.Bash,
+		"tools_code", cfg.Tools.Code,
 	)
 	if len(applied) > 0 {
 		slog.Info("env overrides applied", "vars", strings.Join(applied, ","))
@@ -508,7 +520,7 @@ func defaults(userConfigDir string) Config {
 		Providers:   cloneProviders(defaultProviders),
 		SessionDir:  filepath.Join(userConfigDir, "genie", "sessions"),
 		BashTimeout: defaultBashTimeout,
-		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true},
+		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true, Code: true, CodeTimeout: 30 * time.Second},
 		PluginDir:   filepath.Join(userConfigDir, "genie", "plugins"),
 		Skills:      Skills{Dirs: defaultSkillDirs(userConfigDir)},
 		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
@@ -576,6 +588,15 @@ func applyTools(dst *Tools, src toolsFile) {
 	}
 	if src.Bash != nil {
 		dst.Bash = *src.Bash
+	}
+	if src.Code != nil {
+		dst.Code = *src.Code
+	}
+	if src.CodeTimeout != nil {
+		if *src.CodeTimeout <= 0 {
+			return // validation happens in Parse
+		}
+		dst.CodeTimeout = time.Duration(*src.CodeTimeout) * time.Second
 	}
 }
 
@@ -690,6 +711,17 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 		}
 		cfg.BashTimeout = time.Duration(secs) * time.Second
 		applied = append(applied, "GENIE_BASH_TIMEOUT")
+	}
+	if v := env["GENIE_CODE_TIMEOUT"]; v != "" {
+		secs, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: GENIE_CODE_TIMEOUT: %q is not a number of seconds", v)
+		}
+		if secs <= 0 {
+			return nil, fmt.Errorf("config: GENIE_CODE_TIMEOUT must be a positive number of seconds, got %d", secs)
+		}
+		cfg.Tools.CodeTimeout = time.Duration(secs) * time.Second
+		applied = append(applied, "GENIE_CODE_TIMEOUT")
 	}
 	if v := env["GENIE_PLUGIN_DIR"]; v != "" {
 		cfg.PluginDir = v

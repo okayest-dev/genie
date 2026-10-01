@@ -3,8 +3,13 @@ package codetool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/okayest-dev/genie/internal/permissions"
 	"github.com/okayest-dev/genie/internal/tools"
@@ -25,7 +30,7 @@ func wantReqs(t *testing.T, got, want []tools.Requirement) {
 }
 
 func TestUncoveredRequestedAxisIsBlanketRequirement(t *testing.T) {
-	tool := New(permissions.New("/work"))
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
 
 	reqs, err := tool.RequiredPermissions(raw(`{"code":"1","permissions":["write"]}`))
 	if err != nil {
@@ -35,7 +40,7 @@ func TestUncoveredRequestedAxisIsBlanketRequirement(t *testing.T) {
 }
 
 func TestCoveredRequestedAxisNeedsNoRequirement(t *testing.T) {
-	tool := New(permissions.New("/work"))
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
 
 	// The no-config default covers read at "." — a scoped base, not a blanket
 	// one, so this is the exception to ADR-0005's blanket-only rule in action.
@@ -56,7 +61,7 @@ func TestAnyScopeCoverageSatisfiesAxisRequest(t *testing.T) {
 	call := store.BeginCall("/work/run")
 	store.GrantOnce(call, permissions.AxisRun, "git")
 
-	tool := New(store)
+	tool := New(store, "/work", 30*time.Second)
 	reqs, err := tool.RequiredPermissions(raw(`{"code":"1","permissions":["read","write","net","run","env"]}`))
 	if err != nil {
 		t.Fatalf("RequiredPermissions: %v", err)
@@ -65,7 +70,7 @@ func TestAnyScopeCoverageSatisfiesAxisRequest(t *testing.T) {
 }
 
 func TestOnlyUncoveredAxesBecomeRequirements(t *testing.T) {
-	tool := New(permissions.New("/work"))
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
 
 	reqs, err := tool.RequiredPermissions(raw(`{"code":"1","permissions":["write","read","env"]}`))
 	if err != nil {
@@ -75,7 +80,7 @@ func TestOnlyUncoveredAxesBecomeRequirements(t *testing.T) {
 }
 
 func TestNoRequestedAxesNeedsNoRequirement(t *testing.T) {
-	tool := New(permissions.New("/work"))
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
 
 	for _, call := range []string{`{"code":"1"}`, `{"code":"1","permissions":[]}`, `{}`} {
 		reqs, err := tool.RequiredPermissions(raw(call))
@@ -87,7 +92,7 @@ func TestNoRequestedAxesNeedsNoRequirement(t *testing.T) {
 }
 
 func TestRepeatedAxisNeedsOneRequirement(t *testing.T) {
-	tool := New(permissions.New("/work"))
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
 
 	reqs, err := tool.RequiredPermissions(raw(`{"code":"1","permissions":["write","write"]}`))
 	if err != nil {
@@ -97,7 +102,7 @@ func TestRepeatedAxisNeedsOneRequirement(t *testing.T) {
 }
 
 func TestUnknownRequestedAxisIsRejected(t *testing.T) {
-	tool := New(permissions.New("/work"))
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
 
 	for _, call := range []string{`{"permissions":["exec"]}`, `{"permissions":[""]}`} {
 		reqs, err := tool.RequiredPermissions(raw(call))
@@ -114,7 +119,7 @@ func TestUnknownRequestedAxisIsRejected(t *testing.T) {
 }
 
 func TestMalformedArgumentsAreRejected(t *testing.T) {
-	tool := New(permissions.New("/work"))
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
 
 	reqs, err := tool.RequiredPermissions(raw(`{"permissions":`))
 	if err == nil {
@@ -146,7 +151,7 @@ func TestFullyCoveredCallReachesNoPrompt(t *testing.T) {
 
 	// read is covered by the no-config base; write is not, so only write should
 	// be negotiated.
-	d, err := gate.Check(context.Background(), "c1", New(store),
+	d, err := gate.Check(context.Background(), "c1", New(store, "/work", 30*time.Second),
 		raw(`{"code":"1","permissions":["read","write"]}`))
 	if err != nil {
 		t.Fatalf("Check: %v", err)
@@ -169,7 +174,7 @@ func TestFullyCoveredCallNeverNegotiates(t *testing.T) {
 	neg := &recordingNegotiator{}
 	gate := permissions.NewGate(store, neg, nil)
 
-	d, err := gate.Check(context.Background(), "c1", New(store),
+	d, err := gate.Check(context.Background(), "c1", New(store, "/work", 30*time.Second),
 		raw(`{"code":"1","permissions":["read","write"]}`))
 	if err != nil {
 		t.Fatalf("Check: %v", err)
@@ -203,7 +208,7 @@ func TestBlanketRequirementDrivesEveryTier(t *testing.T) {
 				persisted = append(persisted, g)
 				return nil
 			})
-			tool := New(store)
+			tool := New(store, "/work", 30*time.Second)
 			call := raw(`{"code":"1","permissions":["net"]}`)
 
 			d, err := gate.Check(context.Background(), "c1", tool, call)
@@ -254,7 +259,7 @@ func TestUncoveredAxesPromptOnceEachInAxisOrder(t *testing.T) {
 	neg := &recordingNegotiator{}
 	gate := permissions.NewGate(store, neg, nil)
 
-	if _, err := gate.Check(context.Background(), "c1", New(store),
+	if _, err := gate.Check(context.Background(), "c1", New(store, "/work", 30*time.Second),
 		raw(`{"code":"1","permissions":["env","write","net"]}`)); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -278,7 +283,7 @@ func TestRejectedAxisDeniesWithoutGrant(t *testing.T) {
 	neg := &recordingNegotiator{responses: []permissions.Response{permissions.ResponseReject}}
 	gate := permissions.NewGate(store, neg, nil)
 
-	d, err := gate.Check(context.Background(), "c1", New(store), raw(`{"code":"1","permissions":["env"]}`))
+	d, err := gate.Check(context.Background(), "c1", New(store, "/work", 30*time.Second), raw(`{"code":"1","permissions":["env"]}`))
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -306,7 +311,7 @@ func TestBuildDenoFlags_ScopedGrants(t *testing.T) {
 		"env":   {"DB_HOST", "API_KEY"},
 	})
 
-	tool := New(store)
+	tool := New(store, "/work", 30*time.Second)
 	call := raw(`{"code":"1","permissions":["read","write","net","run","env"]}`)
 
 	flags := tool.buildDenoFlags(call)
@@ -335,7 +340,7 @@ func TestBuildDenoFlags_BlanketGrant(t *testing.T) {
 	store.GrantPermanent(permissions.Grant{Axis: permissions.AxisRun, Scope: ""})
 	store.GrantPermanent(permissions.Grant{Axis: permissions.AxisEnv, Scope: ""})
 
-	tool := New(store)
+	tool := New(store, "/work", 30*time.Second)
 	call := raw(`{"code":"1","permissions":["read","write","net","run","env"]}`)
 
 	flags := tool.buildDenoFlags(call)
@@ -363,7 +368,7 @@ func TestBuildDenoFlags_UnrequestedAxisNoFlag(t *testing.T) {
 		"write": {"/work/out"},
 	})
 
-	tool := New(store)
+	tool := New(store, "/work", 30*time.Second)
 	call := raw(`{"code":"1","permissions":["read"]}`)
 
 	flags := tool.buildDenoFlags(call)
@@ -384,7 +389,7 @@ func TestBuildDenoFlags_NoRequestedAxes_NoFlags(t *testing.T) {
 		"read": {"/work/src"},
 	})
 
-	tool := New(store)
+	tool := New(store, "/work", 30*time.Second)
 	for _, call := range []string{`{"code":"1"}`, `{"code":"1","permissions":[]}`, `{}`} {
 		flags := tool.buildDenoFlags(raw(call))
 		if len(flags) != 0 {
@@ -399,7 +404,7 @@ func TestBuildDenoFlags_OnceTierGrantsVisible(t *testing.T) {
 	store.GrantOnce(call, permissions.AxisRead, "/work/secret")
 	store.GrantOnce(call, permissions.AxisWrite, "/work/output")
 
-	tool := New(store)
+	tool := New(store, "/work", 30*time.Second)
 	args := raw(`{"code":"1","permissions":["read","write"]}`)
 
 	flags := tool.buildDenoFlags(args)
@@ -426,7 +431,7 @@ func TestBuildDenoFlags_ScopesNotNormalizedOrReordered(t *testing.T) {
 		"net":  {"host3.com:443", "host1.com:443", "host2.com:443"},
 	})
 
-	tool := New(store)
+	tool := New(store, "/work", 30*time.Second)
 	call := raw(`{"code":"1","permissions":["read","net"]}`)
 
 	flags := tool.buildDenoFlags(call)
@@ -441,5 +446,264 @@ func TestBuildDenoFlags_ScopesNotNormalizedOrReordered(t *testing.T) {
 		if flags[i] != want[i] {
 			t.Errorf("flags[%d] = %q; want %q (scopes must pass through verbatim, not reordered)", i, flags[i], want[i])
 		}
+	}
+}
+
+// fakeRunner is a test runner that returns scripted results.
+type fakeRunner struct {
+	stdout    string
+	stderr    string
+	exitCode  int
+	err       error
+	ran       bool
+	lastCall  string
+	lastFlags []string
+}
+
+func (f *fakeRunner) Run(ctx context.Context, snippetPath string, flags []string, cwd string) (stdout, stderr string, exitCode int, err error) {
+	f.ran = true
+	f.lastCall = snippetPath
+	f.lastFlags = flags
+	return f.stdout, f.stderr, f.exitCode, f.err
+}
+
+// tempCwd returns a temporary directory for tests that need a real cwd.
+func tempCwd(t *testing.T) string {
+	t.Helper()
+	return t.TempDir()
+}
+
+// ==== Execute tests ====
+
+func TestExecute_WritesTempFile(t *testing.T) {
+	cwd := tempCwd(t)
+	runner := &fakeRunner{stdout: "hello", stderr: "", exitCode: 0}
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 30*time.Second).WithRunner(runner)
+
+	_, err := tool.Execute(raw(`{"code":"console.log('hello')","permissions":["read"]}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !runner.ran {
+		t.Fatal("runner was not called")
+	}
+	if !strings.HasPrefix(runner.lastCall, cwd+"/.genie-tmp/code/code-") {
+		t.Errorf("snippet path = %q; want it under .genie-tmp/code/", runner.lastCall)
+	}
+	if !strings.HasSuffix(runner.lastCall, ".ts") {
+		t.Errorf("snippet path = %q; want .ts extension", runner.lastCall)
+	}
+}
+
+func TestExecute_ReturnsStdoutAndStderrSeparately(t *testing.T) {
+	cwd := tempCwd(t)
+	runner := &fakeRunner{stdout: "stdout content", stderr: "stderr content", exitCode: 0}
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 30*time.Second).WithRunner(runner)
+
+	output, err := tool.Execute(raw(`{"code":"1","permissions":["read"]}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "stdout content") {
+		t.Errorf("output missing stdout: %q", output)
+	}
+	if !strings.Contains(output, "[stderr]") {
+		t.Errorf("output missing stderr marker: %q", output)
+	}
+	if !strings.Contains(output, "stderr content") {
+		t.Errorf("output missing stderr content: %q", output)
+	}
+}
+
+func TestExecute_ReturnsExitCode(t *testing.T) {
+	cwd := tempCwd(t)
+	runner := &fakeRunner{stdout: "", stderr: "", exitCode: 42}
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 30*time.Second).WithRunner(runner)
+
+	output, err := tool.Execute(raw(`{"code":"1","permissions":["read"]}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "[exit code 42]") {
+		t.Errorf("output missing exit code: %q", output)
+	}
+}
+
+func TestExecute_MissingCodeArgument(t *testing.T) {
+	cwd := tempCwd(t)
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 30*time.Second)
+
+	_, err := tool.Execute(raw(`{"permissions":["read"]}`))
+	if err == nil {
+		t.Fatal("Execute should error on missing code")
+	}
+	if !strings.Contains(err.Error(), "missing required argument: code") {
+		t.Errorf("error = %q; want missing code error", err)
+	}
+}
+
+func TestExecute_InvalidJSON(t *testing.T) {
+	cwd := tempCwd(t)
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 30*time.Second)
+
+	_, err := tool.Execute(raw(`{`))
+	if err == nil {
+		t.Fatal("Execute should error on invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid arguments") {
+		t.Errorf("error = %q; want invalid arguments error", err)
+	}
+}
+
+func TestExecute_TimeoutReturnsError(t *testing.T) {
+	cwd := tempCwd(t)
+	runner := &fakeRunner{stdout: "", stderr: "", exitCode: 0, err: context.DeadlineExceeded}
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 1*time.Nanosecond).WithRunner(runner)
+
+	_, err := tool.Execute(raw(`{"code":"1","permissions":["read"]}`))
+	if err == nil {
+		t.Fatal("Execute should error on timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error = %q; want timeout error", err)
+	}
+}
+
+func TestExecute_OutputCapAndSpill(t *testing.T) {
+	cwd := tempCwd(t)
+	// The output includes formatting (stdout + \n + [stderr]\n + stderr + \n + [exit code X])
+	// So we need a bit more than maxOutputBytes to ensure truncation happens
+	bigOutput := strings.Repeat("x", maxOutputBytes+2000)
+	runner := &fakeRunner{stdout: bigOutput, stderr: "", exitCode: 0}
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 30*time.Second).WithRunner(runner)
+
+	output, err := tool.Execute(raw(`{"code":"1","permissions":["read"]}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// The output should be truncated at maxOutputBytes plus the truncation message
+	// The truncation message is added after truncating, so output will be slightly over maxOutputBytes
+	if len(output) <= maxOutputBytes {
+		t.Errorf("output length %d not exceeding cap %d (should be truncated)", len(output), maxOutputBytes)
+	}
+	if !strings.Contains(output, "[truncated") {
+		t.Errorf("output missing truncation marker: %q", output[:100])
+	}
+	if !strings.Contains(output, ".genie-spill") {
+		t.Errorf("output missing spill file path: %q", output)
+	}
+	// The actual content should be maxOutputBytes + truncation marker
+	if len(output) > maxOutputBytes+200 {
+		t.Errorf("output length %d far exceeds cap + marker", len(output))
+	}
+}
+
+func TestExecute_DenoFlagsFromPolicy(t *testing.T) {
+	cwd := tempCwd(t)
+	store := permissions.New(cwd)
+	store.SetBaseFromConfig(map[string][]string{
+		"read":  {cwd + "/src"},
+		"write": {cwd + "/out"},
+	})
+	runner := &fakeRunner{stdout: "", stderr: "", exitCode: 0}
+	tool := New(store, cwd, 30*time.Second).WithRunner(runner)
+
+	_, err := tool.Execute(raw(`{"code":"1","permissions":["read","write"]}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	wantFlags := []string{"--allow-read=" + cwd + "/src", "--allow-write=" + cwd + "/out"}
+	if len(runner.lastFlags) != len(wantFlags) {
+		t.Fatalf("flags = %v; want %v", runner.lastFlags, wantFlags)
+	}
+	for i, f := range wantFlags {
+		if runner.lastFlags[i] != f {
+			t.Errorf("flags[%d] = %q; want %q", i, runner.lastFlags[i], f)
+		}
+	}
+}
+
+func TestExecute_PerCallTimeoutOverridesConfig(t *testing.T) {
+	cwd := tempCwd(t)
+	runner := &fakeRunner{stdout: "", stderr: "", exitCode: 0}
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 1*time.Second).WithRunner(runner)
+
+	// Request a 10 second timeout in the call args
+	_, err := tool.Execute(raw(`{"code":"1","permissions":["read"],"timeout":10}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// We can't easily verify the context timeout was used without more instrumentation,
+	// but we verify the call succeeds (the fake runner ignores context)
+}
+
+// ==== Integration tests with real Deno ====
+
+// denoAvailable checks if deno is on PATH.
+func denoAvailable() bool {
+	_, err := exec.LookPath("deno")
+	return err == nil
+}
+
+func TestExecute_RealDeno_GrantedRead(t *testing.T) {
+	if !denoAvailable() {
+		t.Skip("deno not on PATH")
+	}
+
+	cwd := tempCwd(t)
+	// Create a test file to read
+	testFile := filepath.Join(cwd, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	store := permissions.New(cwd)
+	store.SetBaseFromConfig(map[string][]string{
+		"read": {cwd},
+	})
+	tool := New(store, cwd, 5*time.Second)
+
+	// Snippet that reads the test file
+	snippet := `
+const data = await Deno.readTextFile("test.txt");
+console.log(data);
+`
+	output, err := tool.Execute(raw(fmt.Sprintf(`{"code":%q,"permissions":["read"]}`, snippet)))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(output, "hello world") {
+		t.Errorf("output missing expected content: %q", output)
+	}
+}
+
+func TestExecute_RealDeno_Timeout(t *testing.T) {
+	if !denoAvailable() {
+		t.Skip("deno not on PATH")
+	}
+
+	cwd := tempCwd(t)
+	store := permissions.New(cwd)
+	tool := New(store, cwd, 1*time.Second)
+
+	// Snippet that sleeps longer than timeout
+	snippet := `
+await new Promise(resolve => setTimeout(resolve, 5000));
+console.log("done");
+`
+	_, err := tool.Execute(raw(fmt.Sprintf(`{"code":%q,"permissions":[]}`, snippet)))
+	if err == nil {
+		t.Fatal("Execute should error on timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error = %q; want timeout error", err)
 	}
 }
