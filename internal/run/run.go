@@ -26,6 +26,7 @@ import (
 	"github.com/okayest-dev/genie/internal/tools/edittool"
 	"github.com/okayest-dev/genie/internal/tools/readtool"
 	"github.com/okayest-dev/genie/internal/tools/requesttool"
+	"github.com/okayest-dev/genie/internal/tools/skilltool"
 	"github.com/okayest-dev/genie/internal/tools/writetool"
 )
 
@@ -110,6 +111,10 @@ type Handle struct {
 	reqT       *requesttool.Tool
 	skillNames []string
 
+	// bound is the agent's bound pool as of the last resolveInstruction — the
+	// pool the skill tool resolves names against. Guarded by mu.
+	bound []skill.ParsedSkill
+
 	plug         *plugin.Manager
 	ctxSeam      *plugin.ContextSeam
 	life         *plugin.LifecycleSeam
@@ -169,6 +174,7 @@ func New(opts Options) (*Handle, error) {
 	reqT := requesttool.New(store, h.sink)
 	reqT.SetNegotiator(opts.Negotiator)
 	full.Register(reqT)
+	full.Register(skilltool.New(h))
 	if !opts.Config.Tools.Read {
 		full.Disable("read")
 	}
@@ -326,6 +332,16 @@ func (h *Handle) wrap(base llm.Client, sess *session.Session) llm.Client {
 	return contextmgr.New(base, sess, h.buildCtxOpts(base)...)
 }
 
+// Bound implements skilltool.Pool over the agent's bound skill set. It is
+// registered on the handle so the skill tool can validate a name without
+// re-running discovery, and so a skill the agent did not bind is unreachable
+// even if it is enabled in config.
+func (h *Handle) Bound() []skill.ParsedSkill {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.bound
+}
+
 // resolveInstruction assembles the instruction for the given agent,
 // re-running the skill pipeline (discover → filter → bind → build) on every
 // read so SKILL.md edits are picked up without a config reload, and appending
@@ -337,13 +353,21 @@ func (h *Handle) resolveInstruction(agent *config.ResolvedAgent) (string, error)
 		agentSkills = agent.Skills
 		agentName = agent.Name
 	}
-	layer, warns, err := skill.Pipeline(
-		h.opts.Config.Skills.Dirs, h.opts.Config.Skills.Enable, h.opts.Config.Skills.Disable,
-		agentSkills, agentName,
-	)
+	filtered, warns, err := skill.FilteredPool(h.opts.Config.Skills.Dirs, h.opts.Config.Skills.Enable, h.opts.Config.Skills.Disable)
 	if err != nil {
-		slog.Error("skill pipeline failed", "error", err)
+		return "", err
 	}
+	bound, err := skill.BindToAgent(filtered, agentSkills, agentName)
+	if err != nil {
+		return "", err
+	}
+	// Publish the bound set so the skill tool resolves against what this agent
+	// actually has, and build the layer from the same slice — the index and the
+	// tool's pool then describe one set, never two that drifted.
+	h.mu.Lock()
+	h.bound = bound
+	h.mu.Unlock()
+	layer := skill.BuildSkillLayer(bound)
 	for _, w := range warns {
 		slog.Warn(w.Message)
 	}
@@ -597,6 +621,8 @@ func (h *Handle) SwitchAgent(name string) (*config.ResolvedAgent, error) {
 	if resolved.Tools != nil {
 		registry = h.full.Subset(resolved.Tools)
 	}
+	// The skill pool is derived from the resolved agent on the next turn, so
+	// nothing about the previous agent's bindings needs tearing down here.
 	h.mu.Lock()
 	h.cur.agent = resolved
 	h.cur.registry = registry
@@ -609,6 +635,7 @@ func (h *Handle) SwitchAgent(name string) (*config.ResolvedAgent, error) {
 // one-shot @name turn.
 func (h *Handle) ResetAgent() {
 	h.store.SetBaseFromConfig(h.globalBase)
+	// Same reasoning as SwitchAgent.
 	h.mu.Lock()
 	h.cur.agent = nil
 	h.cur.registry = h.full
