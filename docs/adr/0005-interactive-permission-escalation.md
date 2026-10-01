@@ -147,7 +147,7 @@ Winner of the og-73l.2 human-reaction prototype (framing A — terse aider-style
 
 ## Model-facing feedback
 
-One **composite result per escalated call**, riding the existing tool-result channel (`RoleTool` messages, as `agent.go` already appends them). No new wire/event messages — event-style `RoleTool` messages are silently dropped on the anthropic/bedrock/google/responses wires, which match tool results by `RoleUser` + `ToolCallID`.
+One **composite result per escalated call**, riding the existing tool-result channel (`RoleTool` messages, as `agent.go` already appends them). No new wire/event messages — all wires (`openai`, `copilot`, `anthropic`, `bedrock`, `google`, `responses`) map event-style `RoleTool` messages to their tool-result content blocks, matching tool results by `ToolCallID`.
 
 - **Call executed**: grant lines (newly-negotiated axes only, fixed axis order, normalized granted scope) followed by the tool output. No status line.
   ```
