@@ -216,6 +216,162 @@ func TestDenyPointEvaluationNeverCarriesOnce(t *testing.T) {
 	}
 }
 
+func TestCoveredScopesUnionsEveryTier(t *testing.T) {
+	s := New("/work")
+	s.SetBase(map[Axis][]string{AxisWrite: {"/work"}, AxisRead: {"."}})
+	if err := s.GrantPermanent(Grant{Axis: AxisWrite, Scope: "/home/export"}); err != nil {
+		t.Fatalf("GrantPermanent: %v", err)
+	}
+	s.GrantSession(AxisWrite, "/tmp/scratch")
+
+	got := s.CoveredScopes(AxisWrite)
+	want := []string{"/work", "/home/export", "/tmp/scratch"}
+	if len(got) != len(want) {
+		t.Fatalf("CoveredScopes(write) = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("CoveredScopes(write)[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+	// Base scopes normalize against the store cwd.
+	read := s.CoveredScopes(AxisRead)
+	if len(read) != 1 || read[0] != "/work" {
+		t.Errorf("CoveredScopes(read) = %v; want [/work]", read)
+	}
+}
+
+func TestCoveredScopesDeduplicatesTiers(t *testing.T) {
+	s := New("/work")
+	s.SetBase(map[Axis][]string{AxisWrite: {"/work", "./sub", "/work/"}})
+	s.GrantSession(AxisWrite, "/work")
+
+	got := s.CoveredScopes(AxisWrite)
+	want := []string{"/work", "/work/sub"}
+	if len(got) != len(want) {
+		t.Fatalf("CoveredScopes(write) = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("CoveredScopes(write)[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCoveredScopesBlanketSubsumesScopedGrants(t *testing.T) {
+	s := New("/work")
+	s.SetBase(map[Axis][]string{AxisWrite: {"/work"}})
+	s.GrantSession(AxisWrite, "")
+
+	got := s.CoveredScopes(AxisWrite)
+	if len(got) != 1 || got[0] != "" {
+		t.Errorf("CoveredScopes(write) = %v; want the single blanket marker \"\"", got)
+	}
+	if !s.AnyScopeCovered(AxisWrite) {
+		t.Errorf("AnyScopeCovered(write) = false after a blanket grant; want true")
+	}
+}
+
+func TestCoveredScopesBlanketFromPermanentOrOnceTier(t *testing.T) {
+	perm := New("/work")
+	perm.GrantSession(AxisNet, "api.example.com")
+	if err := perm.GrantPermanent(Grant{Axis: AxisNet, Scope: ""}); err != nil {
+		t.Fatalf("GrantPermanent: %v", err)
+	}
+	if got := perm.CoveredScopes(AxisNet); len(got) != 1 || got[0] != "" {
+		t.Errorf("CoveredScopes(net) with a permanent blanket = %v; want the blanket marker", got)
+	}
+
+	once := New("/work")
+	cid := once.BeginCall("/work/x")
+	once.GrantOnce(cid, AxisRead, "")
+	if got := once.CoveredScopes(AxisRead); len(got) != 1 || got[0] != "" {
+		t.Errorf("CoveredScopes(read) with a once blanket = %v; want the blanket marker", got)
+	}
+
+	// A base entry with no scope is a blanket over the whole axis.
+	base := New("/work")
+	base.SetBaseFromConfig(map[string][]string{"run": {""}})
+	if got := base.CoveredScopes(AxisRun); len(got) != 1 || got[0] != "" {
+		t.Errorf("CoveredScopes(run) with a blanket base = %v; want the blanket marker", got)
+	}
+}
+
+func TestAnyScopeCoveredFollowsNoConfigDefault(t *testing.T) {
+	s := New("/work")
+	if !s.AnyScopeCovered(AxisRead) {
+		t.Errorf("AnyScopeCovered(read) = false under the no-config default; want true (base read=[\".\"])")
+	}
+	for _, a := range []Axis{AxisWrite, AxisNet, AxisRun, AxisEnv} {
+		if s.AnyScopeCovered(a) {
+			t.Errorf("AnyScopeCovered(%s) = true under the no-config default; want false", a)
+		}
+		if got := s.CoveredScopes(a); len(got) != 0 {
+			t.Errorf("CoveredScopes(%s) = %v; want empty", a, got)
+		}
+	}
+}
+
+func TestCoveredScopesSeesOnceGrantsOfInflightCall(t *testing.T) {
+	s := New("/work")
+	cid := s.BeginCall("/tmp/once.txt")
+	s.GrantOnce(cid, AxisWrite, "/tmp/once.txt")
+
+	// Visible during the call that negotiated it: once grants are spent only
+	// after the call resolves.
+	if got := s.CoveredScopes(AxisWrite); len(got) != 1 || got[0] != "/tmp/once.txt" {
+		t.Errorf("CoveredScopes(write) during the call = %v; want [/tmp/once.txt]", got)
+	}
+	if !s.AnyScopeCovered(AxisWrite) {
+		t.Errorf("AnyScopeCovered(write) = false mid-call after a once grant; want true")
+	}
+	s.SpendOnce(cid)
+	if got := s.CoveredScopes(AxisWrite); len(got) != 0 {
+		t.Errorf("CoveredScopes(write) after SpendOnce = %v; want empty", got)
+	}
+}
+
+func TestCoveredScopesOnceTierIsDeterministic(t *testing.T) {
+	s := New("/work")
+	for _, scope := range []string{"/tmp/c", "/tmp/a", "/tmp/b"} {
+		cid := s.BeginCall(scope)
+		s.GrantOnce(cid, AxisWrite, scope)
+	}
+	got := s.CoveredScopes(AxisWrite)
+	want := []string{"/tmp/a", "/tmp/b", "/tmp/c"}
+	if len(got) != len(want) {
+		t.Fatalf("CoveredScopes(write) = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("CoveredScopes(write)[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestCoveredScopesUnknownAxisIsEmpty(t *testing.T) {
+	s := New("/work")
+	if got := s.CoveredScopes(Axis("ignored")); len(got) != 0 {
+		t.Errorf("CoveredScopes(ignored) = %v; want empty", got)
+	}
+	if s.AnyScopeCovered(Axis("ignored")) {
+		t.Errorf("AnyScopeCovered(ignored) = true; want false")
+	}
+}
+
+func TestCoveredScopesDoesNotMutateStore(t *testing.T) {
+	s := New("/work")
+	s.SetBase(map[Axis][]string{AxisWrite: {"/work"}})
+	got := s.CoveredScopes(AxisWrite)
+	got[0] = "/somewhere/else"
+	if !s.Covered(AxisWrite, "/work/x.go") {
+		t.Errorf("mutating the returned slice changed store coverage")
+	}
+	if again := s.CoveredScopes(AxisWrite); again[0] != "/work" {
+		t.Errorf("CoveredScopes(write) = %v after caller mutation; want [/work]", again)
+	}
+}
+
 func TestBlanketGrantCoversAxis(t *testing.T) {
 	s := New("/work")
 	if s.Covered(AxisWrite, "") {
