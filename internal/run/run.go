@@ -46,7 +46,7 @@ type ProviderSource interface {
 
 // Options bundles the mode-shaped pieces an entry point injects. Everything a
 // turn touches that is derivable from Config + Cwd — tools, skills, plugins,
-// sessions, and the permission gate — is assembled inside New.
+	// sessions, and the permission gate — is assembled inside New.
 type Options struct {
 	// Config is the harness config. A nil config is tolerated as a zero
 	// configuration (unit-test handles).
@@ -81,6 +81,9 @@ type Options struct {
 	// WithLedger enables a change ledger over the run's session, flushed on
 	// Close.
 	WithLedger bool
+	// SkillPool is the pre-discovered, config-filtered skill pool. When nil,
+	// New will discover it. Pass a pre-computed pool to avoid redundant discovery.
+	SkillPool []skill.ParsedSkill
 }
 
 // env is the mutable slice of handle state a turn reads, snapshotted under the
@@ -192,13 +195,22 @@ func New(opts Options) (*Handle, error) {
 
 	// Resolve the skill pool once so agent validation checks explicit skills
 	// lists against the discovered pool; dubious directories surface now.
-	pool, warns, err := skill.FilteredPool(opts.Config.Skills.Dirs, opts.Config.Skills.Enable, opts.Config.Skills.Disable)
-	if err != nil {
-		return nil, err
-	}
-	for _, w := range warns {
-		if opts.Stderr != nil {
-			fmt.Fprintf(opts.Stderr, "warning: %s\n", w.Message)
+	// Use the pre-computed pool from Options if provided (passed from main
+	// to avoid redundant discovery at startup).
+	var pool []skill.ParsedSkill
+	if len(opts.SkillPool) > 0 {
+		pool = opts.SkillPool
+	} else {
+		var warns []skill.Warning
+		var err error
+		pool, warns, err = skill.FilteredPool(opts.Config.Skills.Dirs, opts.Config.Skills.Enable, opts.Config.Skills.Disable)
+		if err != nil {
+			return nil, err
+		}
+		for _, w := range warns {
+			if opts.Stderr != nil {
+				fmt.Fprintf(opts.Stderr, "warning: %s\n", w.Message)
+			}
 		}
 	}
 	h.skillNames = skill.Names(pool)
@@ -343,40 +355,40 @@ func (h *Handle) Bound() []skill.ParsedSkill {
 }
 
 // resolveInstruction assembles the instruction for the given agent,
-// re-running the skill pipeline (discover → filter → bind → build) on every
-// read so SKILL.md edits are picked up without a config reload, and appending
-// the live base-policy snapshot.
-func (h *Handle) resolveInstruction(agent *config.ResolvedAgent) (string, error) {
-	var agentSkills []string
-	agentName := ""
-	if agent != nil {
-		agentSkills = agent.Skills
-		agentName = agent.Name
+	// re-running the skill pipeline (discover → filter → bind → build) on every
+	// read so SKILL.md edits are picked up without a config reload, and appending
+	// the live base-policy snapshot.
+	func (h *Handle) resolveInstruction(agent *config.ResolvedAgent) (string, error) {
+		var agentSkills []string
+		agentName := ""
+		if agent != nil {
+			agentSkills = agent.Skills
+			agentName = agent.Name
+		}
+		filtered, warns, err := skill.FilteredPool(h.opts.Config.Skills.Dirs, h.opts.Config.Skills.Enable, h.opts.Config.Skills.Disable)
+		if err != nil {
+			return "", err
+		}
+		bound, err := skill.BindToAgent(filtered, agentSkills, agentName)
+		if err != nil {
+			return "", err
+		}
+		// Publish the bound set so the skill tool resolves against what this agent
+		// actually has, and build the layer from the same slice — the index and the
+		// tool's pool then describe one set, never two that drifted.
+		h.mu.Lock()
+		h.bound = bound
+		h.mu.Unlock()
+		layer := skill.BuildSkillLayer(bound)
+		for _, w := range warns {
+			slog.Warn(w.Message)
+		}
+		s, err := instruct.LoadWithAgentAndPermissions(h.opts.Config, agent, layer, h.opts.Cwd, h.store.BaseSnapshot())
+		if err != nil {
+			return "", err
+		}
+		return s, nil
 	}
-	filtered, warns, err := skill.FilteredPool(h.opts.Config.Skills.Dirs, h.opts.Config.Skills.Enable, h.opts.Config.Skills.Disable)
-	if err != nil {
-		return "", err
-	}
-	bound, err := skill.BindToAgent(filtered, agentSkills, agentName)
-	if err != nil {
-		return "", err
-	}
-	// Publish the bound set so the skill tool resolves against what this agent
-	// actually has, and build the layer from the same slice — the index and the
-	// tool's pool then describe one set, never two that drifted.
-	h.mu.Lock()
-	h.bound = bound
-	h.mu.Unlock()
-	layer := skill.BuildSkillLayer(bound)
-	for _, w := range warns {
-		slog.Warn(w.Message)
-	}
-	s, err := instruct.LoadWithAgentAndPermissions(h.opts.Config, agent, layer, h.opts.Cwd, h.store.BaseSnapshot())
-	if err != nil {
-		return "", err
-	}
-	return s, nil
-}
 
 // snapshot returns a consistent view of the handle's mutable state.
 func (h *Handle) snapshot() (env, *session.Session) {
