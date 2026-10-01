@@ -237,6 +237,16 @@ The prompt shows the **exact normalized scope** for that axis:
 - The tool call **executes only if every required axis is granted**.
 - A granted scope is **never broader than what was requested** — the normalized scope from the prompt is what the grant covers.
 
+#### Axis requests from the code tool (exception)
+
+The `code` tool's `permissions` array names **axes, never scopes**: the model asks for `read`, and the concrete paths come from your effective policy when the sandbox is built. One exception to the blanket rule above follows from that — for a `code` call, a requested axis counts as already covered when the effective policy covers it **at any scope**, so it is not prompted again, and the sandbox is limited to those covered scopes rather than to everything.
+
+```
+[permissions]
+read = ["."]      # a code call requesting read never prompts, and reads only under the cwd
+write = []         # a code call requesting write prompts for blanket write
+```
+
 #### Effective policy
 
 The effective policy is the union of four tiers, most-specific-first:
