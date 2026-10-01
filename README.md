@@ -73,7 +73,7 @@ Ctrl+C cancels a running turn. Ctrl+C at the prompt exits.
 
 ## Tools
 
-The model has access to five tools:
+The model has access to six tools:
 
 | Tool | Description |
 |------|-------------|
@@ -82,8 +82,9 @@ The model has access to five tools:
 | **edit** | Surgical find-and-replace. Exact, whitespace-sensitive matching. One pair at a time. |
 | **bash** | Run shell commands via `sh -c`. Permission-gated on the run and net axes (see [Permissions](#permissions)). 120s timeout (configurable). |
 | **request_permission** | Pre-negotiate a permission grant for a call you expect to be denied (see [Permissions](#permissions)). Never auto-approved. |
+| **skill** | Return a discovered skill's instructions verbatim, so the model can pull in task-specific conventions on demand (see [docs/skills.md](docs/skills.md)). Resolves against the active agent's bound skill set. |
 
-`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` is always-on for every default agent — it is a negotiation channel, not a capability — so it has no config toggle; an agent whose explicit `tools = [...]` list omits it drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool.
+`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool.
 
 ## Configuration
 
@@ -199,7 +200,7 @@ run   = []
 env   = []
 ```
 
-The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. Skills are injected into the instruction between the instruction file and AGENTS.md. See [docs/agent-definitions.md](docs/agent-definitions.md) and [docs/skills.md](docs/skills.md).
+The default skill discovery stack is, in priority order (lowest wins): `./.genie/skills`, `~/.agents/skills`, and `~/.config/genie/skills`. Setting `[skills] dirs` or `GENIE_SKILL_DIR` replaces the stack entirely; `enable`/`disable` still apply on top. Individual agents can override the inherited set with a `skills = [...]` key in their agent TOML — unset inherits all discovered skills, `skills = []` binds none, and unknown names error at agent resolution. Skills are injected into the instruction between the instruction file and AGENTS.md as an index — one line per bound skill, no bodies. The model pulls a body's contents on demand with the built-in `skill` tool, which takes a skill name and returns that skill's instructions verbatim as a tool result. The body is therefore available in the turn that asks for it and stays in the transcript afterwards, and a skill costs nothing until the task actually calls for it. The tool resolves against the active agent's bound set, so a skill the agent did not bind is unreachable. See [docs/agent-definitions.md](docs/agent-definitions.md) and [docs/skills.md](docs/skills.md).
 
 ### Permissions
 

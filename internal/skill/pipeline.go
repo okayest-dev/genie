@@ -22,6 +22,15 @@ func FilteredPool(dirs []string, enable, disable []string) ([]ParsedSkill, []War
 // for error messages when an unknown skill name is encountered.
 //
 // Warnings are non-fatal issues (invalid SKILL.md, disabled skills).
+// Pipeline runs the full skill pipeline: discover → global filter → agent
+// bind → build layer. It is the primary entry point for callers that need
+// the assembled skill-layer string for the instruction pipeline.
+//
+// agentSkills is the agent's declared skill list: nil = inherit all,
+// non-nil empty = none, non-nil non-empty = exact set. agentName is used
+// for error messages when an unknown skill name is encountered.
+//
+// Warnings are non-fatal issues (invalid SKILL.md, disabled skills).
 func Pipeline(dirs []string, enable, disable []string, agentSkills []string, agentName string) (layer string, warns []Warning, err error) {
 	filtered, warns, err := FilteredPool(dirs, enable, disable)
 	if err != nil {

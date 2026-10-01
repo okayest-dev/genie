@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -250,6 +251,34 @@ func assertSystemMessage(t *testing.T, p *fake.Provider, wantContent string) {
 	}
 	if body.Messages[0].Content != wantContent {
 		t.Errorf("system message content = %q, want %q", body.Messages[0].Content, wantContent)
+	}
+}
+
+// assertNotInSystemMessage asserts the system message does not contain
+// unwanted. The absence of a body is the whole point of the index-only layer,
+// so the e2e suite needs a negative assertion as much as a positive one — a
+// body injected at discovery would pass every "expected content" check while
+// defeating the mechanism.
+func assertNotInSystemMessage(t *testing.T, p *fake.Provider, unwanted string) {
+	t.Helper()
+	reqs := p.Requests()
+	if len(reqs) < 1 {
+		t.Fatalf("no requests received")
+	}
+	var body struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(reqs[0].Body), &body); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	if len(body.Messages) < 1 {
+		t.Fatalf("request has no messages")
+	}
+	if strings.Contains(body.Messages[0].Content, unwanted) {
+		t.Errorf("system message contains %q, want it absent:\n%s", unwanted, body.Messages[0].Content)
 	}
 }
 
@@ -705,8 +734,10 @@ func writeSkill(t *testing.T, dir, name, description, body string) {
 }
 
 // TestSKILLMDInjectedIntoSystemMessage asserts a SKILL.md dropped into a
-// discovery dir is automatically loaded, parsed, and injected into the
-// system message between the instruction file and AGENTS.md (og-uem.11).
+// discovery dir is automatically discovered, parsed, and offered in the system
+// message as an index entry between the instruction file and AGENTS.md
+// (og-uem.11). Bodies are not injected: a skill costs context only once the
+// model engages it (og-uem.12).
 func TestSKILLMDInjectedIntoSystemMessage(t *testing.T) {
 	skillDir := t.TempDir()
 	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
@@ -731,12 +762,10 @@ func TestSKILLMDInjectedIntoSystemMessage(t *testing.T) {
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
 		"- alpha: Handles alpha tasks.\n" +
-		"- beta: Handles beta tasks.\n" +
-		"### Skill: alpha\n" +
-		"Alpha body.\n" +
-		"### Skill: beta\n" +
-		"Beta body.\n"
+		"- beta: Handles beta tasks.\n"
 	assertSystemMessage(t, p, want+permSection())
+	assertNotInSystemMessage(t, p, "Alpha body.")
+	assertNotInSystemMessage(t, p, "### Skill: alpha")
 }
 
 // TestEmptySkillPoolNoLayer asserts an empty discovery dir injects no skill
@@ -793,8 +822,7 @@ func TestSKILLMDOrderInInstruction(t *testing.T) {
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
 		"- alpha: Handles alpha tasks.\n" +
-		"### Skill: alpha\n" +
-		"Alpha body.\n\n" +
+		"\n" +
 		"---agents---"
 	assertSystemMessage(t, p, want+permSection())
 }
@@ -824,10 +852,267 @@ func TestConfigSkillsEnableAllowlist(t *testing.T) {
 	want := "You are genie, a helpful terminal agent.\n" +
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
-		"- alpha: Handles alpha tasks.\n" +
-		"### Skill: alpha\n" +
-		"Alpha body.\n"
+		"- alpha: Handles alpha tasks.\n"
 	assertSystemMessage(t, p, want+permSection())
+	// Only the allowlisted skill is offered; the other exists on disk and is
+	// invisible to both the index and the skill tool.
+	assertNotInSystemMessage(t, p, "beta")
+	assertNotInSystemMessage(t, p, "### Skill:")
+}
+
+// TestSkillToolReturnsTheBodyToTheEngagingTurn asserts the full on-demand path
+// through the real binary: the model calls the skill tool and the body reaches
+// it in the tool result, inside the same turn, with the instruction layer
+// staying index-only throughout (og-uem.12). A body that only landed in the
+// instruction layer would be a request too late — the model would have to end
+// its turn before it could act on the instructions it just asked for.
+func TestSkillToolReturnsTheBodyToTheEngagingTurn(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body instructions.")
+
+	var systems []string
+	var reqs []string
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		reqs = append(reqs, string(raw))
+		var bodyMap struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(raw, &bodyMap); err == nil && len(bodyMap.Messages) > 0 {
+			systems = append(systems, bodyMap.Messages[0].Content)
+		}
+		reqCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done}
+		if reqCount == 1 {
+			// The model engages the skill.
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "skill", `{"name":"alpha"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		}
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	dir := configDir(t, providerConfigAt(srv.URL, "test-model"))
+	_, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-p", "do the alpha thing")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if reqCount != 2 {
+		t.Fatalf("requests = %d, want 2 (skill call + follow-up)", reqCount)
+	}
+
+	// The first request offers the index and nothing more: no skill has been
+	// engaged, so no body has been paid for.
+	if len(systems) < 2 {
+		t.Fatalf("captured %d system messages, want 2", len(systems))
+	}
+	if !strings.Contains(systems[0], "- alpha: Handles alpha tasks.") {
+		t.Errorf("first request missing the skill index line:\n%s", systems[0])
+	}
+	if strings.Contains(reqs[0], "Alpha body instructions.") {
+		t.Errorf("first request carried the body before the skill was engaged:\n%s", reqs[0])
+	}
+
+	// The second request carries the body in the tool result, so the model can
+	// act on the instructions within the turn that asked for them.
+	if !strings.Contains(reqs[1], "Alpha body instructions.") {
+		t.Errorf("second request missing the skill body in the tool result:\n%s", reqs[1])
+	}
+	// The layer stays index-only for the rest of the conversation. The body is
+	// in the transcript, which is where it came from and where it stays; the
+	// system message keeps costing one line.
+	if !strings.Contains(systems[1], "- alpha: Handles alpha tasks.") {
+		t.Errorf("second request lost the skill index line:\n%s", systems[1])
+	}
+	if strings.Contains(systems[1], "Alpha body instructions.") {
+		t.Errorf("second request re-injected the body into the instruction layer:\n%s", systems[1])
+	}
+}
+
+// TestSkillToolRejectedNameIsFedBackToModel asserts an unknown skill name comes
+// back as a tool result the model can read, rather than silently engaging
+// nothing.
+func TestSkillToolRejectedNameIsFedBackToModel(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body instructions.")
+
+	var secondRequest string
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		reqCount++
+		if reqCount == 2 {
+			secondRequest = string(raw)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done}
+		if reqCount == 1 {
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "skill", `{"name":"nope"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		}
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	dir := configDir(t, providerConfigAt(srv.URL, "test-model"))
+	_, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-p", "engage a skill")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(secondRequest, "nope") || !strings.Contains(secondRequest, "alpha") {
+		t.Errorf("rejection not fed back naming the mistake and the alternative:\n%s", secondRequest)
+	}
+	// A rejected name must not have leaked the body of the skill the model
+	// guessed at; the error names the real set, nothing more.
+	if strings.Contains(secondRequest, "Alpha body instructions.") {
+		t.Errorf("a rejected skill returned a body:\n%s", secondRequest)
+	}
+}
+
+// TestInvalidSkillWarnsAndIsOmitted asserts a malformed SKILL.md is skipped
+// with a warning on stderr rather than failing the run, and that the broken
+// skill appears in neither the index nor the tool (og-uem.12.9). A skill that
+// failed to parse must leave no trace the model could act on.
+func TestInvalidSkillWarnsAndIsOmitted(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Alpha body.")
+	// No frontmatter at all: discover treats this as invalid.
+	if err := os.MkdirAll(filepath.Join(skillDir, "broken"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(skillDir, "broken", "SKILL.md")
+	if err := os.WriteFile(broken, []byte("this is not a frontmatter skill"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done},
+	})
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", p.URL))
+	_, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + skillDir,
+	}, "-p", "hi")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; a bad SKILL.md must not fail the run; stderr=%q", code, stderr)
+	}
+
+	// The warning names the file, so the user can go fix it.
+	if !strings.Contains(stderr, "broken") {
+		t.Errorf("stderr = %q, want a warning naming the broken skill", stderr)
+	}
+	// The layer is built from the valid skills only: the broken one is absent
+	// rather than present-but-empty.
+	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.\n"+
+		"## Skills\n"+
+		"Available skills — engage a skill when its description matches the current task:\n"+
+		"- alpha: Handles alpha tasks.\n"+
+		permSection())
+	assertNotInSystemMessage(t, p, "broken")
+}
+
+// TestSkillRefreshesOnNextTurn asserts the pool is re-derived per turn, so
+// editing a SKILL.md mid-session needs no reload (og-uem.12.6, og-uem.12.9).
+// The instruction is assembled at the start of each turn, so a later turn is
+// the only point at which an edit can become visible.
+func TestSkillRefreshesOnNextTurn(t *testing.T) {
+	skillDir := t.TempDir()
+	writeSkill(t, skillDir, "alpha", "Handles alpha tasks.", "Original body.")
+
+	// The provider rewrites the skill once it has served the first turn, which
+	// puts the edit on disk between turn one and turn two.
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		first := len(bodies) == 1
+		mu.Unlock()
+		if first {
+			writeSkill(t, skillDir, "alpha", "Handles alpha tasks better now.", "Rewritten body.")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for _, chunk := range []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done} {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	cfgDir := configDir(t, fmt.Sprintf("provider = \"zen\"\n\n[providers.zen]\nbase_url = %q\nmodel = \"test-model\"\n", srv.URL))
+	stdout, stderr, code := runInDirWithStdin(t, t.TempDir(), "hi\nagain\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + cfgDir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+		"GENIE_SKILL_DIR=" + skillDir,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if stdout == "" {
+		t.Errorf("stdout = %q, want both turns to reply", stdout)
+	}
+
+	// Two prompts, two requests. The re-scan is what makes the edited
+	// description visible without restarting the process.
+	mu.Lock()
+	defer mu.Unlock()
+	var systems []string
+	for _, b := range bodies {
+		systems = append(systems, systemContentOf(t, decodeWireMessages(t, b)))
+	}
+	if len(systems) != 2 {
+		t.Fatalf("captured %d system messages, want 2 (one per turn)", len(systems))
+	}
+	if !strings.Contains(systems[0], "- alpha: Handles alpha tasks.") {
+		t.Errorf("first turn missing the original index line:\n%s", systems[0])
+	}
+	if !strings.Contains(systems[1], "- alpha: Handles alpha tasks better now.") {
+		t.Errorf("second turn missing the edited index line, want a per-turn re-scan:\n%s", systems[1])
+	}
+	// The layer stays index-only across the refresh.
+	if strings.Contains(systems[1], "Rewritten body.") {
+		t.Errorf("second turn injected the body into the instruction layer:\n%s", systems[1])
+	}
 }
 
 // TestAgentSkillsSubset asserts an agent declaring skills binds only what it
@@ -865,10 +1150,12 @@ func TestAgentSkillsSubset(t *testing.T) {
 	want := "You are genie, a helpful terminal agent.\n" +
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
-		"- beta: Handles beta tasks.\n" +
-		"### Skill: beta\n" +
-		"Beta body.\n"
+		"- beta: Handles beta tasks.\n"
 	assertSystemMessage(t, p, want+permSection())
+	// The agent bound beta only, so alpha is unreachable — including via the
+	// skill tool, which resolves against the bound pool.
+	assertNotInSystemMessage(t, p, "alpha")
+	assertNotInSystemMessage(t, p, "Beta body.")
 }
 
 // TestAgentUnknownSkillFailsStartup asserts an agent naming a skill that is
@@ -924,10 +1211,11 @@ func TestConfigSkillsDisableDenylist(t *testing.T) {
 	want := "You are genie, a helpful terminal agent.\n" +
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
-		"- alpha: Handles alpha tasks.\n" +
-		"### Skill: alpha\n" +
-		"Alpha body.\n"
+		"- alpha: Handles alpha tasks.\n"
 	assertSystemMessage(t, p, want+permSection())
+	// The denylisted skill exists on disk but must not be reachable at all.
+	assertNotInSystemMessage(t, p, "beta")
+	assertNotInSystemMessage(t, p, "Beta body.")
 }
 
 // TestInstructionCarriesPermissionSnapshotAndMechanism asserts every request's
@@ -2225,6 +2513,21 @@ func decodeWireMessages(t *testing.T, body string) []wireMessage {
 		t.Fatalf("request body is not JSON: %v", err)
 	}
 	return req.Messages
+}
+
+// systemContentOf returns the content of the single system message.
+func systemContentOf(t *testing.T, msgs []wireMessage) string {
+	t.Helper()
+	var out []string
+	for _, m := range msgs {
+		if m.Role == "system" {
+			out = append(out, m.Content)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("no system message in request")
+	}
+	return strings.Join(out, "\n")
 }
 
 func countRole(msgs []wireMessage, role string) int {

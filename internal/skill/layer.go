@@ -5,6 +5,11 @@ import "strings"
 // BuildSkillLayer assembles the ## Skills section for the instruction
 // pipeline. The layer is injected between the instruction file and AGENTS.md.
 // When bound is empty or nil, returns "" (no layer injected).
+//
+// The layer is index-only: one line per bound skill, no bodies. A body costs
+// nothing until the model asks for it, at which point the skill tool returns it
+// as a tool result and it becomes part of the conversation from then on. The
+// index costs a line per skill and is what lets the model decide.
 func BuildSkillLayer(bound []ParsedSkill) string {
 	if len(bound) == 0 {
 		return ""
@@ -20,15 +25,6 @@ func BuildSkillLayer(bound []ParsedSkill) string {
 			line += " [argument: " + s.ArgumentHint + "]"
 		}
 		b.WriteString(line + "\n")
-	}
-
-	for _, s := range bound {
-		if s.Body == "" {
-			continue
-		}
-		b.WriteString("### Skill: " + s.Name + "\n")
-		b.WriteString(s.Body)
-		b.WriteString("\n")
 	}
 
 	return b.String()
