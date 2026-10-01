@@ -27,9 +27,26 @@ func New(store *permissions.Store) *Tool {
 // args is the request as far as the permission mapping reads it: the axes the
 // model asks for, never scopes.
 type args struct {
-	Code        string   `json:"code"`
 	Permissions []string `json:"permissions"`
-	Timeout     int      `json:"timeout,omitempty"`
+}
+
+// parsePermissions unmarshals the raw JSON and returns the set of valid
+// permission axes requested, or an error if JSON is invalid or contains
+// unknown axes.
+func parsePermissions(raw json.RawMessage) (map[permissions.Axis]bool, error) {
+	var a args
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %v", err)
+	}
+
+	asked := make(map[permissions.Axis]bool, len(a.Permissions))
+	for _, name := range a.Permissions {
+		if !permissions.IsAxis(name) {
+			return nil, fmt.Errorf("invalid permission %q: must be one of read, write, net, run, env", name)
+		}
+		asked[permissions.Axis(name)] = true
+	}
+	return asked, nil
 }
 
 // RequiredPermissions maps each requested axis onto an axis-only requirement
@@ -37,27 +54,21 @@ type args struct {
 // covers at any scope is satisfied and omitted; an uncovered axis becomes a
 // blanket requirement the gate negotiates through the standard prompt.
 func (t *Tool) RequiredPermissions(raw json.RawMessage) ([]tools.Requirement, error) {
-	var a args
-	if err := json.Unmarshal(raw, &a); err != nil {
-		return nil, fmt.Errorf("invalid arguments: %v", err)
+	asked, err := parsePermissions(raw)
+	if err != nil {
+		return nil, err
 	}
 
 	var reqs []tools.Requirement
-	asked := make(map[permissions.Axis]bool, len(a.Permissions))
-	for _, name := range a.Permissions {
-		if !permissions.IsAxis(name) {
-			return nil, fmt.Errorf("invalid permission %q: must be one of read, write, net, run, env", name)
-		}
-		axis := permissions.Axis(name)
-		// One requirement per axis: a repeated request is still one escalation.
-		if asked[axis] {
+	for _, axis := range permissions.AxisNames() {
+		ax := permissions.Axis(axis)
+		if !asked[ax] {
 			continue
 		}
-		asked[axis] = true
-		if t.store.AnyScopeCovered(axis) {
+		if t.store.AnyScopeCovered(ax) {
 			continue
 		}
-		reqs = append(reqs, tools.Requirement{Axis: name})
+		reqs = append(reqs, tools.Requirement{Axis: axis})
 	}
 	return reqs, nil
 }
@@ -70,16 +81,9 @@ func (t *Tool) RequiredPermissions(raw json.RawMessage) ([]tools.Requirement, er
 // - An unrequested axis yields no flag.
 // - Scopes pass through verbatim; they are not normalized, reordered, or filtered.
 func (t *Tool) buildDenoFlags(raw json.RawMessage) []string {
-	var a args
-	if err := json.Unmarshal(raw, &a); err != nil {
+	asked, err := parsePermissions(raw)
+	if err != nil {
 		return nil
-	}
-
-	asked := make(map[permissions.Axis]bool, len(a.Permissions))
-	for _, name := range a.Permissions {
-		if permissions.IsAxis(name) {
-			asked[permissions.Axis(name)] = true
-		}
 	}
 
 	var flags []string
