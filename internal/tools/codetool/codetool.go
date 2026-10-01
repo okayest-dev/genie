@@ -4,30 +4,90 @@
 package codetool
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/okayest-dev/genie/internal/permissions"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
+const (
+	maxOutputBytes = 1 << 20 // 1 MB — output beyond this is truncated with a spill file
+)
+
+// Runner is the interface for executing a Deno snippet. The real
+// implementation shells out to `deno run`; tests inject a fake.
+type Runner interface {
+	Run(ctx context.Context, snippetPath string, flags []string, cwd string) (stdout, stderr string, exitCode int, err error)
+}
+
+// RealRunner executes a Deno subprocess.
+type RealRunner struct{}
+
+// Run executes the Deno command and returns stdout, stderr, exit code, and error.
+func (RealRunner) Run(ctx context.Context, snippetPath string, flags []string, cwd string) (stdout, stderr string, exitCode int, err error) {
+	args := append([]string{"run", "--no-prompt"}, flags...)
+	args = append(args, snippetPath)
+
+	cmd := exec.CommandContext(ctx, "deno", args...)
+	cmd.Dir = cwd
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var stdoutBuf, stderrBuf strings.Builder
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	err = cmd.Run()
+
+	exitCode = 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+	}
+
+	return stdoutBuf.String(), stderrBuf.String(), exitCode, err
+}
+
 // Tool executes a snippet under a permission envelope negotiated by the
 // deny-point gate. It reads the effective policy to decide which requested
 // axes still need escalation.
 type Tool struct {
-	store *permissions.Store
+	store  *permissions.Store
+	cwd    string
+	timeout time.Duration
+	runner Runner
 }
 
 // New builds a code tool over the effective-policy store.
-func New(store *permissions.Store) *Tool {
-	return &Tool{store: store}
+func New(store *permissions.Store, cwd string, timeout time.Duration) *Tool {
+	return &Tool{
+		store:  store,
+		cwd:    cwd,
+		timeout: timeout,
+		runner: RealRunner{},
+	}
+}
+
+// WithRunner sets a custom runner for testing.
+func (t *Tool) WithRunner(r Runner) *Tool {
+	t.runner = r
+	return t
 }
 
 // args is the request as far as the permission mapping reads it: the axes the
 // model asks for, never scopes.
 type args struct {
+	Code        string   `json:"code"`
 	Permissions []string `json:"permissions"`
+	Timeout     int      `json:"timeout"`
 }
 
 // parsePermissions unmarshals the raw JSON and returns the set of valid
@@ -47,6 +107,40 @@ func parsePermissions(raw json.RawMessage) (map[permissions.Axis]bool, error) {
 		asked[permissions.Axis(name)] = true
 	}
 	return asked, nil
+}
+
+// Name returns the tool name.
+func (t *Tool) Name() string { return "code" }
+
+// Description returns the tool description.
+func (t *Tool) Description() string {
+	return "Execute a TypeScript/JavaScript snippet in a sandboxed Deno subprocess. Request permission axes via the permissions field."
+}
+
+// Parameters returns the JSON Schema for the tool arguments.
+func (t *Tool) Parameters() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"code": map[string]any{
+				"type":        "string",
+				"description": "TypeScript/JavaScript code to execute",
+			},
+			"permissions": map[string]any{
+				"type":        "array",
+				"description": "Permission axes to request (read, write, net, run, env)",
+				"items": map[string]any{
+					"type": "string",
+					"enum": []string{"read", "write", "net", "run", "env"},
+				},
+			},
+			"timeout": map[string]any{
+				"type":        "integer",
+				"description": "Execution timeout in seconds (overrides configured default)",
+			},
+		},
+		"required": []any{"code"},
+	}
 }
 
 // RequiredPermissions maps each requested axis onto an axis-only requirement
@@ -71,6 +165,75 @@ func (t *Tool) RequiredPermissions(raw json.RawMessage) ([]tools.Requirement, er
 		reqs = append(reqs, tools.Requirement{Axis: axis})
 	}
 	return reqs, nil
+}
+
+// Execute runs the code snippet in a Deno subprocess.
+func (t *Tool) Execute(raw json.RawMessage) (string, error) {
+	var a args
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return "", fmt.Errorf("invalid arguments: %v", err)
+	}
+	if a.Code == "" {
+		return "", fmt.Errorf("missing required argument: code")
+	}
+
+	// Write snippet to temp file
+	codeDir := filepath.Join(t.cwd, ".genie-tmp", "code")
+	if err := os.MkdirAll(codeDir, 0o755); err != nil {
+		return "", fmt.Errorf("create code temp dir: %v", err)
+	}
+
+	// Generate filename: code-<timestamp>-<hash>.ts
+	hash := fmt.Sprintf("%x", len(a.Code)) // simple hash based on length
+	ts := time.Now().UnixMilli()
+	filename := fmt.Sprintf("code-%d-%s.ts", ts, hash)
+	snippetPath := filepath.Join(codeDir, filename)
+
+	if err := os.WriteFile(snippetPath, []byte(a.Code), 0o644); err != nil {
+		return "", fmt.Errorf("write snippet: %v", err)
+	}
+
+	// Build Deno flags from effective policy
+	flags := t.buildDenoFlags(raw)
+
+	// Determine timeout
+	timeout := t.timeout
+	if a.Timeout > 0 {
+		timeout = time.Duration(a.Timeout) * time.Second
+	}
+
+	// Run with context timeout
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	// Execute
+	stdout, stderr, exitCode, err := t.runner.Run(ctx, snippetPath, flags, t.cwd)
+
+	// Combine output with exit code
+	output := t.formatOutput(stdout, stderr, exitCode)
+
+	// Handle timeout
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return output, fmt.Errorf("code execution timed out")
+		}
+		// Non-timeout errors are already in output
+	}
+
+	// Apply output cap and spill
+	if len(output) > maxOutputBytes {
+		spillPath, spillErr := t.writeSpill(output)
+		if spillErr != nil {
+			return "", fmt.Errorf("truncate output: %v", spillErr)
+		}
+		output = output[:maxOutputBytes] + fmt.Sprintf("\n\n[truncated — full output spilled to %s]", spillPath)
+	}
+
+	return output, nil
 }
 
 // buildDenoFlags constructs the Deno --allow-* flags from the effective
@@ -107,4 +270,43 @@ func (t *Tool) buildDenoFlags(raw json.RawMessage) []string {
 		flags = append(flags, fmt.Sprintf("--allow-%s=%s", axis, strings.Join(scopes, ",")))
 	}
 	return flags
+}
+
+// formatOutput combines stdout, stderr, and exit code into the result string.
+func (t *Tool) formatOutput(stdout, stderr string, exitCode int) string {
+	var out strings.Builder
+	if stdout != "" {
+		out.WriteString(stdout)
+	}
+	if stderr != "" {
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString("[stderr]\n")
+		out.WriteString(stderr)
+	}
+	if exitCode != 0 {
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.WriteString(fmt.Sprintf("[exit code %d]", exitCode))
+	}
+	return out.String()
+}
+
+// writeSpill writes full output to a temp file and returns its path.
+func (t *Tool) writeSpill(output string) (string, error) {
+	dir := filepath.Join(t.cwd, ".genie-spill")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, "code-output-*.txt")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.WriteString(output); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/okayest-dev/genie/internal/tokens"
 	"github.com/okayest-dev/genie/internal/tools"
 	"github.com/okayest-dev/genie/internal/tools/bashtool"
+	"github.com/okayest-dev/genie/internal/tools/codetool"
 	"github.com/okayest-dev/genie/internal/tools/edittool"
 	"github.com/okayest-dev/genie/internal/tools/readtool"
 	"github.com/okayest-dev/genie/internal/tools/requesttool"
@@ -174,6 +175,7 @@ func New(opts Options) (*Handle, error) {
 	full.Register(writetool.New(opts.Cwd))
 	full.Register(edittool.New(opts.Cwd))
 	full.Register(bashtool.New(opts.Cwd, opts.Config.BashTimeout))
+	full.Register(codetool.New(h.store, opts.Cwd, opts.Config.Tools.CodeTimeout))
 	reqT := requesttool.New(store, h.sink)
 	reqT.SetNegotiator(opts.Negotiator)
 	full.Register(reqT)
@@ -189,6 +191,9 @@ func New(opts Options) (*Handle, error) {
 	}
 	if !opts.Config.Tools.Bash {
 		full.Disable("bash")
+	}
+	if !opts.Config.Tools.Code {
+		full.Disable("code")
 	}
 	h.full = full
 	h.reqT = reqT
