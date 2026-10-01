@@ -22,6 +22,7 @@ package permissions
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -105,6 +106,66 @@ func (s *Store) Covered(axis Axis, scope string) bool {
 	want := s.Normalize(axis, scope)
 	return s.baseCovered(axis, want) || s.grantsCovered(s.permanent, axis, want, false) ||
 		s.grantsCovered(s.session, axis, want, false) || s.onceCovered(axis, want)
+}
+
+// CoveredScopes returns the effective covered scopes for axis after every tier
+// resolves (base ∪ permanent ∪ session ∪ once), normalized against the store
+// cwd, deduplicated, and returned in tier order. A blanket grant on the axis
+// subsumes every scoped grant, so the result is then the single blanket marker
+// "" — the unrestricted form flag building renders.
+//
+// Once-tier grants of every in-flight call are included: once grants are spent
+// only after the call resolves, so a view taken during the call that negotiated
+// them sees them.
+func (s *Store) CoveredScopes(axis Axis) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(scope string) bool {
+		n := s.Normalize(axis, scope)
+		if seen[n] {
+			return false
+		}
+		seen[n] = true
+		out = append(out, n)
+		return n == ""
+	}
+
+	for _, sc := range s.base[axis] {
+		if add(sc) {
+			return []string{""}
+		}
+	}
+	for _, tier := range [][]Grant{s.permanent, s.session} {
+		for _, g := range tier {
+			if g.Axis == axis && add(g.Scope) {
+				return []string{""}
+			}
+		}
+	}
+	// once is keyed by call ID; collect then sort so the view is deterministic
+	// regardless of map order.
+	once := make([]string, 0, len(s.once))
+	for _, grants := range s.once {
+		for _, g := range grants {
+			if g.Axis == axis {
+				once = append(once, g.Scope)
+			}
+		}
+	}
+	sort.Strings(once)
+	for _, scope := range once {
+		if add(scope) {
+			return []string{""}
+		}
+	}
+	return out
+}
+
+// AnyScopeCovered reports whether the effective policy covers axis at any
+// scope — the envelope predicate: a scoped grant satisfies an axis-only
+// request (og-3z5.5.2).
+func (s *Store) AnyScopeCovered(axis Axis) bool {
+	return len(s.CoveredScopes(axis)) > 0
 }
 
 // SetBase replaces the base config surface (per-agent replace-not-merge).
