@@ -127,6 +127,14 @@ The deny point is the tool-execution boundary in `agent.RunTurn`'s tool loop (`i
 
 The gate is injected into `RunTurn` via a functional option (a `permissions.Gate` carrying the store + a negotiator), keeping the agent package plugin-free like the existing `agent.Hooks` seam. The REPL wires the interactive negotiator; the `-p` path wires the auto-deny (or `--approve-all`) negotiator.
 
+### Exception: the code tool's axis requests (og-3z5.5.2)
+
+One tool breaks the blanket rule above, deliberately. The **coverage check** says a `""` (blanket) request is covered only by a blanket grant. The code tool cannot honour that rule: it requests *axes*, never scopes — the model names `read`/`write`/`net`/`run`/`env`, and concrete scopes come from the effective policy at execute time, when the tool renders the Deno `--allow-*` flags from `store.CoveredScopes`. With no scope to match, a timid reading of the blanket rule would escalate on *every* code call under any scoped base — including the no-config default `read = ["."]`, so every snippet that reads a file would prompt for blanket read.
+
+So the code tool's `RequiredPermissions` uses a second envelope: a requested axis is **covered when the effective policy covers it at any scope**, and is then omitted from the requirement set; an axis with no coverage at all becomes a blanket requirement the gate negotiates through the standard once/session/permanent/reject prompt — and which, once granted, is by definition covered thereafter. This is the same intersection og-3z5.2 decided for the code tool and ADR-0005 carried over unchanged: `granted = model_request ∩ policy`, with a scoped grant satisfying an axis request.
+
+The exception is confined to how that one tool *declares* requirements. The gate, the prompt renderer, the store's coverage check, scope matching and tier lifecycle are unchanged; nothing about a grant's meaning differs, and a blanket grant still subsumes every scope on its axis.
+
 ## The prompt renderer contract
 
 Winner of the og-73l.2 human-reaction prototype (framing A — terse aider-style; framings B banner and C prose rejected). Canonical-mode line input, no raw TUI.
