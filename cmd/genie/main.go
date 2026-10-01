@@ -221,6 +221,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		PermanentSink:  permSink,
 		OnUsageDegrade: func(msg string) { fmt.Fprintf(stderr, "%s\n", msg) },
 		WithLedger:     true,
+		SkillPool:      skillPool,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
