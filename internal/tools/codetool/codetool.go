@@ -6,6 +6,7 @@ package codetool
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/okayest-dev/genie/internal/permissions"
 	"github.com/okayest-dev/genie/internal/tools"
@@ -26,7 +27,9 @@ func New(store *permissions.Store) *Tool {
 // args is the request as far as the permission mapping reads it: the axes the
 // model asks for, never scopes.
 type args struct {
+	Code        string   `json:"code"`
 	Permissions []string `json:"permissions"`
+	Timeout     int      `json:"timeout,omitempty"`
 }
 
 // RequiredPermissions maps each requested axis onto an axis-only requirement
@@ -57,4 +60,47 @@ func (t *Tool) RequiredPermissions(raw json.RawMessage) ([]tools.Requirement, er
 		reqs = append(reqs, tools.Requirement{Axis: name})
 	}
 	return reqs, nil
+}
+
+// buildDenoFlags constructs the Deno --allow-* flags from the effective
+// covered scopes for each requested axis. It uses the store's CoveredScopes
+// view, which includes base, permanent, session, and once-tier grants.
+// - A blanket grant (scope "") yields the unrestricted flag form (no =scopes).
+// - Scoped grants are rendered comma-separated per axis.
+// - An unrequested axis yields no flag.
+// - Scopes pass through verbatim; they are not normalized, reordered, or filtered.
+func (t *Tool) buildDenoFlags(raw json.RawMessage) []string {
+	var a args
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return nil
+	}
+
+	asked := make(map[permissions.Axis]bool, len(a.Permissions))
+	for _, name := range a.Permissions {
+		if permissions.IsAxis(name) {
+			asked[permissions.Axis(name)] = true
+		}
+	}
+
+	var flags []string
+	for _, axis := range permissions.AxisNames() {
+		ax := permissions.Axis(axis)
+		if !asked[ax] {
+			continue
+		}
+		scopes := t.store.CoveredScopes(ax)
+		if len(scopes) == 0 {
+			// Axis requested but no coverage — the gate should have blocked
+			// this, but we defensively emit no flag so Deno denies by default.
+			continue
+		}
+		// Blanket grant: scopes contains only "".
+		if len(scopes) == 1 && scopes[0] == "" {
+			flags = append(flags, fmt.Sprintf("--allow-%s", axis))
+			continue
+		}
+		// Scoped grants: join with commas.
+		flags = append(flags, fmt.Sprintf("--allow-%s=%s", axis, strings.Join(scopes, ",")))
+	}
+	return flags
 }

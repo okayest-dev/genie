@@ -293,3 +293,153 @@ func TestRejectedAxisDeniesWithoutGrant(t *testing.T) {
 		t.Error("a rejected axis left coverage behind")
 	}
 }
+
+// ==== Flag building tests ====
+
+func TestBuildDenoFlags_ScopedGrants(t *testing.T) {
+	store := permissions.New("/work")
+	store.SetBaseFromConfig(map[string][]string{
+		"read":  {"/work/src", "/work/test"},
+		"write": {"/work/out"},
+		"net":   {"api.example.com:443", "*.github.com:443"},
+		"run":   {"git", "npm"},
+		"env":   {"DB_HOST", "API_KEY"},
+	})
+
+	tool := New(store)
+	call := raw(`{"code":"1","permissions":["read","write","net","run","env"]}`)
+
+	flags := tool.buildDenoFlags(call)
+	want := []string{
+		"--allow-read=/work/src,/work/test",
+		"--allow-write=/work/out",
+		"--allow-net=api.example.com:443,*.github.com:443",
+		"--allow-run=git,npm",
+		"--allow-env=DB_HOST,API_KEY",
+	}
+	if len(flags) != len(want) {
+		t.Fatalf("flags = %v; want %v", flags, want)
+	}
+	for i := range want {
+		if flags[i] != want[i] {
+			t.Errorf("flags[%d] = %q; want %q", i, flags[i], want[i])
+		}
+	}
+}
+
+func TestBuildDenoFlags_BlanketGrant(t *testing.T) {
+	store := permissions.New("/work")
+	store.GrantPermanent(permissions.Grant{Axis: permissions.AxisRead, Scope: ""})
+	store.GrantPermanent(permissions.Grant{Axis: permissions.AxisWrite, Scope: ""})
+	store.GrantPermanent(permissions.Grant{Axis: permissions.AxisNet, Scope: ""})
+	store.GrantPermanent(permissions.Grant{Axis: permissions.AxisRun, Scope: ""})
+	store.GrantPermanent(permissions.Grant{Axis: permissions.AxisEnv, Scope: ""})
+
+	tool := New(store)
+	call := raw(`{"code":"1","permissions":["read","write","net","run","env"]}`)
+
+	flags := tool.buildDenoFlags(call)
+	want := []string{
+		"--allow-read",
+		"--allow-write",
+		"--allow-net",
+		"--allow-run",
+		"--allow-env",
+	}
+	if len(flags) != len(want) {
+		t.Fatalf("flags = %v; want %v", flags, want)
+	}
+	for i := range want {
+		if flags[i] != want[i] {
+			t.Errorf("flags[%d] = %q; want %q", i, flags[i], want[i])
+		}
+	}
+}
+
+func TestBuildDenoFlags_UnrequestedAxisNoFlag(t *testing.T) {
+	store := permissions.New("/work")
+	store.SetBaseFromConfig(map[string][]string{
+		"read": {"/work/src"},
+		"write": {"/work/out"},
+	})
+
+	tool := New(store)
+	call := raw(`{"code":"1","permissions":["read"]}`)
+
+	flags := tool.buildDenoFlags(call)
+	want := []string{
+		"--allow-read=/work/src",
+	}
+	if len(flags) != len(want) {
+		t.Fatalf("flags = %v; want %v", flags, want)
+	}
+	if flags[0] != want[0] {
+		t.Errorf("flags[0] = %q; want %q", flags[0], want[0])
+	}
+}
+
+func TestBuildDenoFlags_NoRequestedAxes_NoFlags(t *testing.T) {
+	store := permissions.New("/work")
+	store.SetBaseFromConfig(map[string][]string{
+		"read": {"/work/src"},
+	})
+
+	tool := New(store)
+	for _, call := range []string{`{"code":"1"}`, `{"code":"1","permissions":[]}`, `{}`} {
+		flags := tool.buildDenoFlags(raw(call))
+		if len(flags) != 0 {
+			t.Errorf("buildDenoFlags(%s) = %v; want empty", call, flags)
+		}
+	}
+}
+
+func TestBuildDenoFlags_OnceTierGrantsVisible(t *testing.T) {
+	store := permissions.New("/work")
+	call := store.BeginCall("/work/run")
+	store.GrantOnce(call, permissions.AxisRead, "/work/secret")
+	store.GrantOnce(call, permissions.AxisWrite, "/work/output")
+
+	tool := New(store)
+	args := raw(`{"code":"1","permissions":["read","write"]}`)
+
+	flags := tool.buildDenoFlags(args)
+	// Base read is "." which normalizes to "/work", plus once grant "/work/secret"
+	// Write has no base, only once grant "/work/output"
+	want := []string{
+		"--allow-read=/work,/work/secret",
+		"--allow-write=/work/output",
+	}
+	if len(flags) != len(want) {
+		t.Fatalf("flags = %v; want %v", flags, want)
+	}
+	for i := range want {
+		if flags[i] != want[i] {
+			t.Errorf("flags[%d] = %q; want %q", i, flags[i], want[i])
+		}
+	}
+}
+
+func TestBuildDenoFlags_ScopesNotNormalizedOrReordered(t *testing.T) {
+	store := permissions.New("/work")
+	store.SetBaseFromConfig(map[string][]string{
+		"read": {"/work/b", "/work/a", "/work/c"},
+		"net":  {"host3.com:443", "host1.com:443", "host2.com:443"},
+	})
+
+	tool := New(store)
+	call := raw(`{"code":"1","permissions":["read","net"]}`)
+
+	flags := tool.buildDenoFlags(call)
+	want := []string{
+		"--allow-read=/work/b,/work/a,/work/c",
+		"--allow-net=host3.com:443,host1.com:443,host2.com:443",
+	}
+	if len(flags) != len(want) {
+		t.Fatalf("flags = %v; want %v", flags, want)
+	}
+	for i := range want {
+		if flags[i] != want[i] {
+			t.Errorf("flags[%d] = %q; want %q (scopes must pass through verbatim, not reordered)", i, flags[i], want[i])
+		}
+	}
+}
