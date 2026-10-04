@@ -456,12 +456,14 @@ type fakeRunner struct {
 	exitCode  int
 	err       error
 	ran       bool
+	callCount int
 	lastCall  string
 	lastFlags []string
 }
 
 func (f *fakeRunner) Run(ctx context.Context, snippetPath string, flags []string, cwd string) (stdout, stderr string, exitCode int, err error) {
 	f.ran = true
+	f.callCount++
 	f.lastCall = snippetPath
 	f.lastFlags = flags
 	return f.stdout, f.stderr, f.exitCode, f.err
@@ -658,9 +660,9 @@ func TestParseDenoNotCapable_ReadDenial(t *testing.T) {
     at file:///test.ts:1:15
 {"code":"ERR_PERMISSION_DENIED","permission":"read","resource":"/etc/hosts"}`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc == nil {
-		t.Fatal("parseDenoNotCapable returned nil for valid denial")
+	nc, ok := permissions.FindAndParseNotCapable(stderr)
+	if !ok {
+		t.Fatal("FindAndParseNotCapable returned false for valid denial")
 	}
 	if nc.Permission != "read" {
 		t.Errorf("permission = %q; want %q", nc.Permission, "read")
@@ -677,9 +679,9 @@ func TestParseDenoNotCapable_WriteDenial(t *testing.T) {
 
 	stderr := `{"code":"ERR_PERMISSION_DENIED","permission":"write","resource":"/root/secret.txt"}`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc == nil {
-		t.Fatal("parseDenoNotCapable returned nil for write denial")
+	nc, ok := permissions.FindAndParseNotCapable(stderr)
+	if !ok {
+		t.Fatal("FindAndParseNotCapable returned false for write denial")
 	}
 	if nc.Permission != "write" {
 		t.Errorf("permission = %q; want %q", nc.Permission, "write")
@@ -696,9 +698,9 @@ func TestParseDenoNotCapable_NetDenial(t *testing.T) {
 
 	stderr := `{"code":"ERR_PERMISSION_DENIED","permission":"net","resource":"api.example.com:443"}`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc == nil {
-		t.Fatal("parseDenoNotCapable returned nil for net denial")
+	nc, ok := permissions.FindAndParseNotCapable(stderr)
+	if !ok {
+		t.Fatal("FindAndParseNotCapable returned false for net denial")
 	}
 	if nc.Permission != "net" {
 		t.Errorf("permission = %q; want %q", nc.Permission, "net")
@@ -715,9 +717,9 @@ func TestParseDenoNotCapable_RunDenial(t *testing.T) {
 
 	stderr := `{"code":"ERR_PERMISSION_DENIED","permission":"run","resource":"rm"}`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc == nil {
-		t.Fatal("parseDenoNotCapable returned nil for run denial")
+	nc, ok := permissions.FindAndParseNotCapable(stderr)
+	if !ok {
+		t.Fatal("FindAndParseNotCapable returned false for run denial")
 	}
 	if nc.Permission != "run" {
 		t.Errorf("permission = %q; want %q", nc.Permission, "run")
@@ -734,15 +736,35 @@ func TestParseDenoNotCapable_EnvDenial(t *testing.T) {
 
 	stderr := `{"code":"ERR_PERMISSION_DENIED","permission":"env","resource":"SECRET_KEY"}`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc == nil {
-		t.Fatal("parseDenoNotCapable returned nil for env denial")
+	nc, ok := permissions.FindAndParseNotCapable(stderr)
+	if !ok {
+		t.Fatal("FindAndParseNotCapable returned false for env denial")
 	}
 	if nc.Permission != "env" {
 		t.Errorf("permission = %q; want %q", nc.Permission, "env")
 	}
 	if nc.Resource != "SECRET_KEY" {
 		t.Errorf("resource = %q; want %q", nc.Resource, "SECRET_KEY")
+	}
+}
+
+func TestParseDenoNotCapable_ResourceWithBrace(t *testing.T) {
+	cwd := tempCwd(t)
+	store := permissions.New(cwd)
+	_ = New(store, cwd, 30*time.Second)
+
+	// Resource containing } should not break parsing (skipQuoted handles this)
+	stderr := `{"code":"ERR_PERMISSION_DENIED","permission":"read","resource":"/path}with}brace"}`
+
+	nc, ok := permissions.FindAndParseNotCapable(stderr)
+	if !ok {
+		t.Fatal("FindAndParseNotCapable returned false for resource with brace")
+	}
+	if nc.Permission != "read" {
+		t.Errorf("permission = %q; want %q", nc.Permission, "read")
+	}
+	if nc.Resource != "/path}with}brace" {
+		t.Errorf("resource = %q; want %q", nc.Resource, "/path}with}brace")
 	}
 }
 
@@ -755,9 +777,9 @@ func TestParseDenoNotCapable_UnrecognisedStderrFallsThrough(t *testing.T) {
 	stderr := `error: Uncaught TypeError: Cannot read property 'foo' of undefined
     at file:///test.ts:1:15`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc != nil {
-		t.Errorf("parseDenoNotCapable returned %+v; want nil for non-denial error", nc)
+	_, ok := permissions.FindAndParseNotCapable(stderr)
+	if ok {
+		t.Errorf("FindAndParseNotCapable returned true for non-denial error")
 	}
 }
 
@@ -766,9 +788,9 @@ func TestParseDenoNotCapable_EmptyStderrReturnsNil(t *testing.T) {
 	store := permissions.New(cwd)
 	_ = New(store, cwd, 30*time.Second)
 
-	nc := parseDenoNotCapable("")
-	if nc != nil {
-		t.Errorf("parseDenoNotCapable returned %+v; want nil for empty stderr", nc)
+	_, ok := permissions.FindAndParseNotCapable("")
+	if ok {
+		t.Errorf("FindAndParseNotCapable returned true for empty stderr")
 	}
 }
 
@@ -780,9 +802,9 @@ func TestParseDenoNotCapable_MalformedJSONReturnsNil(t *testing.T) {
 	// Has the marker but invalid JSON
 	stderr := `{"code":"ERR_PERMISSION_DENIED","permission":}`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc != nil {
-		t.Errorf("parseDenoNotCapable returned %+v; want nil for malformed JSON", nc)
+	_, ok := permissions.FindAndParseNotCapable(stderr)
+	if ok {
+		t.Errorf("FindAndParseNotCapable returned true for malformed JSON")
 	}
 }
 
@@ -794,22 +816,40 @@ func TestParseDenoNotCapable_WrongCodeReturnsNil(t *testing.T) {
 	// Different error code
 	stderr := `{"code":"ERR_SOMETHING_ELSE","permission":"read","resource":"/etc/hosts"}`
 
-	nc := parseDenoNotCapable(stderr)
-	if nc != nil {
-		t.Errorf("parseDenoNotCapable returned %+v; want nil for wrong error code", nc)
+	_, ok := permissions.FindAndParseNotCapable(stderr)
+	if ok {
+		t.Errorf("FindAndParseNotCapable returned true for wrong error code")
 	}
 }
 
-func TestParseDenoNotCapable_MissingPermissionReturnsNil(t *testing.T) {
+func TestParseDenoNotCapable_MissingPermissionCallerRejects(t *testing.T) {
 	cwd := tempCwd(t)
 	store := permissions.New(cwd)
-	_ = New(store, cwd, 30*time.Second)
+	runner := &fakeRunner{
+		stdout:   "",
+		stderr:   `{"code":"ERR_PERMISSION_DENIED","resource":"/etc/hosts"}`,
+		exitCode: 1,
+	}
+	tool := New(store, cwd, 30*time.Second).WithRunner(runner)
 
-	stderr := `{"code":"ERR_PERMISSION_DENIED","resource":"/etc/hosts"}`
+	// Missing permission should fall through as regular error output
+	output, err := tool.Execute(raw(`{"code":"console.log('hi')","permissions":["read"]}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
 
-	nc := parseDenoNotCapable(stderr)
-	if nc != nil {
-		t.Errorf("parseDenoNotCapable returned %+v; want nil for missing permission", nc)
+	// Should NOT be rewritten by MapNotCapable (the tool doesn't emit a NotCapable marker)
+	mapped, ok := permissions.MapNotCapable(output)
+	if ok {
+		t.Errorf("MapNotCapable incorrectly rewrote missing-permission case: %q", mapped)
+	}
+
+	// The output should contain the raw stderr as regular error output
+	if !strings.Contains(output, "resource") {
+		t.Errorf("output missing stderr content: %q", output)
+	}
+	if !strings.Contains(output, "[exit code 1]") {
+		t.Errorf("output missing exit code: %q", output)
 	}
 }
 
@@ -909,9 +949,9 @@ func TestExecute_NotCapableEmitter_NoRetryOnDenial(t *testing.T) {
 	if !runner.ran {
 		t.Fatal("runner was not called")
 	}
-	// The fake runner doesn't track call count, but we verify no error is returned
-	// that would indicate a retry occurred (the tool returns the NotCapable marker
-	// directly without retrying)
+	if runner.callCount != 1 {
+		t.Errorf("runner called %d times; want exactly 1 (no retry on denial)", runner.callCount)
+	}
 }
 
 // ==== Integration tests with real Deno ====
