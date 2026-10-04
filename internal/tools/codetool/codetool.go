@@ -213,6 +213,11 @@ func (t *Tool) Execute(raw json.RawMessage) (string, error) {
 	// Execute
 	stdout, stderr, exitCode, err := t.runner.Run(ctx, snippetPath, flags, t.cwd)
 
+	// Check for Deno permission denial (NotCapable) on stderr
+	if nc := parseDenoNotCapable(stderr); nc != nil {
+		return t.formatNotCapable(nc), nil
+	}
+
 	// Combine output with exit code
 	output := t.formatOutput(stdout, stderr, exitCode)
 
@@ -234,6 +239,67 @@ func (t *Tool) Execute(raw json.RawMessage) (string, error) {
 	}
 
 	return output, nil
+}
+
+// denoNotCapable represents a parsed Deno permission denial from stderr.
+type denoNotCapable struct {
+	Permission string
+	Resource   string
+}
+
+// parseDenoNotCapable attempts to extract a Deno permission denial from stderr.
+// Deno emits structured JSON on stderr: {"code":"ERR_PERMISSION_DENIED","permission":"read","resource":"/path"}
+// Returns nil if stderr does not contain a recognized denial pattern.
+func parseDenoNotCapable(stderr string) *denoNotCapable {
+	const codeMarker = "ERR_PERMISSION_DENIED"
+	idx := strings.Index(stderr, codeMarker)
+	if idx == -1 {
+		return nil
+	}
+	// Find the JSON object containing the marker
+	start := strings.LastIndex(stderr[:idx], "{")
+	if start == -1 {
+		return nil
+	}
+	// Find matching closing brace
+	depth := 0
+	end := -1
+	for i := start; i < len(stderr); i++ {
+		switch stderr[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				end = i + 1
+				break
+			}
+		}
+	}
+	if end == -1 {
+		return nil
+	}
+	jsonStr := stderr[start:end]
+	var nc struct {
+		Code       string `json:"code"`
+		Permission string `json:"permission"`
+		Resource   string `json:"resource"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &nc); err != nil {
+		return nil
+	}
+	if nc.Code != codeMarker || nc.Permission == "" {
+		return nil
+	}
+	return &denoNotCapable{
+		Permission: nc.Permission,
+		Resource:   nc.Resource,
+	}
+}
+
+// formatNotCapable returns the NotCapable marker that MapNotCapable recognizes.
+func (t *Tool) formatNotCapable(nc *denoNotCapable) string {
+	return fmt.Sprintf(`{"code":"ERR_PERMISSION_DENIED","permission":"%s","resource":"%s"}`, nc.Permission, nc.Resource)
 }
 
 // buildDenoFlags constructs the Deno --allow-* flags from the effective
