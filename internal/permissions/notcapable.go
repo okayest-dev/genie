@@ -28,7 +28,7 @@ func MapNotCapable(text string) (string, bool) {
 	if marker == -1 {
 		return text, false
 	}
-	nc, ok := parseNotCapable(text[marker:])
+	nc, ok := ParseNotCapable(text[marker:])
 	if !ok {
 		return text, false
 	}
@@ -38,32 +38,11 @@ func MapNotCapable(text string) (string, bool) {
 	return RenderNotCapableComposite(Axis(nc.Permission)), true
 }
 
-// RenderNotCapableComposite renders the pinned model-facing composite for a
-// mid-call runtime permission denial (og-uy5.5). Unlike the inline escalation
-// composites, there is no grant/reject line — the call already lost permission
-// mid-execution, so only the status/hint pair is shown.
-func RenderNotCapableComposite(axis Axis) string {
-	return fmt.Sprintf(
-		"status: call not executed — %s unavailable at runtime\n"+
-			"hint: inline escalation is not available mid-execution — request %s access in advance via request_permission, or reformulate",
-		axis, axis)
-}
-
-// findNotCapable locates the object holding the first "ERR_PERMISSION_DENIED"
-// marker in text, returning the opening brace's index; a bare marker outside a
-// JSON object yields -1.
-func findNotCapable(text string) int {
-	idx := strings.Index(text, NotCapableCode)
-	if idx == -1 {
-		return -1
-	}
-	return strings.LastIndex(text[:idx], "{")
-}
-
-// parseNotCapable unmarshals the JSON object beginning at text[0], matching
-// braces across quoted strings so a "}" inside a marker's strings never
-// truncates the shape.
-func parseNotCapable(text string) (NotCapable, bool) {
+// ParseNotCapable parses a NotCapable marker from text that starts with a
+// JSON object. It handles quoted strings correctly so a "}" inside a marker's
+// strings never truncates the shape. Returns (NotCapable{}, false) if parsing
+// fails or the text doesn't contain a valid marker.
+func ParseNotCapable(text string) (NotCapable, bool) {
 	if len(text) == 0 || text[0] != '{' {
 		return NotCapable{}, false
 	}
@@ -86,6 +65,51 @@ func parseNotCapable(text string) (NotCapable, bool) {
 		}
 	}
 	return NotCapable{}, false
+}
+
+// RenderNotCapableComposite renders the pinned model-facing composite for a
+// mid-call runtime permission denial (og-uy5.5). Unlike the inline escalation
+// composites, there is no grant/reject line — the call already lost permission
+// mid-execution, so only the status/hint pair is shown.
+func RenderNotCapableComposite(axis Axis) string {
+	return fmt.Sprintf(
+		"status: call not executed — %s unavailable at runtime\n"+
+			"hint: inline escalation is not available mid-execution — request %s access in advance via request_permission, or reformulate",
+		axis, axis)
+}
+
+// RenderNotCapableMarker returns the JSON marker string for a NotCapable
+// denial, properly escaped for use as a tool result.
+func RenderNotCapableMarker(permission, resource string) string {
+	nc := NotCapable{
+		Code:       NotCapableCode,
+		Permission: permission,
+		Resource:   resource,
+	}
+	b, _ := json.Marshal(nc)
+	return string(b)
+}
+
+// findNotCapable locates the object holding the first "ERR_PERMISSION_DENIED"
+// marker in text, returning the opening brace's index; a bare marker outside a
+// JSON object yields -1.
+func findNotCapable(text string) int {
+	idx := strings.Index(text, NotCapableCode)
+	if idx == -1 {
+		return -1
+	}
+	return strings.LastIndex(text[:idx], "{")
+}
+
+// FindAndParseNotCapable locates and parses a NotCapable marker in text.
+// It searches for the ERR_PERMISSION_DENIED code, finds the enclosing JSON
+// object, and parses it. Returns (NotCapable{}, false) if no valid marker is found.
+func FindAndParseNotCapable(text string) (NotCapable, bool) {
+	marker := findNotCapable(text)
+	if marker == -1 {
+		return NotCapable{}, false
+	}
+	return ParseNotCapable(text[marker:])
 }
 
 // skipQuoted returns the index of the quote closing the JSON string that opens

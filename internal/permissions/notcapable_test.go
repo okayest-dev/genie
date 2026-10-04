@@ -124,18 +124,18 @@ func TestMapNotCapableMalformedJSONUntouched(t *testing.T) {
 }
 
 func TestParseNotCapableUnterminatedJSON(t *testing.T) {
-	// parseNotCapable must reject text whose opening brace never closes; the
+	// ParseNotCapable must reject text whose opening brace never closes; the
 	// harness treats it as ordinary output rather than a NotCapable marker.
-	if nc, ok := parseNotCapable(`{"code":"ERR_PERMISSION_DENIED"`); ok {
-		t.Errorf("parseNotCapable on unterminated JSON reported ok, got %+v", nc)
+	if nc, ok := ParseNotCapable(`{"code":"ERR_PERMISSION_DENIED"`); ok {
+		t.Errorf("ParseNotCapable on unterminated JSON reported ok, got %+v", nc)
 	}
 }
 
 func TestParseNotCapableQuotedBrace(t *testing.T) {
 	// A "}" inside the marker's strings must not truncate the shape.
-	nc, ok := parseNotCapable(`{"code":"ERR_PERMISSION_DENIED","permission":"net","resource":"a}b"}`)
+	nc, ok := ParseNotCapable(`{"code":"ERR_PERMISSION_DENIED","permission":"net","resource":"a}b"}`)
 	if !ok {
-		t.Fatalf("parseNotCapable on quoted-brace JSON reported no map")
+		t.Fatalf("ParseNotCapable on quoted-brace JSON reported no map")
 	}
 	if nc.Resource != "a}b" {
 		t.Errorf("resource = %q, want %q", nc.Resource, "a}b")
@@ -151,9 +151,9 @@ func TestParseNotCapableQuotedBrace(t *testing.T) {
 
 func TestMapNotCapableEscapedQuote(t *testing.T) {
 	marker := `{"code":"ERR_PERMISSION_DENIED","permission":"net","resource":"a\"b"}`
-	nc, ok := parseNotCapable(marker)
+	nc, ok := ParseNotCapable(marker)
 	if !ok {
-		t.Fatalf("parseNotCapable on escaped-quote marker reported no map")
+		t.Fatalf("ParseNotCapable on escaped-quote marker reported no map")
 	}
 	if nc.Resource != `a"b` {
 		t.Errorf("resource = %q, want %q", nc.Resource, `a"b`)
@@ -179,8 +179,8 @@ func TestSkipQuotedUnterminated(t *testing.T) {
 
 func TestParseNotCapableNonJSONObject(t *testing.T) {
 	// Content between braces that is not a JSON object must not parse.
-	if _, ok := parseNotCapable(`{not json at all}`); ok {
-		t.Errorf("parseNotCapable on non-JSON braces reported ok")
+	if _, ok := ParseNotCapable(`{not json at all}`); ok {
+		t.Errorf("ParseNotCapable on non-JSON braces reported ok")
 	}
 }
 
