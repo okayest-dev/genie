@@ -22,6 +22,12 @@ const (
 	maxOutputBytes = 1 << 20 // 1 MB — output beyond this is truncated with a spill file
 )
 
+// IsDenoAvailable reports whether the `deno` executable is on PATH.
+func IsDenoAvailable() bool {
+	_, err := exec.LookPath("deno")
+	return err == nil
+}
+
 // Runner is the interface for executing a Deno snippet. The real
 // implementation shells out to `deno run`; tests inject a fake.
 type Runner interface {
@@ -114,7 +120,10 @@ func (t *Tool) Name() string { return "code" }
 
 // Description returns the tool description.
 func (t *Tool) Description() string {
-	return "Execute a TypeScript/JavaScript snippet in a sandboxed Deno subprocess. Request permission axes via the permissions field."
+	if IsDenoAvailable() {
+		return "Execute a TypeScript/JavaScript snippet in a sandboxed Deno subprocess. Request permission axes via the permissions field."
+	}
+	return "Execute a TypeScript/JavaScript snippet in a sandboxed Deno subprocess (Deno not found on PATH — tool disabled). Request permission axes via the permissions field."
 }
 
 // Parameters returns the JSON Schema for the tool arguments.

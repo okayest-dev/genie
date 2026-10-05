@@ -153,11 +153,28 @@ provider = "copilot"
 opts = { domain = "tenant.ghe.com" }
 ```
 
-A built-in `auth login` device-flow command is planned but not yet shipped;
-today the store is provisioned externally (e.g. by the standalone copilot
-plugin's `auth` subcommand, which writes the same file). A missing, malformed,
-version-mismatched, or host-less store fails auth with a typed error rather
-than falling back to a shared key.
+A built-in `/copilot auth login` device-flow command provisions the store
+interactively. Run it in the REPL:
+
+```
+genie> /copilot auth login
+Open https://github.com/login/device and enter code ABCD-1234
+```
+
+For GitHub Enterprise, specify the host:
+
+```
+genie> /copilot auth login --host tenant.ghe.com
+```
+
+Check status with:
+
+```
+genie> /copilot auth status
+```
+
+A missing, malformed, version-mismatched, or host-less store fails auth with a
+typed error rather than falling back to a shared key.
 
 ## `[tools]` — per-tool toggles
 

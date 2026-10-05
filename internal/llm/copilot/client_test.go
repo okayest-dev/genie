@@ -161,7 +161,7 @@ func assertCopilotHeaders(t *testing.T, r *http.Request) {
 // writeCreds writes a credential store for github.com.
 func writeCreds(t *testing.T, dataHome, host string) {
 	t.Helper()
-	store := credentialsFile{Version: 1, Hosts: map[string]hostEntry{
+	store := CredentialsFile{Version: 1, Hosts: map[string]HostEntry{
 		host: {OAuthToken: "gho_creds"},
 	}}
 	data, err := json.Marshal(store)
@@ -416,12 +416,12 @@ func TestStreamFullRequestShape(t *testing.T) {
 
 func TestDefaultXDGDataHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "/tmp/xdg")
-	if got := defaultXDGDataHome(); got != "/tmp/xdg" {
-		t.Errorf("defaultXDGDataHome() with XDG_DATA_HOME = %q, want /tmp/xdg", got)
+	if got := DefaultXDGDataHome(); got != "/tmp/xdg" {
+		t.Errorf("DefaultXDGDataHome() with XDG_DATA_HOME = %q, want /tmp/xdg", got)
 	}
 	t.Setenv("XDG_DATA_HOME", "")
-	if got := defaultXDGDataHome(); got == "" || got == "." {
-		t.Errorf("defaultXDGDataHome() without XDG_DATA_HOME = %q, want the ~/.local/share fallback", got)
+	if got := DefaultXDGDataHome(); got == "" || got == "." {
+		t.Errorf("DefaultXDGDataHome() without XDG_DATA_HOME = %q, want the ~/.local/share fallback", got)
 	}
 }
 

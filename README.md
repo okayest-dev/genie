@@ -81,10 +81,46 @@ The model has access to six tools:
 | **write** | Create or overwrite files. Permission-gated on the write axis (see [Permissions](#permissions)). Auto-creates parent directories. |
 | **edit** | Surgical find-and-replace. Exact, whitespace-sensitive matching. One pair at a time. |
 | **bash** | Run shell commands via `sh -c`. Permission-gated on the run and net axes (see [Permissions](#permissions)). 120s timeout (configurable). |
+| **code** | Run TypeScript/JavaScript snippets in a sandboxed Deno subprocess. Permission-gated on read, write, net, run, env axes via the permissions field (see [Permissions](#permissions)). 30s timeout (configurable). Requires Deno on PATH; if absent, the tool is registered but disabled with a startup notice. |
 | **request_permission** | Pre-negotiate a permission grant for a call you expect to be denied (see [Permissions](#permissions)). Never auto-approved. |
 | **skill** | Return a discovered skill's instructions verbatim, so the model can pull in task-specific conventions on demand (see [docs/skills.md](docs/skills.md)). Resolves against the active agent's bound skill set. |
 
 `read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool.
+
+### Code tool schema
+
+The `code` tool accepts the following JSON schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "description": "TypeScript/JavaScript code to execute"
+    },
+    "permissions": {
+      "type": "array",
+      "description": "Permission axes to request (read, write, net, run, env)",
+      "items": {
+        "type": "string",
+        "enum": ["read", "write", "net", "run", "env"]
+      }
+    },
+    "timeout": {
+      "type": "integer",
+      "description": "Execution timeout in seconds (overrides configured default)"
+    }
+  },
+  "required": ["code"]
+}
+```
+
+- `code` (required): The TypeScript/JavaScript snippet to execute.
+- `permissions` (optional): Array of permission axes the snippet needs. Each axis is one of `read`, `write`, `net`, `run`, `env`. The concrete scopes come from the effective policy at execution time — the model requests axes, not scopes.
+- `timeout` (optional): Per-call timeout in seconds. Overrides the configured `code_timeout` default (30s).
+
+The tool requires **Deno on PATH**. If Deno is not found at startup, the tool is registered but disabled, and a notice is printed to stderr. The bash tool remains available as an execution path; if bash is also disabled, the notice includes a pointer to re-enable it via `config.Tools.Bash`.
 
 ## Configuration
 
@@ -112,6 +148,8 @@ read = true
 write = true
 edit = true
 bash = true
+code = true
+code_timeout = 30
 
 [plugins]
 # dir = "~/.config/genie/plugins"
@@ -318,6 +356,7 @@ The previous `tools.Confirmer` seam (bash every-call prompts, write-overwrite pr
 | `GENIE_INSTRUCTION_FILE` | Path to agent instruction file |
 | `GENIE_SESSION_DIR` | Session storage directory |
 | `GENIE_BASH_TIMEOUT` | Bash command timeout (seconds) |
+| `GENIE_CODE_TIMEOUT` | Code tool timeout (seconds) |
 | `GENIE_PLUGIN_DIR` | Plugin discovery directory |
 | `GENIE_SKILL_DIR` | Skill discovery directory (replaces all skill dirs) |
 | `GENIE_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |

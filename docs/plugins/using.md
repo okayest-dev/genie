@@ -53,10 +53,7 @@ When a plugin is disabled it is never spawned — its tools, hooks, and commands
 Plugins that expose commands are reached with two tokens: `/<plugin> <command>`. Sub-argument parsing beyond the command name is the plugin's own business, and everything after the command is passed through verbatim.
 
 ```
-genie> /copilot auth login
-Open https://github.com/login/device and enter code ABCD-1234
-
-genie> /copilot auth status
+genie> /my-plugin do-thing
 ```
 
 Facts about the command surface:
@@ -73,6 +70,8 @@ The three miss messages you'll see and what they mean:
 | `/foo whatever` | `unknown command: /foo (try /help)` | no such plugin |
 | `/copilot nope` | `copilot: no such command: nope` | plugin exists, command doesn't |
 | `/copilot auth` | `plugin copilot is not active` | plugin loaded then crashed/timed out |
+
+> **Note:** The copilot provider is a bundled in-process wire, not a plugin. Its `/copilot auth login` and `/copilot auth status` commands are built-in and always available when the copilot provider is configured. They don't appear in the plugin commands section of `/help`.
 
 ## Using plugin tools
 
