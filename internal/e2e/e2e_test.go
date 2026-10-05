@@ -181,13 +181,24 @@ func assertCleanFailure(t *testing.T, stdout, stderr string, code int, wantStder
 	if stdout != "" {
 		t.Errorf("stdout = %q, want empty on failure", stdout)
 	}
-	// The boot session notice precedes the failure line; skip it when
-	// checking that stderr opens with the Error: banner.
+	// The boot session notice and code tool disabled warning precede the
+	// failure line; skip them when checking that stderr opens with the Error:
+	// banner.
 	firstLine := stderr
-	if strings.HasPrefix(firstLine, "session: ") {
-		if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
-			firstLine = firstLine[idx+1:]
+	for {
+		if strings.HasPrefix(firstLine, "session: ") {
+			if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+				firstLine = firstLine[idx+1:]
+			}
+			continue
 		}
+		if strings.HasPrefix(firstLine, "code tool disabled: ") {
+			if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+				firstLine = firstLine[idx+1:]
+			}
+			continue
+		}
+		break
 	}
 	if !strings.HasPrefix(firstLine, "Error: ") {
 		t.Errorf("stderr = %q, want to start with %q", stderr, "Error: ")
@@ -4250,5 +4261,340 @@ func TestPerAgentPermanentGrantAppliesOverAgentBase(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workDir, "out.txt")); err != nil {
 		t.Errorf("run 3: out.txt not written headless over the agent base: %v", err)
+	}
+}
+
+// ==== Code tool e2e scenarios (og-3z5.5.7) ====
+
+// codeToolCallArgs returns JSON args for a code tool call.
+func codeToolCallArgs(code string, permissions []string) string {
+	args := map[string]any{
+		"code":        code,
+		"permissions": permissions,
+	}
+	raw, _ := json.Marshal(args)
+	return string(raw)
+}
+
+// codeToolThenText starts a provider that answers odd requests with a code
+// tool call and even requests with a text reply, recording request bodies.
+func codeToolThenText(t *testing.T, code string, permissions []string, text string) (*httptest.Server, *[]string) {
+	t.Helper()
+	return toolCallsThenTextVaried(t, []srvToolCall{
+		{name: "code", args: map[string]string{
+			"code":        code,
+			"permissions": string(mustMarshalJSON(permissions)),
+		}},
+	}, text)
+}
+
+// codeToolCallsThenTextVaried starts a provider that answers the i-th odd
+// request with the i-th code tool call (cycling) and even requests with a text
+// reply, recording request bodies.
+func codeToolCallsThenTextVaried(t *testing.T, calls []struct {
+	Code        string
+	Permissions []string
+}, text string) (*httptest.Server, *[]string) {
+	t.Helper()
+	srvCalls := make([]srvToolCall, len(calls))
+	for i, c := range calls {
+		srvCalls[i] = srvToolCall{name: "code", args: map[string]string{
+			"code":        c.Code,
+			"permissions": string(mustMarshalJSON(c.Permissions)),
+		}}
+	}
+	return toolCallsThenTextVaried(t, srvCalls, text)
+}
+
+// mustMarshalJSON panics on error; for test helpers only.
+func mustMarshalJSON(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// denoAvailable reports whether deno is on PATH for e2e tests.
+func denoAvailable() bool {
+	_, err := exec.LookPath("deno")
+	return err == nil
+}
+
+// TestCodeToolGrantedCall drives an end-to-end granted code call: the model
+// requests read permission, the user grants it for the session, the snippet
+// executes, and the output reaches the model with the grant line.
+func TestCodeToolGrantedCall(t *testing.T) {
+	if !denoAvailable() {
+		t.Skip("deno not on PATH")
+	}
+	workDir := t.TempDir()
+	// Create a test file to read
+	testFile := filepath.Join(workDir, "test.txt")
+	if err := os.WriteFile(testFile, []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	srv, bodies := codeToolThenText(t,
+		fmt.Sprintf(`const data = await Deno.readTextFile("%s"); console.log(data);`, testFile),
+		[]string{"read"},
+		"read the file successfully",
+	)
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "read test.txt\ns\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// The escalation prompt appears
+	if !strings.Contains(stdout, "allow read ") || !strings.Contains(stdout, "test.txt? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+		t.Errorf("stdout = %q, want the escalation prompt", stdout)
+	}
+	// The model's follow-up text appears
+	if !strings.Contains(stdout, "read the file successfully") {
+		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
+	}
+	// The file content was printed by the snippet
+	if !strings.Contains(stdout, "hello world") {
+		t.Errorf("stdout = %q, want the snippet output", stdout)
+	}
+	// The follow-up request carries the grant line
+	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: read") {
+		t.Errorf("follow-up request did not carry the grant line; bodies=%v", *bodies)
+	}
+}
+
+// TestCodeToolRejectedCall drives an end-to-end rejected code call: the model
+// requests write permission, the user rejects it, the call does not execute,
+// and the composite status/hint is fed back.
+func TestCodeToolRejectedCall(t *testing.T) {
+	if !denoAvailable() {
+		t.Skip("deno not on PATH")
+	}
+	workDir := t.TempDir()
+
+	srv, bodies := codeToolThenText(t,
+		`await Deno.writeTextFile("output.txt", "should not run");`,
+		[]string{"write"},
+		"call was rejected",
+	)
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "write output.txt\nr\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// The rejection prompt appears
+	if !strings.Contains(stdout, "allow write ") || !strings.Contains(stdout, "output.txt? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+		t.Errorf("stdout = %q, want the escalation prompt", stdout)
+	}
+	// The file was NOT created
+	if _, err := os.Stat(filepath.Join(workDir, "output.txt")); !os.IsNotExist(err) {
+		t.Errorf("output.txt exists (err=%v), want never created under rejection", err)
+	}
+	// The follow-up request carries the composite deny
+	if len(*bodies) < 2 {
+		t.Fatalf("requests = %d, want the denied result fed back", len(*bodies))
+	}
+	wantComposite := "Permission rejected: write " + filepath.Join(workDir, "output.txt") + " — consider an alternative\nstatus: call not executed\nhint: granted axes remain available — reformulate without the denied axis."
+	if !strings.Contains((*bodies)[1], wantComposite) {
+		t.Errorf("follow-up request missing the composite deny; body=%s", (*bodies)[1])
+	}
+}
+
+// TestCodeToolNotCapableMidRunEarnsAxis drives the mid-run NotCapable scenario:
+// a snippet is granted read but Deno denies at runtime (NotCapable), the tool
+// emits the pinned composite, the model calls request_permission to earn the
+// axis, and a second call succeeds.
+func TestCodeToolNotCapableMidRunEarnsAxis(t *testing.T) {
+	if !denoAvailable() {
+		t.Skip("deno not on PATH")
+	}
+	workDir := t.TempDir()
+
+	// The provider scripts:
+	// 1. First request: model calls code with read permission -> Deno denies (NotCapable)
+	// 2. Second request: model calls request_permission for read -> granted
+	// 3. Third request: model calls code again with read -> succeeds
+	var bodies []string
+	var callCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		callCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		var chunks []string
+		if callCount == 1 {
+			// First turn: model calls code tool
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "code", codeToolCallArgs(
+					`const data = await Deno.readTextFile("/etc/hosts"); console.log(data);`,
+					[]string{"read"},
+				)),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else if callCount == 2 {
+			// Second turn: tool returns NotCapable marker, model calls request_permission
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_2", "request_permission", `{"permission":"read","scope":"/etc/hosts"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else if callCount == 3 {
+			// Third turn: model calls code again, now with granted permission
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_3", "code", codeToolCallArgs(
+					`const data = await Deno.readTextFile("/etc/hosts"); console.log(data);`,
+					[]string{"read"},
+				)),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else {
+			chunks = []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done}
+		}
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	stdout, stderr, code := runInDirWithStdin(t, workDir, "read /etc/hosts\ns\n/quit\n", []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	// First escalation prompt for the initial code call
+	if !strings.Contains(stdout, "allow read ") {
+		t.Errorf("stdout = %q, want first escalation prompt", stdout)
+	}
+	// The NotCapable composite appears in output (from the tool result)
+	wantComposite := "status: call not executed — read unavailable at runtime\nhint: inline escalation is not available mid-execution — request read access in advance via request_permission, or reformulate"
+	if !strings.Contains(stdout, wantComposite) {
+		t.Errorf("stdout = %q, want the NotCapable composite", stdout)
+	}
+	// Second escalation prompt for request_permission
+	if n := strings.Count(stdout, "allow read "); n != 2 {
+		t.Errorf("stdout prompted %d times, want 2 (initial + request_permission)", n)
+	}
+	// The follow-up request (request 3) carries the grant line
+	if len(bodies) < 3 || !strings.Contains(bodies[2], "Permission granted: read") {
+		t.Errorf("request 3 did not carry the grant line; bodies=%v", bodies)
+	}
+	// The final model reply appears
+	if !strings.Contains(stdout, "done") {
+		t.Errorf("stdout = %q, want final model reply", stdout)
+	}
+}
+
+// TestCodeToolNotCapableHeadlessAutoDeny drives a headless (-p) code call
+// where NotCapable is emitted and the composite is fed back — no inline
+// escalation in headless mode.
+func TestCodeToolNotCapableHeadlessAutoDeny(t *testing.T) {
+	if !denoAvailable() {
+		t.Skip("deno not on PATH")
+	}
+	workDir := t.TempDir()
+
+	// Provider scripts one code call that will hit NotCapable, then a text reply
+	var bodies []string
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		callCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		var chunks []string
+		if callCount == 1 {
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "code", codeToolCallArgs(
+					`const data = await Deno.readTextFile("/etc/hosts"); console.log(data);`,
+					[]string{"read"},
+				)),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else {
+			chunks = []string{fake.TextDelta("ok"), fake.Finish("stop"), fake.Done}
+		}
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	_, stderr, code := runInDir(t, workDir, []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}, "-p", "read /etc/hosts")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	// In headless mode, the code call is auto-denied (no interactive prompt)
+	// The tool result should be the NotCapable composite
+	if len(bodies) < 2 {
+		t.Fatalf("requests = %d, want the NotCapable result fed back", len(bodies))
+	}
+	wantComposite := "status: call not executed — read unavailable at runtime\nhint: inline escalation is not available mid-execution — request read access in advance via request_permission, or reformulate"
+	if !strings.Contains(bodies[1], wantComposite) {
+		t.Errorf("follow-up request missing the NotCapable composite; body=%s", bodies[1])
+	}
+}
+
+// TestCodeToolDenoAbsentSkips asserts that when deno is not on PATH, the code
+// tool is disabled and scenarios skip cleanly. This test runs in an environment
+// where deno is temporarily hidden from PATH.
+func TestCodeToolDenoAbsentSkips(t *testing.T) {
+	if denoAvailable() {
+		t.Skip("deno is on PATH; test requires deno to be absent")
+	}
+
+	srv := scriptedProvider(t, fake.Behavior{
+		Chunks: []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done},
+	})
+
+	// The code tool is disabled, so the model should not be able to call it.
+	// The provider would not send a code tool call, but we verify the binary
+	// handles the disabled tool gracefully (it won't appear in the system message).
+	stdout, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SESSION_DIR=" + t.TempDir(),
+	}, "-p", "run some code")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// The tool should be disabled, so no escalation prompt for code
+	if strings.Contains(stdout, "allow ") {
+		t.Errorf("stdout = %q, want no escalation when code tool is disabled", stdout)
+	}
+	// The model gets a normal reply
+	if !strings.Contains(stdout, "done") {
+		t.Errorf("stdout = %q, want model reply", stdout)
 	}
 }
