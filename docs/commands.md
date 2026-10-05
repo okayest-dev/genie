@@ -62,6 +62,25 @@ genie> @orchestrator draft the release notes
 
 Runs that prompt through the `orchestrator` agent definition for a single turn, then returns you to the previous agent. The agent's model, instruction, and tool set all apply for that turn.
 
+### Built-in provider commands
+
+The copilot provider exposes credential-management commands directly:
+
+```
+genie> /copilot auth login
+Open https://github.com/login/device and enter code ABCD-1234
+```
+
+```
+genie> /copilot auth login --host tenant.ghe.com
+```
+
+```
+genie> /copilot auth status
+```
+
+A bare `/copilot` shows usage.
+
 ### Plugin commands
 
 Plugins can register commands, addressed as `/<plugin> <command>` with the plugin's name as the namespace:

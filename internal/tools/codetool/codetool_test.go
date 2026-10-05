@@ -954,6 +954,125 @@ func TestExecute_NotCapableEmitter_NoRetryOnDenial(t *testing.T) {
 	}
 }
 
+// ==== Basic tool interface tests ====
+
+func TestName(t *testing.T) {
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
+	if tool.Name() != "code" {
+		t.Errorf("Name() = %q; want %q", tool.Name(), "code")
+	}
+}
+
+func TestDescription_DenoAvailable(t *testing.T) {
+	cwd := tempCwd(t)
+	tool := New(permissions.New(cwd), cwd, 30*time.Second)
+	desc := tool.Description()
+	if desc == "" {
+		t.Fatal("Description() returned empty string")
+	}
+	if !strings.Contains(desc, "TypeScript") {
+		t.Errorf("Description() = %q; want it to mention TypeScript", desc)
+	}
+	if !strings.Contains(desc, "Deno") {
+		t.Errorf("Description() = %q; want it to mention Deno", desc)
+	}
+}
+
+func TestParameters(t *testing.T) {
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
+	params := tool.Parameters()
+	if params == nil {
+		t.Fatal("Parameters() returned nil")
+	}
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("Parameters missing properties")
+	}
+	// Check required fields
+	if _, ok := props["code"]; !ok {
+		t.Error("Parameters missing 'code' property")
+	}
+	if _, ok := props["permissions"]; !ok {
+		t.Error("Parameters missing 'permissions' property")
+	}
+	if _, ok := props["timeout"]; !ok {
+		t.Error("Parameters missing 'timeout' property")
+	}
+	// Check required array
+	req, ok := params["required"].([]any)
+	if !ok || len(req) == 0 {
+		t.Error("Parameters missing required array")
+	}
+	foundCode := false
+	for _, r := range req {
+		if r == "code" {
+			foundCode = true
+			break
+		}
+	}
+	if !foundCode {
+		t.Error("Required array missing 'code'")
+	}
+	// Check permissions enum
+	permProp, ok := props["permissions"].(map[string]any)
+	if !ok {
+		t.Error("permissions property not an object")
+	}
+	items, ok := permProp["items"].(map[string]any)
+	if !ok {
+		t.Error("permissions items not an object")
+	}
+	enum, ok := items["enum"].([]string)
+	if !ok {
+		t.Error("permissions enum missing")
+	}
+	wantEnum := []string{"read", "write", "net", "run", "env"}
+	if len(enum) != len(wantEnum) {
+		t.Errorf("enum = %v; want %v", enum, wantEnum)
+	}
+	for i := range wantEnum {
+		if enum[i] != wantEnum[i] {
+			t.Errorf("enum[%d] = %q; want %q", i, enum[i], wantEnum[i])
+		}
+	}
+}
+
+func TestIsDenoAvailable(t *testing.T) {
+	// We can't easily mock exec.LookPath, but we can at least
+	// verify the function runs without panicking and returns a bool
+	result := IsDenoAvailable()
+	_ = result // just verify it returns a bool
+}
+
+func TestDescription_DenoAbsent(t *testing.T) {
+	// This test documents the expected behavior when Deno is not available.
+	// We can't easily inject a fake LookPath, so we verify the function
+	// returns a string that contains the disabled notice when Deno is absent.
+	// In the test environment, Deno is typically not available.
+	tool := New(permissions.New("/work"), "/work", 30*time.Second)
+	desc := tool.Description()
+	if desc == "" {
+		t.Fatal("Description() returned empty string")
+	}
+	// The description should always mention TypeScript and Deno
+	if !strings.Contains(desc, "TypeScript") {
+		t.Errorf("Description() = %q; want it to mention TypeScript", desc)
+	}
+	// The description should always mention Deno (either available or not)
+	if !strings.Contains(desc, "Deno") {
+		t.Errorf("Description() = %q; want it to mention Deno", desc)
+	}
+	// If Deno is not available, the description should mention "disabled"
+	if !IsDenoAvailable() {
+		if !strings.Contains(desc, "disabled") {
+			t.Errorf("Description() = %q; want it to mention 'disabled' when Deno absent", desc)
+		}
+		if !strings.Contains(desc, "not found on PATH") {
+			t.Errorf("Description() = %q; want it to mention 'not found on PATH' when Deno absent", desc)
+		}
+	}
+}
+
 // ==== Integration tests with real Deno ====
 
 // denoAvailable checks if deno is on PATH.

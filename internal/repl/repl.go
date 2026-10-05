@@ -22,6 +22,7 @@ import (
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/llm/copilot"
 	"github.com/okayest-dev/genie/internal/plugin"
 	"github.com/okayest-dev/genie/internal/run"
 )
@@ -204,6 +205,9 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		fmt.Fprintln(cfg.Stdout, "  /model <id>       switch to a different model")
 		fmt.Fprintln(cfg.Stdout, "  /agent            list available agents")
 		fmt.Fprintln(cfg.Stdout, "  /agent <name>     switch to a named agent")
+		fmt.Fprintln(cfg.Stdout, "  /copilot          manage Copilot credentials")
+		fmt.Fprintln(cfg.Stdout, "  /copilot auth login [--host <domain>]  start device-flow login")
+		fmt.Fprintln(cfg.Stdout, "  /copilot auth status [--host <domain>] show credential status")
 		fmt.Fprintln(cfg.Stdout, "")
 		fmt.Fprintln(cfg.Stdout, "  @<name> <prompt>  one-shot agent switch")
 		if cmds := cfg.Run.Commands(); cmds != nil {
@@ -243,6 +247,15 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 			listAgents(cfg)
 		} else {
 			switchAgent(strings.TrimSpace(parts[1]), cfg)
+		}
+
+	case "/copilot":
+		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+			fmt.Fprintln(cfg.Stdout, "Usage: /copilot auth <login|status> [--host <domain>]")
+			fmt.Fprintln(cfg.Stdout, "  /copilot auth login [--host github.com]  Start device-flow login")
+			fmt.Fprintln(cfg.Stdout, "  /copilot auth status [--host github.com] Show credential status")
+		} else {
+			handleCopilotCommand(ctx, strings.TrimSpace(parts[1]), cfg)
 		}
 
 	default:
@@ -556,5 +569,123 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 			fmt.Fprint(out, f.Diff)
 		}
 		fmt.Fprintln(out)
+	}
+}
+
+// handleCopilotCommand handles /copilot auth <login|status> [--host <domain>].
+func handleCopilotCommand(ctx context.Context, args string, cfg *Config) {
+	parts := strings.Fields(args)
+	if len(parts) == 0 {
+		fmt.Fprintln(cfg.Stdout, "Usage: /copilot auth <login|status> [--host <domain>]")
+		return
+	}
+
+	if parts[0] != "auth" {
+		fmt.Fprintf(cfg.Stdout, "unknown copilot command: %s (try /copilot auth login|status)\n", parts[0])
+		return
+	}
+
+	if len(parts) < 2 {
+		fmt.Fprintln(cfg.Stdout, "Usage: /copilot auth <login|status> [--host <domain>]")
+		return
+	}
+
+	subcmd := parts[1]
+	host := "github.com"
+	for i := 2; i < len(parts); i++ {
+		if parts[i] == "--host" && i+1 < len(parts) {
+			host = parts[i+1]
+			i++
+		}
+	}
+
+	switch subcmd {
+	case "login":
+		handleCopilotLogin(ctx, host, cfg)
+	case "status":
+		handleCopilotStatus(host, cfg)
+	default:
+		fmt.Fprintf(cfg.Stdout, "unknown copilot auth command: %s (try login|status)\n", subcmd)
+	}
+}
+
+// handleCopilotLogin runs the device-flow login for the given host.
+func handleCopilotLogin(ctx context.Context, host string, cfg *Config) {
+	fmt.Fprintf(cfg.Stdout, "Starting device-flow login for %s...\n", host)
+
+	dcr, err := copilot.StartDeviceFlow(ctx, host)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "Error: failed to start device flow: %v\n", err)
+		return
+	}
+
+	fmt.Fprintf(cfg.Stdout, "\nOpen %s and enter code: %s\n\n", dcr.VerificationURI, dcr.UserCode)
+
+	// Try to open browser
+	if err := copilot.OpenBrowser(dcr.VerificationURI); err != nil {
+		fmt.Fprintf(cfg.Stdout, "(Could not open browser automatically: %v)\n", err)
+	}
+
+	fmt.Fprint(cfg.Stdout, "Waiting for authorization...")
+
+	tr, err := copilot.PollForToken(ctx, host, dcr.DeviceCode, dcr.Interval)
+	if err != nil {
+		fmt.Fprintf(cfg.Stdout, "\nError: %v\n", err)
+		return
+	}
+
+	fmt.Fprint(cfg.Stdout, "\n")
+
+	// Fetch user info
+	ui, err := copilot.FetchUserInfo(ctx, host, tr.AccessToken)
+	if err != nil {
+		fmt.Fprintf(cfg.Stderr, "Warning: got token but failed to fetch user info: %v\n", err)
+		ui = &copilot.UserInfo{Login: "unknown"}
+	}
+
+	// Write to credential store
+	xdgDataHome := copilot.DefaultXDGDataHome()
+	if err := copilot.WriteOAuthToken(xdgDataHome, host, tr.AccessToken, ui.Login); err != nil {
+		fmt.Fprintf(cfg.Stderr, "Error: failed to write credentials: %v\n", err)
+		return
+	}
+
+	fmt.Fprintf(cfg.Stdout, "Logged in as %s on %s\n", ui.Login, host)
+	fmt.Fprintf(cfg.Stdout, "Credentials stored at %s/copilot/credentials.json\n", xdgDataHome)
+}
+
+// handleCopilotStatus shows the credential status for the given host.
+func handleCopilotStatus(host string, cfg *Config) {
+	xdgDataHome := copilot.DefaultXDGDataHome()
+	path := copilot.StorePath(xdgDataHome)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(cfg.Stdout, "No credentials found at %s\n", path)
+		return
+	}
+
+	var store copilot.CredentialsFile
+	if err := json.Unmarshal(data, &store); err != nil {
+		fmt.Fprintf(cfg.Stderr, "Error: failed to parse credentials: %v\n", err)
+		return
+	}
+
+	entry, ok := store.Hosts[host]
+	if !ok {
+		fmt.Fprintf(cfg.Stdout, "No credentials for host %s\n", host)
+		return
+	}
+
+	fmt.Fprintf(cfg.Stdout, "Host: %s\n", host)
+	fmt.Fprintf(cfg.Stdout, "User: %s\n", entry.User)
+	fmt.Fprintf(cfg.Stdout, "Updated: %s\n", entry.UpdatedAt)
+	if entry.OAuthToken != "" {
+		// Show only prefix for security
+		token := entry.OAuthToken
+		if len(token) > 8 {
+			token = token[:8] + "..."
+		}
+		fmt.Fprintf(cfg.Stdout, "OAuth Token: %s\n", token)
 	}
 }

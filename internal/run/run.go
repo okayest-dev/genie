@@ -175,7 +175,8 @@ func New(opts Options) (*Handle, error) {
 	full.Register(writetool.New(opts.Cwd))
 	full.Register(edittool.New(opts.Cwd))
 	full.Register(bashtool.New(opts.Cwd, opts.Config.BashTimeout))
-	full.Register(codetool.New(h.store, opts.Cwd, opts.Config.Tools.CodeTimeout))
+	codeT := codetool.New(h.store, opts.Cwd, opts.Config.Tools.CodeTimeout)
+	full.Register(codeT)
 	reqT := requesttool.New(store, h.sink)
 	reqT.SetNegotiator(opts.Negotiator)
 	full.Register(reqT)
@@ -192,8 +193,22 @@ func New(opts Options) (*Handle, error) {
 	if !opts.Config.Tools.Bash {
 		full.Disable("bash")
 	}
+
+	// Code tool: register by default, but if Deno is absent, disable and warn.
+	// The tool remains registered (so its description reflects runtime) but
+	// disabled. The message additionally points at re-enabling bash if bash
+	// is also disabled.
 	if !opts.Config.Tools.Code {
 		full.Disable("code")
+	} else if !codetool.IsDenoAvailable() {
+		full.Disable("code")
+		msg := "code tool disabled: Deno not found on PATH"
+		if !opts.Config.Tools.Bash {
+			msg += "; re-enable bash via config tools.bash to retain an execution path"
+		}
+		if opts.Stderr != nil {
+			fmt.Fprintf(opts.Stderr, "%s\n", msg)
+		}
 	}
 	h.full = full
 	h.reqT = reqT
@@ -359,6 +374,11 @@ func (h *Handle) Bound() []skill.ParsedSkill {
 	return h.bound
 }
 
+// codeToolInstruction is the paragraph injected into the agent instruction
+// when the code tool is enabled. It tells the model how to request permissions,
+// what happens on denial, and that the base-policy snapshot is the source of truth.
+const codeToolInstruction = "\nWhen using the code tool, request the permission axes you need via the permissions field (read, write, net, run, env). Your requests are intersected with the effective policy — you will see what was granted. On a denial, do not retry the call; instead, call request_permission to ask in advance, or work within the granted scope. Do not re-attempt a permission you personally rejected. The current permissions snapshot above is the authoritative source."
+
 // resolveInstruction assembles the instruction for the given agent,
 	// re-running the skill pipeline (discover → filter → bind → build) on every
 	// read so SKILL.md edits are picked up without a config reload, and appending
@@ -392,6 +412,18 @@ func (h *Handle) Bound() []skill.ParsedSkill {
 		if err != nil {
 			return "", err
 		}
+
+		// Inject code tool instruction paragraph when the tool is enabled.
+		// The paragraph tells the model to request needed axes in permissions;
+		// know requests are intersected with effective policy and it sees what
+		// was granted; on a denial, NOT retry but ask via request_permission or
+		// work within the granted scope; and not re-attempt a personally rejected
+		// permission. The existing base-policy snapshot stays the mechanism's
+		// source of truth.
+		if !h.full.IsDisabled("code") {
+			s += codeToolInstruction
+		}
+
 		return s, nil
 	}
 

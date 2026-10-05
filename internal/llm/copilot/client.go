@@ -22,7 +22,7 @@ func init() {
 		if d, ok := opts["domain"].(string); ok && d != "" {
 			domain = d
 		}
-		return NewClient(domain, defaultXDGDataHome())
+		return NewClient(domain, DefaultXDGDataHome())
 	})
 }
 

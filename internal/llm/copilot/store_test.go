@@ -8,9 +8,9 @@ import (
 )
 
 func TestReadStoreValid(t *testing.T) {
-	store := credentialsFile{
+	store := CredentialsFile{
 		Version: 1,
-		Hosts: map[string]hostEntry{
+		Hosts: map[string]HostEntry{
 			"github.com": {OAuthToken: "gho_test123", User: "testuser"},
 		},
 	}
@@ -35,9 +35,9 @@ func TestReadStoreMissingFile(t *testing.T) {
 }
 
 func TestReadStoreWrongHost(t *testing.T) {
-	store := credentialsFile{
+	store := CredentialsFile{
 		Version: 1,
-		Hosts: map[string]hostEntry{
+		Hosts: map[string]HostEntry{
 			"github.com": {OAuthToken: "gho_test123"},
 		},
 	}
@@ -51,9 +51,9 @@ func TestReadStoreWrongHost(t *testing.T) {
 }
 
 func TestReadStoreEmptyOAuthToken(t *testing.T) {
-	store := credentialsFile{
+	store := CredentialsFile{
 		Version: 1,
-		Hosts: map[string]hostEntry{
+		Hosts: map[string]HostEntry{
 			"github.com": {OAuthToken: ""},
 		},
 	}
@@ -78,9 +78,9 @@ func TestReadStoreMalformedJSON(t *testing.T) {
 }
 
 func TestReadStoreWrongVersion(t *testing.T) {
-	store := credentialsFile{
+	store := CredentialsFile{
 		Version: 99,
-		Hosts: map[string]hostEntry{
+		Hosts: map[string]HostEntry{
 			"github.com": {OAuthToken: "gho_test123"},
 		},
 	}
@@ -104,7 +104,7 @@ func TestStoreDefaultPath(t *testing.T) {
 }
 
 // writeStore writes a credentials file to dir/genie/copilot/credentials.json.
-func writeStore(t *testing.T, dir string, store credentialsFile) {
+func writeStore(t *testing.T, dir string, store CredentialsFile) {
 	t.Helper()
 	data, err := json.Marshal(store)
 	if err != nil {

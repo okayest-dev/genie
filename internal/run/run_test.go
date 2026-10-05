@@ -16,6 +16,7 @@ import (
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/permissions"
+	"github.com/okayest-dev/genie/internal/tools/codetool"
 	"github.com/okayest-dev/genie/internal/tools/requesttool"
 )
 
@@ -143,7 +144,7 @@ func newTestHandle(t *testing.T, opts Options) *Handle {
 func testCfg(dir string) *config.Config {
 	return &config.Config{
 		SessionDir: dir,
-		Tools:      config.Tools{Read: true, Write: true, Edit: true, Bash: true},
+		Tools:      config.Tools{Read: true, Write: true, Edit: true, Bash: true, Code: true, CodeTimeout: 30 * time.Second},
 	}
 }
 
@@ -246,6 +247,160 @@ func TestNewToolToggles(t *testing.T) {
 	}
 	if _, ok := h.Registry().Get("bash"); !ok {
 		t.Error("bash should stay enabled")
+	}
+}
+
+func TestNewCodeToolEnabledByDefault(t *testing.T) {
+	h := newTestHandle(t, Options{
+		Config:         testCfg(t.TempDir()),
+		ProviderSource: twoProviderSource(),
+		Provider:       "alpha",
+		Stderr:         io.Discard,
+	})
+
+	if codetool.IsDenoAvailable() {
+		if _, ok := h.Registry().Get("code"); !ok {
+			t.Error("code tool should be enabled by default when deno is available")
+		}
+	} else {
+		// When deno is absent, tool is registered but disabled
+		if !h.Registry().IsDisabled("code") {
+			t.Error("code tool should be registered but disabled when deno is absent")
+		}
+	}
+}
+
+func TestNewCodeToolDisabledByConfig(t *testing.T) {
+	h := newTestHandle(t, Options{
+		Config: func() *config.Config {
+			cfg := testCfg(t.TempDir())
+			cfg.Tools.Code = false
+			return cfg
+		}(),
+		ProviderSource: twoProviderSource(),
+		Provider:       "alpha",
+		Stderr:         io.Discard,
+	})
+	if _, ok := h.Registry().Get("code"); ok {
+		t.Error("code tool should be disabled when tools.code = false")
+	}
+	// Should be registered but disabled
+	if !h.Registry().IsDisabled("code") {
+		t.Error("code tool should be registered but disabled")
+	}
+}
+
+func TestNewCodeToolDenoAbsentRegistered(t *testing.T) {
+	h := newTestHandle(t, Options{
+		Config:         testCfg(t.TempDir()),
+		ProviderSource: twoProviderSource(),
+		Provider:       "alpha",
+		Stderr:         io.Discard,
+	})
+	// The tool should always be registered regardless of deno
+	// When deno is available, Get returns the tool; if not, it's disabled
+	if codetool.IsDenoAvailable() {
+		if _, ok := h.Registry().Get("code"); !ok {
+			t.Error("code tool should be available when deno is present")
+		}
+	} else {
+		if !h.Registry().IsDisabled("code") {
+			t.Error("code tool should be registered but disabled when deno is absent")
+		}
+	}
+}
+
+func TestInstructionIncludesCodeToolParagraphWhenEnabled(t *testing.T) {
+	h := newTestHandle(t, Options{
+		Config:         testCfg(t.TempDir()),
+		ProviderSource: twoProviderSource(), Provider: "alpha", Stderr: io.Discard,
+	})
+
+	// Only check if deno is available (tool enabled)
+	if codetool.IsDenoAvailable() {
+		inst := h.Instruction()
+		if !strings.Contains(inst, "When using the code tool") {
+			t.Errorf("instruction missing code tool paragraph:\n%s", inst)
+		}
+		if !strings.Contains(inst, "request the permission axes you need") {
+			t.Errorf("instruction missing request axes guidance:\n%s", inst)
+		}
+		if !strings.Contains(inst, "do not retry") {
+			t.Errorf("instruction missing do-not-retry guidance:\n%s", inst)
+		}
+		if !strings.Contains(inst, "request_permission") {
+			t.Errorf("instruction missing request_permission guidance:\n%s", inst)
+		}
+	}
+}
+
+func TestInstructionExcludesCodeToolParagraphWhenDisabled(t *testing.T) {
+	h := newTestHandle(t, Options{
+		Config: func() *config.Config {
+			cfg := testCfg(t.TempDir())
+			cfg.Tools.Code = false
+			return cfg
+		}(),
+		ProviderSource: twoProviderSource(), Provider: "alpha", Stderr: io.Discard,
+	})
+	inst := h.Instruction()
+	if strings.Contains(inst, "When using the code tool") {
+		t.Errorf("instruction should not have code tool paragraph when disabled:\n%s", inst)
+	}
+}
+
+func TestNewCodeToolDenoAbsentWarnsOnStderr(t *testing.T) {
+	if codetool.IsDenoAvailable() {
+		t.Skip("deno is available; cannot test deno-absent warning")
+	}
+	var stderr bytes.Buffer
+	h := newTestHandle(t, Options{
+		Config:         testCfg(t.TempDir()),
+		ProviderSource: twoProviderSource(),
+		Provider:       "alpha",
+		Stderr:         &stderr,
+	})
+	// Tool should be disabled
+	if !h.Registry().IsDisabled("code") {
+		t.Error("code tool should be disabled when deno absent")
+	}
+	// Stderr should contain the warning
+	output := stderr.String()
+	if !strings.Contains(output, "code tool disabled: Deno not found on PATH") {
+		t.Errorf("stderr missing deno warning: %q", output)
+	}
+	// Should NOT contain bash re-enable hint (bash is enabled by default)
+	if strings.Contains(output, "re-enable bash") {
+		t.Errorf("stderr should not mention bash re-enable when bash is enabled: %q", output)
+	}
+}
+
+func TestNewCodeToolDenoAbsentAndBashDisabledWarnsWithBashHint(t *testing.T) {
+	if codetool.IsDenoAvailable() {
+		t.Skip("deno is available; cannot test deno-absent warning")
+	}
+	var stderr bytes.Buffer
+	h := newTestHandle(t, Options{
+		Config: func() *config.Config {
+			cfg := testCfg(t.TempDir())
+			cfg.Tools.Bash = false
+			return cfg
+		}(),
+		ProviderSource: twoProviderSource(),
+		Provider:       "alpha",
+		Stderr:         &stderr,
+	})
+	// Tool should be disabled
+	if !h.Registry().IsDisabled("code") {
+		t.Error("code tool should be disabled when deno absent")
+	}
+	// Stderr should contain both the warning and the bash hint
+	output := stderr.String()
+	if !strings.Contains(output, "code tool disabled: Deno not found on PATH") {
+		t.Errorf("stderr missing deno warning: %q", output)
+	}
+	if !strings.Contains(output, "re-enable bash via config tools.bash") {
+		t.Errorf("stderr missing bash re-enable hint: %q", output)
 	}
 }
 
