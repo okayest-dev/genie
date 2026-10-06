@@ -89,6 +89,12 @@ func (b *BDBridge) Close(ctx context.Context, id string, reason string) error {
 	return err
 }
 
+// Comment adds a comment to a task using `bd comment <id> --message <comment>`.
+func (b *BDBridge) Comment(ctx context.Context, id string, comment string) error {
+	_, err := b.runBD(ctx, "comment", id, "--message", comment)
+	return err
+}
+
 // ErrNoReadyTasks is returned when no ready tasks are available.
 var ErrNoReadyTasks = errors.New("no ready tasks available")
 
@@ -351,6 +357,15 @@ func (f *FakeTracker) Close(ctx context.Context, id string, reason string) error
 	t.Status = "closed"
 	if f.claimedID == id {
 		f.claimedID = ""
+	}
+	return nil
+}
+
+// Comment adds a comment to a task (no-op for fake tracker).
+func (f *FakeTracker) Comment(ctx context.Context, id string, comment string) error {
+	_, ok := f.tasks[id]
+	if !ok {
+		return fmt.Errorf("task not found: %s", id)
 	}
 	return nil
 }

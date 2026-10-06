@@ -116,6 +116,19 @@ func (m *MarkdownTracker) Close(ctx context.Context, id, reason string) error {
 	return m.writeTask(task)
 }
 
+// Comment adds a comment to a task by appending to the markdown file.
+func (m *MarkdownTracker) Comment(ctx context.Context, id, comment string) error {
+	task, err := m.Read(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	// Append comment to description with timestamp
+	timestamp := time.Now().Format(time.RFC3339)
+	task.Description = strings.TrimSpace(task.Description) + fmt.Sprintf("\n\n---\n\n**Comment** (%s):\n%s", timestamp, comment)
+	return m.writeTask(task)
+}
+
 func (m *MarkdownTracker) readTask(file string) (*tracker.TrackerTask, error) {
 	content, err := os.ReadFile(file)
 	if err != nil {

@@ -31,6 +31,7 @@ const (
 	MethodTrackerClaim           = "tracker/claim"
 	MethodTrackerRead            = "tracker/read"
 	MethodTrackerClose           = "tracker/close"
+	MethodTrackerComment         = "tracker/comment"
 	MethodPing                   = "ping"
 	MethodShutdown               = "shutdown"
 )
@@ -277,6 +278,17 @@ type TrackerCloseParams struct {
 
 // TrackerCloseResult is the result of tracker/close.
 type TrackerCloseResult struct {
+	Success bool `json:"success"`
+}
+
+// TrackerCommentParams are the parameters for tracker/comment.
+type TrackerCommentParams struct {
+	ID      string `json:"id"`
+	Comment string `json:"comment"`
+}
+
+// TrackerCommentResult is the result of tracker/comment.
+type TrackerCommentResult struct {
 	Success bool `json:"success"`
 }
 

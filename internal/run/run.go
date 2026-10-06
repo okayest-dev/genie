@@ -207,6 +207,10 @@ func New(opts Options) (*Handle, error) {
 
 		claimTool := tasktools.NewTaskClaimTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
 		full.Register(claimTool)
+
+		// Task resolve tool with no-op gate runner (gates epic owns gate contents)
+		resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, tasktools.NoOpGateRunner{}, true, opts.Config.TaskTools.CommandTimeout)
+		full.Register(resolveTool)
 	}
 
 	if !opts.Config.Tools.Read {
@@ -348,6 +352,11 @@ func New(opts Options) (*Handle, error) {
 	if opts.Stderr != nil {
 		fmt.Fprintf(opts.Stderr, "session: %s\n", sess.ID)
 	}
+
+	// Task state transcript mirror: write task state changes as metadata markers.
+	h.taskState.SetOnChange(func(data []byte) error {
+		return h.sess.AppendWithMeta(llm.Message{}, map[string]string{"task_state": string(data)})
+	})
 
 	// Boot provider. Without a source or a name the handle is provider-less.
 	provider := opts.Provider

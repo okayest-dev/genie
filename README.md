@@ -53,11 +53,22 @@ enable = true
 command_timeout = 30
 ```
 
-Once enabled, use the `task.claim` tool to claim tasks:
+Once enabled, use the `task.claim` tool to claim tasks and `task.resolve` to close them:
 ```bash
 # In the REPL, ask the model to claim a task
 task.claim
+
+# After completing the work, resolve the task with a summary
+task.resolve({"summary": "Implemented feature X. All tests pass. Commits: abc123..def456"})
 ```
+
+The `task.resolve` tool:
+- Requires a resolution `summary` with traceability (ticket, commit range, gate evidence)
+- Runs quality gates; any blocking gate failure refuses the resolve
+- For epic/feature task types, requires `human_confirmed=true`
+- Posts the resolution comment to the tracker before closing
+- Clears the active task state (emitting a task boundary signal)
+- Returns a resolution record with task ID, gates passed, commits, worktree, and follow-up tickets
 
 By default, Genie uses a markdown-based tracker (files in `~/.config/genie/tasks/`). For teams using other systems, plugins are available:
 - **bd/beads** - install the `bd-tracker` plugin from the genie plugins repo
@@ -152,7 +163,7 @@ Ctrl+C cancels a running turn. Ctrl+C at the prompt exits.
 
 ## Tools
 
-The model has access to six tools:
+The model has access to eight tools:
 
 | Tool | Description |
 |------|-------------|
@@ -163,8 +174,10 @@ The model has access to six tools:
 | **code** | Run TypeScript/JavaScript snippets in a sandboxed Deno subprocess. Permission-gated on read, write, net, run, env axes via the permissions field (see [Permissions](#permissions)). 30s timeout (configurable). Requires Deno on PATH; if absent, the tool is registered but disabled with a startup notice. |
 | **request_permission** | Pre-negotiate a permission grant for a call you expect to be denied (see [Permissions](#permissions)). Never auto-approved. |
 | **skill** | Return a discovered skill's instructions verbatim, so the model can pull in task-specific conventions on demand (see [docs/skills.md](docs/skills.md)). Resolves against the active agent's bound skill set. |
+| **task.claim** | Claim the next ready task from the tracker, or a specific task by ID. Only one task can be active per session. Requires `task_tools` enabled in config. |
+| **task.resolve** | Resolve (close) the currently active task. Requires a resolution summary with traceability. Runs quality gates; blocking gate failures refuse the resolve. Epic/feature types require `human_confirmed=true`. Requires `task_tools` enabled in config. |
 
-`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool.
+`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool. `task.claim` and `task.resolve` are gated by the `task_tools.enable` config option.
 
 ### Code tool schema
 
