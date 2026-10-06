@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/tracker"
 )
 
 const (
@@ -26,6 +27,10 @@ const (
 	MethodLifecycleToolAfter     = "lifecycle/tool_after"
 	MethodLifecycleResponseReady = "lifecycle/response_ready"
 	MethodLifecycleTurnError     = "lifecycle/turn_error"
+	MethodTrackerFrontier        = "tracker/frontier"
+	MethodTrackerClaim           = "tracker/claim"
+	MethodTrackerRead            = "tracker/read"
+	MethodTrackerClose           = "tracker/close"
 	MethodPing                   = "ping"
 	MethodShutdown               = "shutdown"
 )
@@ -81,6 +86,7 @@ func NewSuccessResponse(id any, result any) (*Response, error) {
 type Capabilities struct {
 	Tools     bool `json:"tools"`
 	Providers bool `json:"providers"`
+	Tracker   bool `json:"tracker"`
 	// Commands registers user-typed slash commands the plugin exposes in the
 	// REPL as /<plugin> <command>, discovered via commands/list and driven via
 	// commands/run.
@@ -104,7 +110,7 @@ type Capabilities struct {
 // HasAny reports whether the plugin declares at least one capability. A plugin
 // that declares none is a protocol/validation error.
 func (c *Capabilities) HasAny() bool {
-	return c.Tools || c.Providers || c.Commands || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
+	return c.Tools || c.Providers || c.Tracker || c.Commands || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
 		c.LifecycleRequestBuilt || c.LifecycleToolBefore || c.LifecycleToolAfter || c.LifecycleResponseReady || c.LifecycleTurnError
 }
 
@@ -115,6 +121,7 @@ type PresenceMask int
 const (
 	PresenceTools PresenceMask = 1 << iota
 	PresenceProviders
+	PresenceTracker
 	PresenceCommands
 	PresenceBeforeRequest
 	PresenceAfterResponse
@@ -135,6 +142,9 @@ func (c *Capabilities) Mask() PresenceMask {
 	}
 	if c.Providers {
 		m |= PresenceProviders
+	}
+	if c.Tracker {
+		m |= PresenceTracker
 	}
 	if c.Commands {
 		m |= PresenceCommands
@@ -223,16 +233,58 @@ type CommandsRunResult struct {
 	Data any    `json:"data,omitempty"`
 }
 
+// CommandsHelpResult is the curated help text for the requested plugin/command.
+type CommandsHelpResult struct {
+	Text string `json:"text"`
+}
+
+// TrackerTask is an alias for the shared tracker type.
+type TrackerTask = tracker.TrackerTask
+
+// TrackerFrontierParams are the parameters for tracker/frontier.
+type TrackerFrontierParams struct{}
+
+// TrackerFrontierResult is the result of tracker/frontier.
+type TrackerFrontierResult struct {
+	Task *TrackerTask `json:"task,omitempty"`
+}
+
+// TrackerClaimParams are the parameters for tracker/claim.
+type TrackerClaimParams struct {
+	ID string `json:"id"`
+}
+
+// TrackerClaimResult is the result of tracker/claim.
+type TrackerClaimResult struct {
+	Task *TrackerTask `json:"task"`
+}
+
+// TrackerReadParams are the parameters for tracker/read.
+type TrackerReadParams struct {
+	ID string `json:"id"`
+}
+
+// TrackerReadResult is the result of tracker/read.
+type TrackerReadResult struct {
+	Task *TrackerTask `json:"task"`
+}
+
+// TrackerCloseParams are the parameters for tracker/close.
+type TrackerCloseParams struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// TrackerCloseResult is the result of tracker/close.
+type TrackerCloseResult struct {
+	Success bool `json:"success"`
+}
+
 // CommandsHelpParams requests curated help for a plugin (Name omitted) or a
 // single command; probed lazily, an absent method falls back to the flat
 // commands/list listing.
 type CommandsHelpParams struct {
 	Name string `json:"name,omitempty"`
-}
-
-// CommandsHelpResult is the curated help text for the requested plugin/command.
-type CommandsHelpResult struct {
-	Text string `json:"text"`
 }
 
 // ContextMessage is the canonical message shape passed to and returned from a
@@ -380,6 +432,9 @@ var (
 	ErrInternalError        = errors.New("internal error")
 	ErrProtocolVersion      = errors.New("unsupported protocol version")
 	ErrCapabilitiesMismatch = errors.New("capabilities mismatch")
+	ErrNoReadyTasks         = errors.New("no ready tasks available")
+	ErrTaskAlreadyActive    = errors.New("a task is already active")
+	ErrTaskNotClaimable     = errors.New("task is not claimable")
 )
 
 func ValidateRequest(req *Request) error {

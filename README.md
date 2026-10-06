@@ -4,18 +4,97 @@ A minimal, std-lib-first Go terminal agent harness. A REPL that runs an agentic 
 
 ## Install
 
+### Quick install (recommended)
+
+```bash
+curl -fsSL https://github.com/okayest-dev/genie/releases/latest/download/install.sh | bash
+```
+
+This installs the Genie binary to `~/.local/bin`, optionally installs Deno for the code tool, creates an interactive config with provider selection, and adds `~/.local/bin` to your PATH.
+
+Options:
+```bash
+# Skip Deno installation
+curl -fsSL ... | bash -s -- --no-deno
+
+# Run config wizard non-interactively
+curl -fsSL ... | bash -s -- --config-wizard --provider openai --api-key sk-...
+
+# Force reinstall (skip upgrade prompt)
+curl -fsSL ... | bash -s -- --force
+
+# Dry run (show what would be done)
+curl -fsSL ... | bash -s -- --dry-run
+```
+
+### From source
+
 Requires Go 1.24+.
 
-```
+```bash
 go install github.com/okayest-dev/genie/cmd/genie@latest
 ```
 
 Or build from source:
 
-```
+```bash
 git clone https://github.com/okayest-dev/genie && cd genie
 make build
 ```
+
+## Task Management
+
+Genie includes a built-in task tracker using markdown files (stored in `~/.config/genie/tasks/`). Each task is a `.md` file with frontmatter for metadata.
+
+```bash
+# Enable task tools in config.toml
+[task_tools]
+enable = true
+command_timeout = 30
+```
+
+Once enabled, use the `task.claim` tool to claim tasks:
+```bash
+# In the REPL, ask the model to claim a task
+task.claim
+```
+
+By default, Genie uses a markdown-based tracker (files in `~/.config/genie/tasks/`). For teams using other systems, plugins are available:
+- **bd/beads** - install the `bd-tracker` plugin from the genie plugins repo
+- **Custom** - implement the `TrackerSource` interface in a plugin for Jira, Trello, GitHub Issues, etc.
+
+## Self-update
+
+```bash
+# Check for updates
+genie self-update --check-only
+
+# Update to latest stable
+genie self-update
+
+# Include pre-releases
+genie self-update --pre
+
+# Auto-approve (CI/CD)
+genie self-update --auto
+```
+
+If installed via package manager (Homebrew, apt, dnf, pacman), `genie self-update` delegates to the package manager.
+
+## Uninstall
+
+```bash
+# Interactive uninstall
+genie uninstall
+
+# Dry run (show what would be removed)
+genie uninstall --dry-run
+
+# Force (skip confirmation)
+genie uninstall --force
+```
+
+Removes binary, config, sessions, PATH entries, and Deno (if installed by Genie).
 
 ## Quick start
 

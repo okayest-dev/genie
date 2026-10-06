@@ -20,6 +20,7 @@ import (
 	"github.com/okayest-dev/genie/internal/plugin"
 	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/skill"
+	"github.com/okayest-dev/genie/internal/tasktools"
 	"github.com/okayest-dev/genie/internal/tokens"
 	"github.com/okayest-dev/genie/internal/tools"
 	"github.com/okayest-dev/genie/internal/tools/bashtool"
@@ -125,6 +126,9 @@ type Handle struct {
 	counter      tokens.Counter
 	buildCtxOpts func(base llm.Client) []contextmgr.Option
 
+	taskState *tasktools.TaskState
+	tracker   tasktools.Tracker
+
 	sess   *session.Session
 	ledger *ledger.Ledger
 
@@ -181,6 +185,30 @@ func New(opts Options) (*Handle, error) {
 	reqT.SetNegotiator(opts.Negotiator)
 	full.Register(reqT)
 	full.Register(skilltool.New(h))
+
+	// Task tools: register if enabled in config
+	h.taskState = tasktools.NewTaskState()
+	if opts.Config.TaskTools.Enable {
+		// Get tracker from plugin manager
+		var tracker tasktools.Tracker
+		if h.plug != nil {
+			tracker = h.plug.GetTrackerSource()
+		}
+		if tracker == nil {
+			// No tracker available (no plugin manager or no tracker plugin)
+			if opts.Stdin != nil && opts.Stdout != nil {
+				// For non-test runs without plugin manager, use fake tracker
+				tracker = tasktools.NewFakeTracker(nil)
+			} else {
+				tracker = tasktools.NewFakeTracker(nil)
+			}
+		}
+		h.tracker = tracker
+
+		claimTool := tasktools.NewTaskClaimTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+		full.Register(claimTool)
+	}
+
 	if !opts.Config.Tools.Read {
 		full.Disable("read")
 	}

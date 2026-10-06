@@ -24,6 +24,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/modelinfo"
+	"github.com/okayest-dev/genie/internal/tasktools"
 )
 
 // Defaults for every configurable scalar.
@@ -224,8 +225,9 @@ type Config struct {
 	// Hooks is the plugin-hook circuit-breaker policy, resolved from
 	// [plugins] hook_failure_threshold / hook_recovery_seconds.
 	Hooks    Hooks
-	Skills   Skills
-	AgentReg *AgentReg
+Skills      Skills
+	AgentReg    *AgentReg
+	TaskTools   tasktools.TaskToolsConfig
 }
 
 // Permissions is the resolved permission policy. Base maps each axis name
@@ -251,18 +253,19 @@ type PermanentGrant struct {
 // (og-z1m.8). provider keeps its dual role as the file-set selection and the
 // GENIE_PROVIDER env override.
 type fileConfig struct {
-	Provider        string          `toml:"provider"`
-	InstructionFile string          `toml:"instruction_file"`
-	SessionDir      string          `toml:"session_dir"`
-	BashTimeout     *int            `toml:"bash_timeout"` // seconds
-	Tools           toolsFile       `toml:"tools"`
-	Plugins         pluginsFile     `toml:"plugins"`
-	Skills          skillsFile      `toml:"skills"`
-	Context         contextFile     `toml:"context"`
-	Lifecycle       lifecycleFile   `toml:"lifecycle"`
-	DefaultAgent    string          `toml:"default_agent"`
-	Providers       providerFiles   `toml:"providers"`
-	Permissions     permissionsFile `toml:"permissions"`
+	Provider        string              `toml:"provider"`
+	InstructionFile string              `toml:"instruction_file"`
+	SessionDir      string              `toml:"session_dir"`
+	BashTimeout     *int                `toml:"bash_timeout"` // seconds
+	Tools           toolsFile           `toml:"tools"`
+	Plugins         pluginsFile         `toml:"plugins"`
+	Skills          skillsFile          `toml:"skills"`
+	Context         contextFile         `toml:"context"`
+	Lifecycle       lifecycleFile       `toml:"lifecycle"`
+	DefaultAgent    string              `toml:"default_agent"`
+	Providers       providerFiles       `toml:"providers"`
+	Permissions     permissionsFile     `toml:"permissions"`
+	TaskTools       taskToolsFile       `toml:"task_tools"`
 }
 
 // providerFiles is the TOML schema for [providers.*]: nested tables keyed by
@@ -285,6 +288,11 @@ type toolsFile struct {
 	Bash        *bool `toml:"bash"`
 	Code        *bool `toml:"code"`
 	CodeTimeout *int  `toml:"code_timeout"` // seconds
+}
+
+type taskToolsFile struct {
+	Enable         *bool `toml:"enable"`
+	CommandTimeout *int   `toml:"command_timeout"` // seconds
 }
 
 // permissionsFile is the TOML schema for [permissions]: per-axis base scopes
@@ -389,6 +397,7 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 			}
 			cfg.Tools.CodeTimeout = time.Duration(*fc.Tools.CodeTimeout) * time.Second
 		}
+		applyTaskTools(&cfg.TaskTools, fc.TaskTools)
 		applyPluginsErr := applyPlugins(&cfg, fc.Plugins, userConfigDir)
 		if applyPluginsErr != nil {
 			return nil, applyPluginsErr
@@ -526,6 +535,7 @@ func defaults(userConfigDir string) Config {
 		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
 		Hooks:       Hooks{FailureThreshold: defaultHookFailureThreshold, Recovery: defaultHookRecovery},
 		Permissions: Permissions{Base: map[string][]string{"read": {"."}}},
+		TaskTools:   tasktools.DefaultTaskToolsConfig(),
 	}
 }
 
@@ -597,6 +607,18 @@ func applyTools(dst *Tools, src toolsFile) {
 			return // validation happens in Parse
 		}
 		dst.CodeTimeout = time.Duration(*src.CodeTimeout) * time.Second
+	}
+}
+
+func applyTaskTools(dst *tasktools.TaskToolsConfig, src taskToolsFile) {
+	if src.Enable != nil {
+		dst.Enable = *src.Enable
+	}
+	if src.CommandTimeout != nil {
+		if *src.CommandTimeout <= 0 {
+			return // validation happens in Parse
+		}
+		dst.CommandTimeout = time.Duration(*src.CommandTimeout) * time.Second
 	}
 }
 
