@@ -1,0 +1,4 @@
+2cdd9a1347ebd3b5e2b1760fd2ed3ef17f8fe1ab989138702ed9a144b947bfac  genie_v0.0.0-snapshot-e838043_darwin_amd64.tar.gz
+acb311e7c0533e71c8797d265732765d4859a0e9d3117c3993ca2783279da67b  genie_v0.0.0-snapshot-e838043_darwin_arm64.tar.gz
+2fcecb90fac58ca9a9da4af0fc8f6315949c6ff65a0fbee6813c4ca00ea6d464  genie_v0.0.0-snapshot-e838043_linux_amd64.tar.gz
+2492ddd375b2f799769f74c4ef3769c1d86b77ba4902704a40131e3e558ad33f  genie_v0.0.0-snapshot-e838043_linux_arm64.tar.gz

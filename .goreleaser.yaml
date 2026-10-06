@@ -1,0 +1,58 @@
+version: 2
+
+project_name: genie
+
+builds:
+  - id: genie
+    main: ./cmd/genie
+    binary: genie
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: genie
+    formats:
+      - tar.gz
+    name_template: "genie_{{.Version}}_{{.Os}}_{{.Arch}}"
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+release:
+  extra_files:
+    - glob: install.sh
+      name_template: install.sh
+  header: "# Changelog"
+  footer: "---"
+
+snapshot:
+  version_template: "{{.Tag}}-snapshot-{{.ShortCommit}}"
+
+changelog:
+  use: git
+  groups:
+    - title: "Features"
+      regexp: "^feat"
+    - title: "Fixes"
+      regexp: "^fix"
+    - title: "Refactoring"
+      regexp: "^refactor"
+    - title: "Documentation"
+      regexp: "^docs"
+    - title: "Chore"
+      regexp: "^chore"

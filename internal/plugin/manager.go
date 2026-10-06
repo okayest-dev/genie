@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/plugin/markdowntracker"
+	"github.com/okayest-dev/genie/internal/tracker"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
@@ -176,7 +178,30 @@ func (m *Manager) LoadPlugins() error {
 	}
 
 	m.wg.Wait()
+
+	// Register built-in markdown tracker if not disabled and no other tracker plugin loaded
+	if !m.isDisabled("markdown-tracker") && (len(m.enableList) == 0 || m.isEnabled("markdown-tracker")) {
+		if m.GetTrackerSource() == nil {
+			builtinTracker := m.newBuiltinMarkdownTracker()
+			m.pluginsMu.Lock()
+			m.plugins["markdown-tracker"] = builtinTracker
+			m.pluginOrder = append(m.pluginOrder, "markdown-tracker")
+			m.pluginsMu.Unlock()
+			slog.Info("loaded built-in markdown tracker")
+		}
+	}
+
 	return nil
+}
+
+// newBuiltinMarkdownTracker creates the built-in markdown tracker plugin.
+func (m *Manager) newBuiltinMarkdownTracker() *Plugin {
+	_ = markdowntracker.NewMarkdownTracker("")
+	return &Plugin{
+		Name:        "markdown-tracker",
+		Manifest:    &Manifest{Name: "markdown-tracker", Version: "1.0.0"},
+		Capabilities: Capabilities{Tracker: true},
+	}
 }
 
 func (m *Manager) isDisabled(name string) bool {
@@ -406,6 +431,108 @@ func normalizeCommands(defs []CommandDef) []CommandDef {
 
 func isSingleToken(name string) bool {
 	return name != "" && !strings.HasPrefix(name, "/") && !strings.ContainsAny(name, " \t\n")
+}
+
+// trackerPlugin wraps a plugin that provides tracker capability.
+type trackerPlugin struct {
+	plugin *Plugin
+}
+
+func (t *trackerPlugin) Frontier(ctx context.Context) (*tracker.TrackerTask, error) {
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodTrackerFrontier,
+		ID:      time.Now().UnixNano(),
+	}
+	if err := t.plugin.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+	resp, err := t.plugin.Codec.ReadResponse()
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("tracker/frontier: %w", resp.Error)
+	}
+	var result TrackerFrontierResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse tracker/frontier: %w", err)
+	}
+	return result.Task, nil
+}
+
+func (t *trackerPlugin) Claim(ctx context.Context, id string) (*tracker.TrackerTask, error) {
+	params := TrackerClaimParams{ID: id}
+	paramsData, _ := json.Marshal(params)
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodTrackerClaim,
+		Params:  paramsData,
+		ID:      time.Now().UnixNano(),
+	}
+	if err := t.plugin.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+	resp, err := t.plugin.Codec.ReadResponse()
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("tracker/claim: %w", resp.Error)
+	}
+	var result TrackerClaimResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse tracker/claim: %w", err)
+	}
+	return result.Task, nil
+}
+
+func (t *trackerPlugin) Read(ctx context.Context, id string) (*tracker.TrackerTask, error) {
+	params := TrackerReadParams{ID: id}
+	paramsData, _ := json.Marshal(params)
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodTrackerRead,
+		Params:  paramsData,
+		ID:      time.Now().UnixNano(),
+	}
+	if err := t.plugin.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+	resp, err := t.plugin.Codec.ReadResponse()
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("tracker/read: %w", resp.Error)
+	}
+	var result TrackerReadResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse tracker/read: %w", err)
+	}
+	return result.Task, nil
+}
+
+func (t *trackerPlugin) Close(ctx context.Context, id, reason string) error {
+	params := TrackerCloseParams{ID: id, Reason: reason}
+	paramsData, _ := json.Marshal(params)
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodTrackerClose,
+		Params:  paramsData,
+		ID:      time.Now().UnixNano(),
+	}
+	if err := t.plugin.Codec.WriteRequest(req); err != nil {
+		return err
+	}
+	resp, err := t.plugin.Codec.ReadResponse()
+	if err != nil {
+		return err
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("tracker/close: %w", resp.Error)
+	}
+	return nil
 }
 
 func (m *Manager) registerPluginTools(p *Plugin) error {
@@ -904,6 +1031,23 @@ func (m *Manager) PluginsInOrder() []*Plugin {
 		}
 	}
 	return out
+}
+
+// GetTrackerSource returns the first plugin that provides tracker capability.
+// Returns nil if no plugin provides tracker capability.
+func (m *Manager) GetTrackerSource() tracker.TrackerSource {
+	m.pluginsMu.RLock()
+	defer m.pluginsMu.RUnlock()
+	for _, name := range m.pluginOrder {
+		if p, ok := m.plugins[name]; ok && p.Capabilities.Tracker {
+			return &trackerPlugin{plugin: p}
+		}
+	}
+	// Check for built-in markdown tracker
+	if p, ok := m.plugins["markdown-tracker"]; ok {
+		return &trackerPlugin{plugin: p}
+	}
+	return nil
 }
 
 func (m *Manager) RegisterToolFactory(factory func() tools.Tool) {

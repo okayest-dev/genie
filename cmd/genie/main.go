@@ -26,6 +26,12 @@ import (
 	"github.com/okayest-dev/genie/internal/skill"
 )
 
+var version = "dev"
+
+func getCurrentVersion() string {
+	return version
+}
+
 const usage = `usage: genie [-v] [-d] [-a agent] [-p prompt]
 
 genie is a minimal terminal agent harness.
@@ -38,6 +44,10 @@ Flags:
   -v            verbose output: high-level flow to stderr
   -d            debug output: low-level detail to stderr (implies -v)
 
+Subcommands:
+  self-update   check for and apply updates
+  uninstall     remove Genie and associated files
+
 Environment:
   GENIE_DEBUG    enable debug mode (true/1/yes)
 
@@ -49,6 +59,16 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	// Handle self-update subcommand
+	if len(args) > 0 && args[0] == "self-update" {
+		return runSelfUpdateCmd(args[1:], stdout, stderr)
+	}
+
+	// Handle uninstall subcommand
+	if len(args) > 0 && args[0] == "uninstall" {
+		return runUninstallCmd(args[1:], stdout, stderr)
+	}
+
 	// Go's flag package treats the token after -p as its value, so
 	// "-p --approve-all <prompt>" would swallow the boolean flag as the
 	// prompt. Hoist the approval flag (single- or double-dash) above -p so it
