@@ -535,6 +535,28 @@ func (t *trackerPlugin) Close(ctx context.Context, id, reason string) error {
 	return nil
 }
 
+func (t *trackerPlugin) Comment(ctx context.Context, id, comment string) error {
+	params := TrackerCommentParams{ID: id, Comment: comment}
+	paramsData, _ := json.Marshal(params)
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodTrackerComment,
+		Params:  paramsData,
+		ID:      time.Now().UnixNano(),
+	}
+	if err := t.plugin.Codec.WriteRequest(req); err != nil {
+		return err
+	}
+	resp, err := t.plugin.Codec.ReadResponse()
+	if err != nil {
+		return err
+	}
+	if resp.Error != nil {
+		return fmt.Errorf("tracker/comment: %w", resp.Error)
+	}
+	return nil
+}
+
 func (m *Manager) registerPluginTools(p *Plugin) error {
 	for _, td := range p.Tools {
 		if m.toolReg.IsDisabled(td.Name) {

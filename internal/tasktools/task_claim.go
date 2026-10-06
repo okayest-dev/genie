@@ -17,12 +17,19 @@ type ActiveTask struct {
 
 // TaskState manages the active task state for a session.
 type TaskState struct {
-	active *ActiveTask
+	active    *ActiveTask
+	onChange  func([]byte) error
 }
 
 // NewTaskState creates a new task state manager.
 func NewTaskState() *TaskState {
 	return &TaskState{}
+}
+
+// SetOnChange sets a callback that is called when the task state changes.
+// The callback receives the JSON representation of the new state.
+func (s *TaskState) SetOnChange(fn func([]byte) error) {
+	s.onChange = fn
 }
 
 // Get returns the currently active task, or nil if none.
@@ -36,11 +43,19 @@ func (s *TaskState) Set(task *Task) {
 		Task:      task,
 		ClaimedAt: time.Now(),
 	}
+	if s.onChange != nil {
+		data, _ := json.Marshal(s)
+		_ = s.onChange(data)
+	}
 }
 
 // Clear clears the active task.
 func (s *TaskState) Clear() {
 	s.active = nil
+	if s.onChange != nil {
+		data, _ := json.Marshal(s)
+		_ = s.onChange(data)
+	}
 }
 
 // HasActive returns true if a task is currently active.

@@ -25,6 +25,7 @@ type TrackerSource interface {
 	Claim(ctx context.Context, id string) (*TrackerTask, error)
 	Read(ctx context.Context, id string) (*TrackerTask, error)
 	Close(ctx context.Context, id, reason string) error
+	Comment(ctx context.Context, id, comment string) error
 }
 
 var (

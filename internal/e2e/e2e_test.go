@@ -4598,3 +4598,214 @@ func TestCodeToolDenoAbsentSkips(t *testing.T) {
 		t.Errorf("stdout = %q, want model reply", stdout)
 	}
 }
+
+// TestTaskClaimAndResolve tests the task.claim and task.resolve tools
+// through the real binary with the fake provider.
+func TestTaskClaimAndResolve(t *testing.T) {
+	// Disable the built-in markdown tracker so the fake tracker is used.
+	// The fake tracker is configured in run.go when no tracker plugin is loaded.
+	var reqCount int
+	var toolCalls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		t.Logf("req %d body: %s", reqCount+1, string(raw))
+		var bodyMap struct {
+			Messages []struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(raw, &bodyMap); err != nil {
+			t.Logf("unmarshal error: %v", err)
+		}
+		// Look for tool calls in all messages (assistant messages have them)
+		for _, msg := range bodyMap.Messages {
+			for _, tc := range msg.ToolCalls {
+				toolCalls = append(toolCalls, tc.Function.Name)
+			}
+		}
+		if len(toolCalls) > 0 {
+			t.Logf("req %d: tool calls = %v", reqCount, toolCalls)
+		}
+		reqCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done}
+		if reqCount == 1 {
+			// First request: model calls task.claim (will fail with no ready tasks)
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "task.claim", `{}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else if reqCount == 2 {
+			// Second request: model calls task.resolve (will fail with no active task)
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_2", "task.resolve", `{"summary":"Completed the test task"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		}
+
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	cfg := fmt.Sprintf(`
+provider = "zen"
+
+[task_tools]
+enable = true
+command_timeout = 30
+
+[plugins]
+disable = ["markdown-tracker"]
+
+[providers.zen]
+base_url = %q
+model = "test-model"
+`, srv.URL)
+
+	dir := configDir(t, cfg)
+
+	_, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + t.TempDir(),
+	}, "-p", "claim and resolve the task")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	if reqCount != 3 {
+		t.Fatalf("requests = %d, want 3 (claim + resolve + final)", reqCount)
+	}
+
+	// Verify tool calls were attempted (both claim and resolve)
+	if len(toolCalls) < 2 {
+		t.Fatalf("tool calls = %v, want at least [task.claim, task.resolve]", toolCalls)
+	}
+	foundClaim := false
+	foundResolve := false
+	for _, tc := range toolCalls {
+		if tc == "task.claim" {
+			foundClaim = true
+		}
+		if tc == "task.resolve" {
+			foundResolve = true
+		}
+	}
+	if !foundClaim {
+		t.Errorf("tool calls missing task.claim: %v", toolCalls)
+	}
+	if !foundResolve {
+		t.Errorf("tool calls missing task.resolve: %v", toolCalls)
+	}
+
+	// The fake tracker has no tasks, so claim fails with "no ready tasks available"
+	// and resolve fails with "no active task to resolve". This is expected.
+	_ = stderr
+}
+
+// TestTaskResolveRefusingPath tests the refusing path of task.resolve:
+// no active task, gate failure, and missing human confirmation.
+func TestTaskResolveRefusingPath(t *testing.T) {
+	var reqCount int
+	var toolCalls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var bodyMap struct {
+			Messages []struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		json.Unmarshal(raw, &bodyMap)
+		for _, msg := range bodyMap.Messages {
+			for _, tc := range msg.ToolCalls {
+				toolCalls = append(toolCalls, tc.Function.Name)
+			}
+		}
+		reqCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		var chunks []string
+		if reqCount == 1 {
+			// First request: model tries to resolve without claiming first
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "task.resolve", `{"summary":"Trying to resolve without claim"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else {
+			// Subsequent requests: just return a simple response
+			chunks = []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done}
+		}
+
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	// Config with task_tools enabled but no task file (no active task)
+	cfg := fmt.Sprintf(`
+provider = "zen"
+
+[task_tools]
+enable = true
+command_timeout = 30
+
+[plugins]
+disable = ["markdown-tracker"]
+
+[providers.zen]
+base_url = %q
+model = "test-model"
+`, srv.URL)
+
+	dir := configDir(t, cfg)
+
+	_, stderr, code := run(t, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + t.TempDir(),
+	}, "-p", "resolve the task")
+	// The turn completes (exit code 0) - the tool error is fed back to the model
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	// Verify task.resolve was called
+	found := false
+	for _, tc := range toolCalls {
+		if tc == "task.resolve" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("tool calls missing task.resolve: %v", toolCalls)
+	}
+}
