@@ -73,7 +73,8 @@ The `task.resolve` tool:
 - Clears the active task state (emitting a task boundary signal)
 - Returns a resolution record with task ID, gates passed, commits, worktree, and follow-up tickets
 
-By default, Genie uses a markdown-based tracker (files in `~/.config/genie/tasks/`). For users with `bd` installed locally, a built-in **bd/beads** tracker plugin is available. For teams using other systems, external plugins are available:
+By default, Genie uses a markdown-based tracker (files in `~/.config/genie/tasks/`). For teams using other systems, plugins are available:
+- **bd/beads** - install the `bd-tracker` plugin from the genie plugins repo
 - **Custom** - implement the `TrackerSource` interface in a plugin for Jira, Trello, GitHub Issues, etc.
 
 ## Self-update
