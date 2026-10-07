@@ -26,6 +26,19 @@ type TrackerSource interface {
 	Read(ctx context.Context, id string) (*TrackerTask, error)
 	Close(ctx context.Context, id, reason string) error
 	Comment(ctx context.Context, id, comment string) error
+	Create(ctx context.Context, args CreateArgs) (*TrackerTask, error)
+}
+
+// CreateArgs holds the arguments for creating a new task.
+type CreateArgs struct {
+	Title       string
+	Type        string
+	Labels      []string
+	Priority    int
+	Description string
+	Parent      string
+	DependsOn   []string
+	FindingOf   string
 }
 
 var (

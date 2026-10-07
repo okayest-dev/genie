@@ -211,6 +211,10 @@ func New(opts Options) (*Handle, error) {
 		// Task resolve tool with no-op gate runner (gates epic owns gate contents)
 		resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, tasktools.NoOpGateRunner{}, true, opts.Config.TaskTools.CommandTimeout)
 		full.Register(resolveTool)
+
+		// Task create tool
+		createTool := tasktools.NewTaskCreateTool(tracker, true, opts.Config.TaskTools.CommandTimeout)
+		full.Register(createTool)
 	}
 
 	if !opts.Config.Tools.Read {

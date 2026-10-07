@@ -53,10 +53,13 @@ enable = true
 command_timeout = 30
 ```
 
-Once enabled, use the `task.claim` tool to claim tasks and `task.resolve` to close them:
+Once enabled, use the `task.claim` tool to claim tasks, `task.create` to create new tasks, and `task.resolve` to close them:
 ```bash
 # In the REPL, ask the model to claim a task
 task.claim
+
+# Create a new follow-up task with provenance
+task.create({"title": "Add error handling", "type": "task", "finding_of": "og-wm7.1.3"})
 
 # After completing the work, resolve the task with a summary
 task.resolve({"summary": "Implemented feature X. All tests pass. Commits: abc123..def456"})
@@ -175,9 +178,10 @@ The model has access to eight tools:
 | **request_permission** | Pre-negotiate a permission grant for a call you expect to be denied (see [Permissions](#permissions)). Never auto-approved. |
 | **skill** | Return a discovered skill's instructions verbatim, so the model can pull in task-specific conventions on demand (see [docs/skills.md](docs/skills.md)). Resolves against the active agent's bound skill set. |
 | **task.claim** | Claim the next ready task from the tracker, or a specific task by ID. Only one task can be active per session. Requires `task_tools` enabled in config. |
+| **task.create** | Create a new task in the tracker. Requires title; optional type, labels, priority, description, parent, depends_on, and finding_of (provenance). Returns the created task with its ID following project prefix conventions. Requires `task_tools` enabled in config. |
 | **task.resolve** | Resolve (close) the currently active task. Requires a resolution summary with traceability. Runs quality gates; blocking gate failures refuse the resolve. Epic/feature types require `human_confirmed=true`. Requires `task_tools` enabled in config. |
 
-`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool. `task.claim` and `task.resolve` are gated by the `task_tools.enable` config option.
+`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool. `task.claim`, `task.create`, and `task.resolve` are gated by the `task_tools.enable` config option.
 
 ### Code tool schema
 

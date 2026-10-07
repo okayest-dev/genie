@@ -284,3 +284,4 @@
 {"id":"int-ae0e8be6d1f5f1322d30dadcc920eeec","kind":"field_change","created_at":"2026-10-05T19:23:49.292708814Z","actor":"Dan","issue_id":"og-v3s","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-b52b8c00ab4f78cfd0b9007edfd49057","kind":"field_change","created_at":"2026-10-05T19:33:02.218841883Z","actor":"Dan","issue_id":"og-q8t","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
 {"id":"int-afb3acf8f0532c188809e739a709aba9","kind":"field_change","created_at":"2026-10-06T07:54:09.938780752Z","actor":"Dan","issue_id":"og-wm7.1.1","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"Closed"}}
+{"id":"int-1061bbc4063c448e4a4f1f4689b11697","kind":"field_change","created_at":"2026-10-06T20:19:03.212891683Z","actor":"Dan","issue_id":"og-wm7.1.2","extra":{"field":"status","new_value":"closed","old_value":"open","reason":"Closed"}}

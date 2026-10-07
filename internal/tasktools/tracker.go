@@ -95,6 +95,46 @@ func (b *BDBridge) Comment(ctx context.Context, id string, comment string) error
 	return err
 }
 
+// Create creates a new task using `bd create`.
+func (b *BDBridge) Create(ctx context.Context, args tracker.CreateArgs) (*tracker.TrackerTask, error) {
+	bdArgs := []string{"create", "--title", args.Title, "--type", args.Type}
+	
+	if args.Priority > 0 {
+		bdArgs = append(bdArgs, "--priority", fmt.Sprintf("%d", args.Priority))
+	}
+	if args.Description != "" {
+		bdArgs = append(bdArgs, "--description", args.Description)
+	}
+	if len(args.Labels) > 0 {
+		bdArgs = append(bdArgs, "--labels", strings.Join(args.Labels, ","))
+	}
+	if args.Parent != "" {
+		bdArgs = append(bdArgs, "--parent", args.Parent)
+	}
+	if len(args.DependsOn) > 0 {
+		bdArgs = append(bdArgs, "--depends-on", strings.Join(args.DependsOn, ","))
+	}
+	if args.FindingOf != "" {
+		bdArgs = append(bdArgs, "--finding-of", args.FindingOf)
+	}
+
+	output, err := b.runBD(ctx, bdArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("bd create failed: %w", err)
+	}
+
+	// Parse the output to get the created task ID
+	// bd create output format: "Created og-xxx"
+	re := regexp.MustCompile(`Created\s+(\S+)`)
+	matches := re.FindStringSubmatch(output)
+	if matches == nil {
+		return nil, fmt.Errorf("could not parse created task ID from output: %s", output)
+	}
+	
+	taskID := matches[1]
+	return b.Read(ctx, taskID)
+}
+
 // ErrNoReadyTasks is returned when no ready tasks are available.
 var ErrNoReadyTasks = errors.New("no ready tasks available")
 
@@ -368,6 +408,41 @@ func (f *FakeTracker) Comment(ctx context.Context, id string, comment string) er
 		return fmt.Errorf("task not found: %s", id)
 	}
 	return nil
+}
+
+// Create creates a new task in the fake tracker.
+func (f *FakeTracker) Create(ctx context.Context, args tracker.CreateArgs) (*tracker.TrackerTask, error) {
+	if args.Title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+
+	// Generate a task ID with the project prefix
+	// For testing, we'll use a simple counter-based approach
+	newID := fmt.Sprintf("og-new%d", len(f.tasks)+1)
+	
+	task := &tracker.TrackerTask{
+		ID:          newID,
+		Title:       args.Title,
+		Type:        args.Type,
+		Status:      "open",
+		Priority:    args.Priority,
+		Labels:      args.Labels,
+		Description: args.Description,
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		UpdatedAt:   time.Now().Format(time.RFC3339),
+	}
+	
+	if task.Type == "" {
+		task.Type = "task"
+	}
+	if task.Priority == 0 {
+		task.Priority = 2
+	}
+
+	f.tasks[newID] = task
+	f.frontierOrder = append(f.frontierOrder, newID)
+	
+	return task, nil
 }
 
 // SetFrontierOrder sets the order for frontier queries.

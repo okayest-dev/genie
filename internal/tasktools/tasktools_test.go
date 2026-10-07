@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/okayest-dev/genie/internal/plugin"
+	"github.com/okayest-dev/genie/internal/tracker"
 )
 
 func TestNewTaskState(t *testing.T) {
@@ -569,5 +570,224 @@ func TestJoinWithComma(t *testing.T) {
 		if result != tc.expected {
 			t.Errorf("joinWithComma(%v) = %q, want %q", tc.input, result, tc.expected)
 		}
+	}
+}
+
+func TestFakeTrackerCreate(t *testing.T) {
+	tasks := []*plugin.TrackerTask{}
+	ft := NewFakeTracker(tasks)
+
+	task, err := ft.Create(context.Background(), tracker.CreateArgs{
+		Title:       "New Task",
+		Type:        "task",
+		Labels:      []string{"test", "new"},
+		Priority:    1,
+		Description: "A new test task",
+		Parent:      "og-1",
+		DependsOn:   []string{"og-2", "og-3"},
+		FindingOf:   "og-4",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if task.ID == "" {
+		t.Error("created task should have an ID")
+	}
+	if task.Title != "New Task" {
+		t.Errorf("title = %q, want 'New Task'", task.Title)
+	}
+	if task.Type != "task" {
+		t.Errorf("type = %q, want 'task'", task.Type)
+	}
+	if task.Priority != 1 {
+		t.Errorf("priority = %d, want 1", task.Priority)
+	}
+	if task.Labels == nil || len(task.Labels) != 2 {
+		t.Errorf("labels = %v, want [test new]", task.Labels)
+	}
+	if task.Description != "A new test task" {
+		t.Errorf("description = %q, want 'A new test task'", task.Description)
+	}
+	if task.Status != "open" {
+		t.Errorf("status = %q, want 'open'", task.Status)
+	}
+}
+
+func TestFakeTrackerCreateDefaults(t *testing.T) {
+	tasks := []*plugin.TrackerTask{}
+	ft := NewFakeTracker(tasks)
+
+	task, err := ft.Create(context.Background(), tracker.CreateArgs{
+		Title: "Minimal Task",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if task.Type != "task" {
+		t.Errorf("default type = %q, want 'task'", task.Type)
+	}
+	if task.Priority != 2 {
+		t.Errorf("default priority = %d, want 2", task.Priority)
+	}
+	if task.Status != "open" {
+		t.Errorf("default status = %q, want 'open'", task.Status)
+	}
+}
+
+func TestFakeTrackerCreateMissingTitle(t *testing.T) {
+	tasks := []*plugin.TrackerTask{}
+	ft := NewFakeTracker(tasks)
+
+	_, err := ft.Create(context.Background(), tracker.CreateArgs{
+		Type: "task",
+	})
+	if err == nil {
+		t.Error("expected error when title is missing")
+	}
+	if !strings.Contains(err.Error(), "title is required") {
+		t.Errorf("error = %q, want 'title is required'", err.Error())
+	}
+}
+
+func TestTaskCreateToolExecute(t *testing.T) {
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskCreateTool(tracker, true, 30*time.Second)
+
+	result, err := tool.Execute([]byte(`{"title": "New Task", "type": "feature", "labels": ["test"], "priority": 1, "description": "A new feature", "parent": "og-1", "depends_on": ["og-2"], "finding_of": "og-3"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if result == "" {
+		t.Error("result should not be empty")
+	}
+	if !strings.Contains(result, "New Task") {
+		t.Errorf("result = %q, want task title in output", result)
+	}
+	if !strings.Contains(result, "feature") {
+		t.Errorf("result = %q, want task type in output", result)
+	}
+}
+
+func TestTaskCreateToolMissingTitle(t *testing.T) {
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskCreateTool(tracker, true, 30*time.Second)
+
+	_, err := tool.Execute([]byte(`{"type": "task"}`))
+	if err == nil {
+		t.Error("expected error when title is missing")
+	}
+	if !strings.Contains(err.Error(), "title is required") {
+		t.Errorf("error = %q, want 'title is required'", err.Error())
+	}
+}
+
+func TestTaskCreateToolDisabled(t *testing.T) {
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskCreateTool(tracker, false, 30*time.Second)
+
+	_, err := tool.Execute([]byte(`{"title": "Test"}`))
+	if err == nil {
+		t.Error("expected error when tool is disabled")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error = %q, want 'disabled'", err.Error())
+	}
+}
+
+func TestTaskCreateToolDefaults(t *testing.T) {
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskCreateTool(tracker, true, 30*time.Second)
+
+	result, err := tool.Execute([]byte(`{"title": "Minimal Task"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(result, "task") {
+		t.Errorf("result = %q, want default type 'task'", result)
+	}
+	if !strings.Contains(result, "Priority: 2") {
+		t.Errorf("result = %q, want default priority 2", result)
+	}
+}
+
+func TestTaskCreateToolName(t *testing.T) {
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskCreateTool(tracker, true, 30*time.Second)
+
+	if tool.Name() != "task.create" {
+		t.Errorf("Name() = %q, want task.create", tool.Name())
+	}
+}
+
+func TestTaskCreateToolDescription(t *testing.T) {
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskCreateTool(tracker, true, 30*time.Second)
+
+	desc := tool.Description()
+	if desc == "" {
+		t.Error("Description() should not be empty")
+	}
+	if !strings.Contains(desc, "Create") {
+		t.Errorf("Description() = %q, should mention Create", desc)
+	}
+}
+
+func TestTaskCreateToolParameters(t *testing.T) {
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskCreateTool(tracker, true, 30*time.Second)
+
+	params := tool.Parameters()
+	if params == nil {
+		t.Error("Parameters() should not be nil")
+	}
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("properties missing")
+	}
+	required, ok := params["required"].([]any)
+	if !ok {
+		t.Fatal("required missing")
+	}
+	foundTitle := false
+	for _, r := range required {
+		if r == "title" {
+			foundTitle = true
+			break
+		}
+	}
+	if !foundTitle {
+		t.Error("title should be required")
+	}
+	// Check optional fields exist
+	optionalFields := []string{"type", "labels", "priority", "description", "parent", "depends_on", "finding_of"}
+	for _, field := range optionalFields {
+		if _, ok := props[field]; !ok {
+			t.Errorf("parameters should have '%s'", field)
+		}
+	}
+	// Check priority constraints
+	priorityProp, ok := props["priority"].(map[string]any)
+	if !ok {
+		t.Fatal("priority property missing")
+	}
+	minVal := priorityProp["minimum"]
+	maxVal := priorityProp["maximum"]
+	// Handle both int and float64
+	var minOk, maxOk bool
+	var minF, maxF float64
+	switch v := minVal.(type) {
+	case float64:
+		minF, minOk = v, true
+	case int:
+		minF, minOk = float64(v), true
+	}
+	switch v := maxVal.(type) {
+	case float64:
+		maxF, maxOk = v, true
+	case int:
+		maxF, maxOk = float64(v), true
+	}
+	if !minOk || !maxOk || minF != 0 || maxF != 4 {
+		t.Errorf("priority should have minimum 0 and maximum 4, got min=%v (%T) max=%v (%T)", minVal, minVal, maxVal, maxVal)
 	}
 }
