@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/okayest-dev/genie/internal/llm"
-	"github.com/okayest-dev/genie/internal/plugin/bdtracker"
 	"github.com/okayest-dev/genie/internal/plugin/markdowntracker"
 	"github.com/okayest-dev/genie/internal/tracker"
 	"github.com/okayest-dev/genie/internal/tools"
@@ -195,18 +194,6 @@ func (m *Manager) LoadPlugins() error {
 		}
 	}
 
-	// Register built-in bd tracker if not disabled and no other tracker plugin loaded
-	if !m.isDisabled("bdtracker") && (len(m.enableList) == 0 || m.isEnabled("bdtracker")) {
-		if m.GetTrackerSource() == nil {
-			builtinTracker := m.newBuiltinBDTracker()
-			m.pluginsMu.Lock()
-			m.plugins["bdtracker"] = builtinTracker
-			m.pluginOrder = append(m.pluginOrder, "bdtracker")
-			m.pluginsMu.Unlock()
-			slog.Info("loaded built-in bd tracker")
-		}
-	}
-
 	return nil
 }
 
@@ -216,17 +203,6 @@ func (m *Manager) newBuiltinMarkdownTracker() *Plugin {
 	return &Plugin{
 		Name:            "markdown-tracker",
 		Manifest:        &Manifest{Name: "markdown-tracker", Version: "1.0.0"},
-		Capabilities:    Capabilities{Tracker: true},
-		BuiltinTracker:  tracker,
-	}
-}
-
-// newBuiltinBDTracker creates the built-in bd tracker plugin.
-func (m *Manager) newBuiltinBDTracker() *Plugin {
-	tracker := bdtracker.NewBDTracker("", 0)
-	return &Plugin{
-		Name:            "bdtracker",
-		Manifest:        &Manifest{Name: "bdtracker", Version: "1.0.0"},
 		Capabilities:    Capabilities{Tracker: true},
 		BuiltinTracker:  tracker,
 	}
