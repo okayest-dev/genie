@@ -6,36 +6,23 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/okayest-dev/genie/internal/gates"
+	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
 // GateRunner is the interface for running quality gates on task resolution.
 // The zero-value runner reports no gates configured.
-type GateRunner interface {
-	Run(ctx context.Context, task *Task) (GateResult, error)
-}
+type GateRunner = gates.GateRunner
 
 // GateResult represents the outcome of running gates on a task.
-type GateResult struct {
-	Passed  []string
-	Failed  []FailedGate
-	Commits []string
-	Worktree string
-	FollowUps []string
-}
+type GateResult = gates.GateResult
 
 // FailedGate represents a gate that failed with its evidence gap.
-type FailedGate struct {
-	Name        string
-	EvidenceGap string
-}
+type FailedGate = gates.FailedGate
 
 // NoOpGateRunner is a gate runner that reports no gates configured.
-type NoOpGateRunner struct{}
-
-func (NoOpGateRunner) Run(ctx context.Context, task *Task) (GateResult, error) {
-	return GateResult{}, nil
-}
+type NoOpGateRunner = gates.NoOpGateRunner
 
 // TaskResolveArgs are the arguments for the task.resolve tool.
 type TaskResolveArgs struct {
@@ -57,11 +44,12 @@ type ResolutionRecord struct {
 
 // TaskResolveTool implements the task.resolve tool.
 type TaskResolveTool struct {
-	tracker    Tracker
-	state      *TaskState
-	gateRunner GateRunner
-	enabled    bool
-	timeout    time.Duration
+	tracker     Tracker
+	state       *TaskState
+	gateRunner  GateRunner
+	enabled     bool
+	timeout     time.Duration
+	sess        *session.Session
 }
 
 // NewTaskResolveTool creates a new task.resolve tool.
@@ -76,6 +64,11 @@ func NewTaskResolveTool(tracker Tracker, state *TaskState, gateRunner GateRunner
 		enabled:    enabled,
 		timeout:    timeout,
 	}
+}
+
+// SetSession sets the session for boundary compaction.
+func (t *TaskResolveTool) SetSession(sess *session.Session) {
+	t.sess = sess
 }
 
 // Name returns the tool name.
@@ -131,8 +124,19 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 
 	ctx := context.Background()
 
-	// Run gates
-	gateResult, err := t.gateRunner.Run(ctx, active.Task)
+	// Run gates - convert tasktools.Task to gates.Task
+	gatesTask := &gates.Task{
+		ID:          active.Task.ID,
+		Title:       active.Task.Title,
+		Type:        gates.TaskType(active.Task.Type),
+		Labels:      active.Task.Labels,
+		Status:      active.Task.Status,
+		Priority:    active.Task.Priority,
+		Description: active.Task.Description,
+		CreatedAt:   active.Task.CreatedAt,
+		UpdatedAt:   active.Task.UpdatedAt,
+	}
+	gateResult, err := t.gateRunner.Run(ctx, gatesTask)
 	if err != nil {
 		return "", fmt.Errorf("gate runner failed: %w", err)
 	}
@@ -162,6 +166,30 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("failed to close task: %w", err)
 	}
 
+	// Write boundary compaction marker before clearing task state
+	if t.sess != nil {
+		startLine := t.state.TaskStartLine()
+		lines, err := t.sess.Lines()
+		if err == nil {
+			endLine := len(lines)
+			if endLine > startLine {
+				// Build structured boundary compaction summary
+				boundarySummary := map[string]any{
+					"task_id":            active.Task.ID,
+					"title":              active.Task.Title,
+					"resolution_summary": args.Summary,
+					"gates_passed":       gateResult.Passed,
+					"evidence_pointers":  t.buildEvidencePointers(),
+					"follow_ups":         gateResult.FollowUps,
+					"commit_ref":         joinWithComma(gateResult.Commits),
+					"worktree_ref":       gateResult.Worktree,
+				}
+				summaryJSON, _ := json.Marshal(boundarySummary)
+				_ = t.sess.AppendCompaction(string(summaryJSON), startLine, endLine)
+			}
+		}
+	}
+
 	// Clear active task state (emits task boundary signal via onChange callback)
 	t.state.Clear()
 
@@ -176,6 +204,28 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 
 	recordJSON, _ := json.Marshal(record)
 	return fmt.Sprintf("Task %s resolved.\n%s", active.Task.ID, string(recordJSON)), nil
+}
+
+// buildEvidencePointers returns a list of evidence pointers from the observed tool executions.
+func (t *TaskResolveTool) buildEvidencePointers() []map[string]any {
+	if t.state == nil || t.state.EvidenceTracker() == nil {
+		return nil
+	}
+	observed := t.state.EvidenceTracker().Observed()
+	if observed == nil {
+		return nil
+	}
+	executions := observed.GetExecutionsSince(observed.ClaimedAt())
+	pointers := make([]map[string]any, 0, len(executions))
+	for _, exec := range executions {
+		pointers = append(pointers, map[string]any{
+			"tool":       exec.ToolName,
+			"timestamp":  exec.Timestamp.Format(time.RFC3339),
+			"exit_code":  exec.ExitCode,
+			"duration":   exec.Duration.String(),
+		})
+	}
+	return pointers
 }
 
 // isHumanInTheLoop returns true if the task type requires human confirmation.
