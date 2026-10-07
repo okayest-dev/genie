@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/okayest-dev/genie/internal/agent"
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/contextmgr"
+	"github.com/okayest-dev/genie/internal/gates"
 	"github.com/okayest-dev/genie/internal/instruct"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
@@ -128,6 +130,11 @@ type Handle struct {
 
 	taskState *tasktools.TaskState
 	tracker   tasktools.Tracker
+	gateRunner *gates.GateRunnerImpl
+	evidenceLedger gates.EvidenceLedger
+
+	claimTool  *tasktools.TaskClaimTool
+	resolveTool *tasktools.TaskResolveTool
 
 	sess   *session.Session
 	ledger *ledger.Ledger
@@ -178,7 +185,16 @@ func New(opts Options) (*Handle, error) {
 	full.Register(readtool.New(opts.Cwd))
 	full.Register(writetool.New(opts.Cwd))
 	full.Register(edittool.New(opts.Cwd))
-	full.Register(bashtool.New(opts.Cwd, opts.Config.BashTimeout))
+
+	// Bash tool: wrap with tracker guard if task tools are enabled
+	baseBash := bashtool.New(opts.Cwd, opts.Config.BashTimeout)
+	if opts.Config.TaskTools.Enable {
+		guardedBash := bashtool.NewGuardedBashTool(baseBash, h.taskState, opts.Config.TaskTools.TrackerGuardPolicy)
+		full.Register(guardedBash)
+	} else {
+		full.Register(baseBash)
+	}
+
 	codeT := codetool.New(h.store, opts.Cwd, opts.Config.Tools.CodeTimeout)
 	full.Register(codeT)
 	reqT := requesttool.New(store, h.sink)
@@ -205,16 +221,39 @@ func New(opts Options) (*Handle, error) {
 		}
 		h.tracker = tracker
 
+		// Create evidence ledger
+		ledgerPath := filepath.Join(opts.Config.SessionDir, "gates")
+		var evidenceLedger gates.EvidenceLedger
+		fileLedger, err := gates.NewFileEvidenceLedger(ledgerPath)
+		if err != nil {
+			// Fall back to in-memory ledger
+			evidenceLedger = gates.NewInMemoryEvidenceLedger()
+		} else {
+			evidenceLedger = fileLedger
+		}
+		h.evidenceLedger = evidenceLedger
+
+		// Create gate registry and runner
+		gateRegistry := gates.NewDefaultGateRegistry()
+		gateRunner := gates.NewGateRunner(gateRegistry, evidenceLedger, opts.Config.Gates, h.taskState.EvidenceTracker().Observed())
+		h.gateRunner = gateRunner
+
 		claimTool := tasktools.NewTaskClaimTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+		h.claimTool = claimTool
 		full.Register(claimTool)
 
-		// Task resolve tool with no-op gate runner (gates epic owns gate contents)
-		resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, tasktools.NoOpGateRunner{}, true, opts.Config.TaskTools.CommandTimeout)
+		// Task resolve tool with gate runner
+		resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, gateRunner, true, opts.Config.TaskTools.CommandTimeout)
+		h.resolveTool = resolveTool
 		full.Register(resolveTool)
 
 		// Task create tool
 		createTool := tasktools.NewTaskCreateTool(tracker, true, opts.Config.TaskTools.CommandTimeout)
 		full.Register(createTool)
+
+		// Task progress tool
+		progressTool := tasktools.NewTaskProgressTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+		full.Register(progressTool)
 	}
 
 	if !opts.Config.Tools.Read {
@@ -355,6 +394,14 @@ func New(opts Options) (*Handle, error) {
 	}
 	if opts.Stderr != nil {
 		fmt.Fprintf(opts.Stderr, "session: %s\n", sess.ID)
+	}
+
+	// Provide session to task tools for boundary compaction tracking.
+	if h.claimTool != nil {
+		h.claimTool.SetSession(sess)
+	}
+	if h.resolveTool != nil {
+		h.resolveTool.SetSession(sess)
 	}
 
 	// Task state transcript mirror: write task state changes as metadata markers.

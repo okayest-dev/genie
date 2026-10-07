@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/okayest-dev/genie/internal/gates"
+	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
@@ -15,15 +17,33 @@ type ActiveTask struct {
 	ClaimedAt time.Time
 }
 
+// ProgressRecord represents a recorded progress checkpoint.
+type ProgressRecord struct {
+	Timestamp   string `json:"timestamp"`
+	Summary     string `json:"summary,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	TrackerNote string `json:"tracker_note,omitempty"`
+}
+
 // TaskState manages the active task state for a session.
 type TaskState struct {
-	active    *ActiveTask
-	onChange  func([]byte) error
+	active           *ActiveTask
+	onChange         func([]byte) error
+	progressLog      []ProgressRecord
+	evidenceTracker  *gates.ObservedEvidenceTracker
+	taskStartLine    int // transcript line index when task was claimed
 }
 
 // NewTaskState creates a new task state manager.
 func NewTaskState() *TaskState {
-	return &TaskState{}
+	return &TaskState{
+		evidenceTracker: gates.NewObservedEvidenceTracker(),
+	}
+}
+
+// EvidenceTracker returns the observed evidence tracker for gate verification.
+func (s *TaskState) EvidenceTracker() *gates.ObservedEvidenceTracker {
+	return s.evidenceTracker
 }
 
 // SetOnChange sets a callback that is called when the task state changes.
@@ -39,19 +59,36 @@ func (s *TaskState) Get() *ActiveTask {
 
 // Set sets the active task.
 func (s *TaskState) Set(task *Task) {
+	claimedAt := time.Now()
 	s.active = &ActiveTask{
 		Task:      task,
-		ClaimedAt: time.Now(),
+		ClaimedAt: claimedAt,
 	}
+	s.progressLog = []ProgressRecord{}
+	s.taskStartLine = 0 // will be set by caller after session is available
+	// Notify evidence tracker of claim time
+	s.evidenceTracker.SetClaimedAt(claimedAt)
 	if s.onChange != nil {
 		data, _ := json.Marshal(s)
 		_ = s.onChange(data)
 	}
 }
 
+// SetTaskStartLine records the transcript line index when the task was claimed.
+func (s *TaskState) SetTaskStartLine(line int) {
+	s.taskStartLine = line
+}
+
+// TaskStartLine returns the transcript line index when the task was claimed.
+func (s *TaskState) TaskStartLine() int {
+	return s.taskStartLine
+}
+
 // Clear clears the active task.
 func (s *TaskState) Clear() {
 	s.active = nil
+	s.progressLog = nil
+	s.taskStartLine = 0
 	if s.onChange != nil {
 		data, _ := json.Marshal(s)
 		_ = s.onChange(data)
@@ -71,10 +108,25 @@ func (s *TaskState) ActiveTaskID() string {
 	return s.active.Task.ID
 }
 
+// AppendProgress appends a progress record to the active task's evidence log.
+// Returns an error if no task is active.
+func (s *TaskState) AppendProgress(record ProgressRecord) error {
+	if s.active == nil {
+		return fmt.Errorf("no active task")
+	}
+	s.progressLog = append(s.progressLog, record)
+	return nil
+}
+
+// GetProgressLog returns the progress log for the active task.
+func (s *TaskState) GetProgressLog() []ProgressRecord {
+	return s.progressLog
+}
+
 // MarshalJSON implements custom JSON serialization for the session transcript marker.
 func (s *TaskState) MarshalJSON() ([]byte, error) {
 	if s.active == nil {
-		return json.Marshal(map[string]any{"active_task": nil})
+		return json.Marshal(map[string]any{"active_task": nil, "progress_log": s.progressLog})
 	}
 	return json.Marshal(map[string]any{
 		"active_task": map[string]any{
@@ -84,6 +136,7 @@ func (s *TaskState) MarshalJSON() ([]byte, error) {
 			"labels":      s.active.Task.Labels,
 			"claimed_at":  s.active.ClaimedAt.Format(time.RFC3339),
 		},
+		"progress_log": s.progressLog,
 	})
 }
 
@@ -99,6 +152,7 @@ type TaskClaimTool struct {
 	state    *TaskState
 	enabled  bool
 	timeout  time.Duration
+	sess     *session.Session
 }
 
 // NewTaskClaimTool creates a new task.claim tool.
@@ -109,6 +163,11 @@ func NewTaskClaimTool(tracker Tracker, state *TaskState, enabled bool, timeout t
 		enabled:  enabled,
 		timeout:  timeout,
 	}
+}
+
+// SetSession sets the session for boundary compaction tracking.
+func (t *TaskClaimTool) SetSession(sess *session.Session) {
+	t.sess = sess
 }
 
 // Name returns the tool name.
@@ -177,6 +236,14 @@ func (t *TaskClaimTool) Execute(raw json.RawMessage) (string, error) {
 
 	// Set active task state
 	t.state.Set(task)
+
+	// Record transcript start line for boundary compaction
+	if t.sess != nil {
+		lines, err := t.sess.Lines()
+		if err == nil {
+			t.state.SetTaskStartLine(len(lines))
+		}
+	}
 
 	return fmt.Sprintf("Claimed task %s: %s\nType: %s\nLabels: %v\nClaimed at: %s",
 		task.ID, task.Title, task.Type, task.Labels, time.Now().Format(time.RFC3339)), nil
