@@ -32,6 +32,7 @@ const (
 	MethodTrackerRead            = "tracker/read"
 	MethodTrackerClose           = "tracker/close"
 	MethodTrackerComment         = "tracker/comment"
+	MethodTrackerCreate          = "tracker/create"
 	MethodPing                   = "ping"
 	MethodShutdown               = "shutdown"
 )
@@ -290,6 +291,23 @@ type TrackerCommentParams struct {
 // TrackerCommentResult is the result of tracker/comment.
 type TrackerCommentResult struct {
 	Success bool `json:"success"`
+}
+
+// TrackerCreateParams are the parameters for tracker/create.
+type TrackerCreateParams struct {
+	Title       string   `json:"title"`
+	Type        string   `json:"type,omitempty"`
+	Labels      []string `json:"labels,omitempty"`
+	Priority    int      `json:"priority,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Parent      string   `json:"parent,omitempty"`
+	DependsOn   []string `json:"depends_on,omitempty"`
+	FindingOf   string   `json:"finding_of,omitempty"`
+}
+
+// TrackerCreateResult is the result of tracker/create.
+type TrackerCreateResult struct {
+	Task *TrackerTask `json:"task"`
 }
 
 // CommandsHelpParams requests curated help for a plugin (Name omitted) or a

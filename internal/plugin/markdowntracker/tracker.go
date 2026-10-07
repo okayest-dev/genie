@@ -129,6 +129,46 @@ func (m *MarkdownTracker) Comment(ctx context.Context, id, comment string) error
 	return m.writeTask(task)
 }
 
+// Create creates a new task in the markdown tracker.
+func (m *MarkdownTracker) Create(ctx context.Context, args tracker.CreateArgs) (*tracker.TrackerTask, error) {
+	if args.Title == "" {
+		return nil, fmt.Errorf("title is required")
+	}
+
+	if err := m.ensureDir(); err != nil {
+		return nil, fmt.Errorf("ensure tasks dir: %w", err)
+	}
+
+	// Generate a task ID with the project prefix
+	// Use a simple timestamp-based ID
+	newID := fmt.Sprintf("og-%d", time.Now().Unix())
+
+	task := &tracker.TrackerTask{
+		ID:          newID,
+		Title:       args.Title,
+		Type:        args.Type,
+		Status:      "open",
+		Priority:    args.Priority,
+		Labels:      args.Labels,
+		Description: args.Description,
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		UpdatedAt:   time.Now().Format(time.RFC3339),
+	}
+
+	if task.Type == "" {
+		task.Type = "task"
+	}
+	if task.Priority == 0 {
+		task.Priority = 2
+	}
+
+	if err := m.writeTask(task); err != nil {
+		return nil, err
+	}
+
+	return task, nil
+}
+
 func (m *MarkdownTracker) readTask(file string) (*tracker.TrackerTask, error) {
 	content, err := os.ReadFile(file)
 	if err != nil {

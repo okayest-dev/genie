@@ -557,6 +557,41 @@ func (t *trackerPlugin) Comment(ctx context.Context, id, comment string) error {
 	return nil
 }
 
+func (t *trackerPlugin) Create(ctx context.Context, args tracker.CreateArgs) (*tracker.TrackerTask, error) {
+	params := TrackerCreateParams{
+		Title:       args.Title,
+		Type:        args.Type,
+		Labels:      args.Labels,
+		Priority:    args.Priority,
+		Description: args.Description,
+		Parent:      args.Parent,
+		DependsOn:   args.DependsOn,
+		FindingOf:   args.FindingOf,
+	}
+	paramsData, _ := json.Marshal(params)
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodTrackerCreate,
+		Params:  paramsData,
+		ID:      time.Now().UnixNano(),
+	}
+	if err := t.plugin.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+	resp, err := t.plugin.Codec.ReadResponse()
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("tracker/create: %w", resp.Error)
+	}
+	var result TrackerCreateResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse tracker/create: %w", err)
+	}
+	return result.Task, nil
+}
+
 func (m *Manager) registerPluginTools(p *Plugin) error {
 	for _, td := range p.Tools {
 		if m.toolReg.IsDisabled(td.Name) {
