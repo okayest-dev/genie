@@ -544,6 +544,11 @@ func (h *Handle) CurrentAgent() *config.ResolvedAgent {
 	return cur.agent
 }
 
+// TaskState returns the active task state for the session.
+func (h *Handle) TaskState() *tasktools.TaskState {
+	return h.taskState
+}
+
 // Provider returns the active provider name.
 func (h *Handle) Provider() string {
 	cur, _ := h.snapshot()

@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
@@ -199,6 +200,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		fmt.Fprintln(cfg.Stdout, "  /new              start a new session")
 		fmt.Fprintln(cfg.Stdout, "  /changes          list change batches")
 		fmt.Fprintln(cfg.Stdout, "  /changes <id>     show change details")
+		fmt.Fprintln(cfg.Stdout, "  /task             show the active task and its lifecycle")
 		fmt.Fprintln(cfg.Stdout, "  /provider         list available providers")
 		fmt.Fprintln(cfg.Stdout, "  /provider <name>  switch to a named provider")
 		fmt.Fprintln(cfg.Stdout, "  /model            list available models")
@@ -227,6 +229,9 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 			args = parts[1]
 		}
 		handleChanges(args, cfg, cfg.Run.Session().ID, cfg.Stdout)
+
+	case "/task":
+		handleTask(cfg)
 
 	case "/provider":
 		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
@@ -569,6 +574,46 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 			fmt.Fprint(out, f.Diff)
 		}
 		fmt.Fprintln(out)
+	}
+}
+
+// handleTask shows the active task and its lifecycle record.
+func handleTask(cfg *Config) {
+	state := cfg.Run.TaskState()
+	active := state.Get()
+	if active == nil {
+		fmt.Fprintln(cfg.Stdout, "no active task")
+		return
+	}
+
+	fmt.Fprintf(cfg.Stdout, "Active Task: %s\n", active.Task.ID)
+	fmt.Fprintf(cfg.Stdout, "Title:       %s\n", active.Task.Title)
+	fmt.Fprintf(cfg.Stdout, "Type:        %s\n", active.Task.Type)
+	fmt.Fprintf(cfg.Stdout, "Labels:      %v\n", active.Task.Labels)
+	fmt.Fprintf(cfg.Stdout, "Claimed at:  %s\n", active.ClaimedAt.Format(time.RFC3339))
+
+	// Progress checkpoints (from task.progress, og-wm7.1.4)
+	fmt.Fprintf(cfg.Stdout, "Progress checkpoints: (not yet implemented — see og-wm7.1.4)\n")
+
+	// Lifecycle history from session transcript markers
+	fmt.Fprintf(cfg.Stdout, "Lifecycle history:\n")
+	sess := cfg.Run.Session()
+	if sess != nil {
+		lines, err := sess.Lines()
+		if err != nil {
+			fmt.Fprintf(cfg.Stdout, "  (error reading session: %v)\n", err)
+		} else {
+			found := false
+			for _, ln := range lines {
+				if meta, ok := ln.Metadata["task_state"]; ok {
+					found = true
+					fmt.Fprintf(cfg.Stdout, "  %s\n", meta)
+				}
+			}
+			if !found {
+				fmt.Fprintf(cfg.Stdout, "  (no task state markers in transcript)\n")
+			}
+		}
 	}
 }
 
