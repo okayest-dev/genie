@@ -4809,3 +4809,128 @@ model = "test-model"
 		t.Errorf("tool calls missing task.resolve: %v", toolCalls)
 	}
 }
+
+// TestTaskSlashCommand tests the /task slash command through the real binary
+// with the fake provider: create a task, claim it, then /task shows the active task.
+func TestTaskSlashCommand(t *testing.T) {
+	var reqCount int
+	var toolCalls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		t.Logf("req %d body: %s", reqCount+1, string(raw))
+		var bodyMap struct {
+			Messages []struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"messages"`
+		}
+		if err := json.Unmarshal(raw, &bodyMap); err != nil {
+			t.Logf("unmarshal error: %v", err)
+		}
+		for _, msg := range bodyMap.Messages {
+			for _, tc := range msg.ToolCalls {
+				toolCalls = append(toolCalls, tc.Function.Name)
+			}
+		}
+		if len(toolCalls) > 0 {
+			t.Logf("req %d: tool calls = %v", reqCount, toolCalls)
+		}
+		reqCount++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+
+		chunks := []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done}
+		if reqCount == 1 {
+			// First request: model calls task.create
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_1", "task.create", `{"title":"Test Task","type":"task"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		} else if reqCount == 2 {
+			// Second request: model calls task.claim for the created task
+			chunks = []string{
+				fake.ToolCallDelta(0, "call_2", "task.claim", `{"task_id":"og-new1"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			}
+		}
+
+		for _, chunk := range chunks {
+			io.WriteString(w, "data: "+chunk+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	cfg := fmt.Sprintf(`
+provider = "zen"
+
+[task_tools]
+enable = true
+command_timeout = 30
+
+[plugins]
+disable = ["markdown-tracker"]
+
+[providers.zen]
+base_url = %q
+model = "test-model"
+`, srv.URL)
+
+	dir := configDir(t, cfg)
+
+	// Run in REPL mode: create task, claim it, then /task, then /quit
+	stdin := "create and claim a task\n/task\n/quit\n"
+	stdout, stderr, code := runInDirWithStdin(t, "", stdin, []string{
+		"XDG_CONFIG_HOME=" + dir,
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + t.TempDir(),
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+
+	// Verify tool.create and task.claim were called
+	foundCreate := false
+	foundClaim := false
+	for _, tc := range toolCalls {
+		if tc == "task.create" {
+			foundCreate = true
+		}
+		if tc == "task.claim" {
+			foundClaim = true
+		}
+	}
+	if !foundCreate {
+		t.Errorf("tool calls missing task.create: %v", toolCalls)
+	}
+	if !foundClaim {
+		t.Errorf("tool calls missing task.claim: %v", toolCalls)
+	}
+
+	// Verify /task output shows the active task (the fake tracker returns og-new1)
+	if !strings.Contains(stdout, "og-new1") {
+		t.Errorf("stdout missing task ID og-new1: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Active Task:") {
+		t.Errorf("stdout missing 'Active Task:' header: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Claimed at:") {
+		t.Errorf("stdout missing 'Claimed at:' timestamp: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Progress checkpoints:") {
+		t.Errorf("stdout missing 'Progress checkpoints:' section: %q", stdout)
+	}
+	if !strings.Contains(stdout, "Lifecycle history:") {
+		t.Errorf("stdout missing 'Lifecycle history:' section: %q", stdout)
+	}
+}

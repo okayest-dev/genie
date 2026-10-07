@@ -10,11 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/run"
+	"github.com/okayest-dev/genie/internal/tasktools"
 )
 
 func TestSlashHelp(t *testing.T) {
@@ -607,5 +609,123 @@ func TestAgentUnknownPrintsErr(t *testing.T) {
 	runSlash(t, cfg, "/agent nosuch")
 	if !strings.Contains(stderr.String(), "no agents configured") {
 		t.Errorf("stderr = %q, want 'no agents configured'", stderr.String())
+	}
+}
+
+// TestSlashTaskEmpty drives /task inside the REPL loop against a fresh
+// session with no active task and expects the empty message.
+func TestSlashTaskEmpty(t *testing.T) {
+	dir := t.TempDir()
+	h := newTestHandle(t, nil, "", dir)
+	var stdout, stderr bytes.Buffer
+	cfg := &Config{
+		Run:        h,
+		SessionDir: dir,
+		Stdin:      strings.NewReader("/task\n/quit\n"),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "no active task") {
+		t.Errorf("stdout = %q, want 'no active task'", out)
+	}
+}
+
+// TestSlashTaskPopulated drives /task with an active task set and verifies
+// the output includes the task details.
+func TestSlashTaskPopulated(t *testing.T) {
+	dir := t.TempDir()
+	h := newTestHandle(t, nil, "", dir)
+
+	// Set an active task directly on the task state.
+	task := &tasktools.Task{
+		ID:          "og-123",
+		Title:       "Test Task",
+		Type:        "feature",
+		Labels:      []string{"feature:genie-harness", "priority:P1"},
+		Description: "Test description",
+		Status:      "in_progress",
+		Priority:    1,
+		CreatedAt:   time.Now().Add(-24 * time.Hour).Format(time.RFC3339),
+		UpdatedAt:   time.Now().Format(time.RFC3339),
+	}
+	h.TaskState().Set(task)
+
+	var stdout, stderr bytes.Buffer
+	cfg := &Config{
+		Run:        h,
+		SessionDir: dir,
+		Stdin:      strings.NewReader("/task\n/quit\n"),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "og-123") {
+		t.Errorf("stdout = %q, want task ID", out)
+	}
+	if !strings.Contains(out, "Test Task") {
+		t.Errorf("stdout = %q, want task title", out)
+	}
+	if !strings.Contains(out, "feature") {
+		t.Errorf("stdout = %q, want task type", out)
+	}
+	if !strings.Contains(out, "feature:genie-harness") {
+		t.Errorf("stdout = %q, want task labels", out)
+	}
+	if !strings.Contains(out, "Claimed at:") {
+		t.Errorf("stdout = %q, want claimed-at timestamp", out)
+	}
+}
+
+// TestSlashTaskNoProgressCheckpoints verifies /task works when the active
+// task has no progress checkpoints recorded (the task.progress feature is
+// not yet implemented).
+func TestSlashTaskNoProgressCheckpoints(t *testing.T) {
+	dir := t.TempDir()
+	h := newTestHandle(t, nil, "", dir)
+
+	task := &tasktools.Task{
+		ID:          "og-456",
+		Title:       "Another Task",
+		Type:        "bug",
+		Labels:      []string{"bug"},
+		Description: "Test description",
+		Status:      "in_progress",
+		Priority:    2,
+		CreatedAt:   time.Now().Add(-12 * time.Hour).Format(time.RFC3339),
+		UpdatedAt:   time.Now().Format(time.RFC3339),
+	}
+	h.TaskState().Set(task)
+
+	var stdout, stderr bytes.Buffer
+	cfg := &Config{
+		Run:        h,
+		SessionDir: dir,
+		Stdin:      strings.NewReader("/task\n/quit\n"),
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}
+	if err := Run(context.Background(), cfg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "og-456") {
+		t.Errorf("stdout = %q, want task ID", out)
+	}
+	if !strings.Contains(out, "Another Task") {
+		t.Errorf("stdout = %q, want task title", out)
+	}
+	if !strings.Contains(out, "bug") {
+		t.Errorf("stdout = %q, want task type", out)
+	}
+	// Should not crash or error even without progress checkpoints
+	if strings.Contains(out, "Error:") {
+		t.Errorf("stdout = %q, want no errors", out)
 	}
 }

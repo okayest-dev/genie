@@ -157,6 +157,7 @@ With no provider selected, `-p` runs on the first declared provider and prints a
 | `/help` | Show available commands |
 | `/quit`, `/exit` | Exit the REPL |
 | `/new` | Start a new session |
+| `/task` | Show the active task and its lifecycle record (id, title, type, labels, claimed-at, progress checkpoints, lifecycle history) |
 | `/provider` | List providers (`*` marks the current one) |
 | `/provider <id>` | Switch providers mid-session; the next turn runs on that provider's default model and the transcript continues |
 | `/model` | List the current provider's model catalog (`*` marks the current model) |
