@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/plugin/bdtracker"
 	"github.com/okayest-dev/genie/internal/plugin/markdowntracker"
 	"github.com/okayest-dev/genie/internal/tracker"
 	"github.com/okayest-dev/genie/internal/tools"
@@ -48,6 +49,9 @@ type Plugin struct {
 	Commands     []CommandDef
 	Cmd          *exec.Cmd
 	Codec        *Codec
+	// BuiltinTracker is the built-in TrackerSource implementation for this plugin.
+	// Only set for built-in tracker plugins (markdown-tracker, bdtracker).
+	BuiltinTracker tracker.TrackerSource
 	mu           sync.Mutex
 	Active       bool
 	Cancel       context.CancelFunc
@@ -191,16 +195,40 @@ func (m *Manager) LoadPlugins() error {
 		}
 	}
 
+	// Register built-in bd tracker if not disabled and no other tracker plugin loaded
+	if !m.isDisabled("bdtracker") && (len(m.enableList) == 0 || m.isEnabled("bdtracker")) {
+		if m.GetTrackerSource() == nil {
+			builtinTracker := m.newBuiltinBDTracker()
+			m.pluginsMu.Lock()
+			m.plugins["bdtracker"] = builtinTracker
+			m.pluginOrder = append(m.pluginOrder, "bdtracker")
+			m.pluginsMu.Unlock()
+			slog.Info("loaded built-in bd tracker")
+		}
+	}
+
 	return nil
 }
 
 // newBuiltinMarkdownTracker creates the built-in markdown tracker plugin.
 func (m *Manager) newBuiltinMarkdownTracker() *Plugin {
-	_ = markdowntracker.NewMarkdownTracker("")
+	tracker := markdowntracker.NewMarkdownTracker("")
 	return &Plugin{
-		Name:        "markdown-tracker",
-		Manifest:    &Manifest{Name: "markdown-tracker", Version: "1.0.0"},
-		Capabilities: Capabilities{Tracker: true},
+		Name:            "markdown-tracker",
+		Manifest:        &Manifest{Name: "markdown-tracker", Version: "1.0.0"},
+		Capabilities:    Capabilities{Tracker: true},
+		BuiltinTracker:  tracker,
+	}
+}
+
+// newBuiltinBDTracker creates the built-in bd tracker plugin.
+func (m *Manager) newBuiltinBDTracker() *Plugin {
+	tracker := bdtracker.NewBDTracker("", 0)
+	return &Plugin{
+		Name:            "bdtracker",
+		Manifest:        &Manifest{Name: "bdtracker", Version: "1.0.0"},
+		Capabilities:    Capabilities{Tracker: true},
+		BuiltinTracker:  tracker,
 	}
 }
 
@@ -1097,12 +1125,13 @@ func (m *Manager) GetTrackerSource() tracker.TrackerSource {
 	defer m.pluginsMu.RUnlock()
 	for _, name := range m.pluginOrder {
 		if p, ok := m.plugins[name]; ok && p.Capabilities.Tracker {
+			// Prefer built-in TrackerSource if available
+			if p.BuiltinTracker != nil {
+				return p.BuiltinTracker
+			}
+			// Fall back to JSON-RPC wrapper for external plugins
 			return &trackerPlugin{plugin: p}
 		}
-	}
-	// Check for built-in markdown tracker
-	if p, ok := m.plugins["markdown-tracker"]; ok {
-		return &trackerPlugin{plugin: p}
 	}
 	return nil
 }
