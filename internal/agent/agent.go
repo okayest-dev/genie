@@ -177,6 +177,8 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 
 	// Track whether we've retried without tools to avoid infinite loops.
 	retriedNoTools := false
+	// Track length-finish retries to avoid infinite continuation loops.
+	retriedLength := false
 
 	for {
 		stream, err := c.Stream(ctx, req)
@@ -277,6 +279,35 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 
 		// No tool calls — turn is complete.
 		if len(toolCalls) == 0 {
+			// If the model was cut off due to max completion tokens, retry with a
+			// continuation prompt instead of ending the session silently.
+			if finishReason == llm.FinishLength && !retriedLength {
+				retriedLength = true
+				slog.Info("turn truncated by max tokens, requesting continuation",
+					"completion_tokens", usage.CompletionTokens,
+				)
+				// Surface a clear message to the user about the truncation.
+				if errOut != nil {
+					fmt.Fprintf(errOut, "⚠ Response truncated (max tokens reached). Requesting continuation...\n")
+				}
+				// Add a user message asking the model to continue.
+				req.Messages = append(req.Messages, llm.Message{
+					Role:    llm.RoleUser,
+					Content: "Your previous response was cut off due to the token limit. Please continue from where you left off.",
+				})
+				if sess != nil {
+					if err := sess.Append(llm.Message{
+						Role:    llm.RoleUser,
+						Content: "Your previous response was cut off due to the token limit. Please continue from where you left off.",
+					}); err != nil {
+						return err
+					}
+				}
+				// Reset reply for the continuation response.
+				reply.Reset()
+				continue
+			}
+
 			// response_ready final release: exposes the finish reason + usage the
 			// turn ended with, so plugins can alert/log the turn-end summary.
 			if to.hooks != nil {

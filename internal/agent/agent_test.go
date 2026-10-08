@@ -380,3 +380,150 @@ func TestRunTurnMapsNotCapableResult(t *testing.T) {
 		}
 	}
 }
+
+// TestRunTurnFinishLengthRetries tests that when a turn ends with
+// FinishLength (max completion tokens) and no tool calls, the agent
+// retries with a continuation prompt instead of ending silently.
+func TestRunTurnFinishLengthRetries(t *testing.T) {
+	var streams int
+	mock := &mockStreamClient{
+		streamFunc: func(_ context.Context, _ llm.Request) (iter.Seq[llm.Event], error) {
+			streams++
+			if streams == 1 {
+				// First stream: truncated by max tokens, no tool calls
+				return func(yield func(llm.Event) bool) {
+					yield(llm.Event{Kind: llm.EventText, Text: "This is a very long response that gets cut off mid-sentence because"})
+					yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishLength})
+					yield(llm.Event{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 4096, TotalTokens: 4106}})
+				}, nil
+			}
+			// Second stream: continuation completes the response
+			return func(yield func(llm.Event) bool) {
+				yield(llm.Event{Kind: llm.EventText, Text: " it hit the token limit."})
+				yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+				yield(llm.Event{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 15, CompletionTokens: 10, TotalTokens: 25}})
+			}, nil
+		},
+	}
+
+	var out, errOut bytes.Buffer
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, nil, nil, ""); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	// Should have streamed twice (initial + continuation)
+	if streams != 2 {
+		t.Errorf("model streamed %d times, want 2 (continuation after FinishLength)", streams)
+	}
+
+	// Output should contain both parts
+	output := out.String()
+	if !strings.Contains(output, "This is a very long response that gets cut off mid-sentence because") {
+		t.Errorf("stdout missing first part: %q", output)
+	}
+	if !strings.Contains(output, "it hit the token limit.") {
+		t.Errorf("stdout missing continuation part: %q", output)
+	}
+
+	// Should have shown the truncation warning on stderr
+	if !strings.Contains(errOut.String(), "Response truncated") {
+		t.Errorf("stderr missing truncation warning: %q", errOut.String())
+	}
+}
+
+// TestRunTurnFinishLengthWithToolCalls tests that when a turn ends with
+// FinishLength but HAS tool calls, the tool calls are executed (no retry).
+func TestRunTurnFinishLengthWithToolCalls(t *testing.T) {
+	var streams int
+	var toolExecuted bool
+	mock := &mockStreamClient{
+		streamFunc: func(_ context.Context, _ llm.Request) (iter.Seq[llm.Event], error) {
+			streams++
+			if streams == 1 {
+				// First stream: truncated by max tokens BUT has a tool call
+				return func(yield func(llm.Event) bool) {
+					yield(llm.Event{Kind: llm.EventToolCall, ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "echo", Arguments: `{"msg":"hello"}`},
+					}})
+					yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishLength})
+					yield(llm.Event{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 4096, TotalTokens: 4106}})
+				}, nil
+			}
+			// Second stream: after tool result
+			return func(yield func(llm.Event) bool) {
+				yield(llm.Event{Kind: llm.EventText, Text: "done"})
+				yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+				yield(llm.Event{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 15, CompletionTokens: 10, TotalTokens: 25}})
+			}, nil
+		},
+	}
+
+	reg := tools.NewRegistry()
+	reg.Register(&echoExecStub{executed: &toolExecuted})
+
+	var out, errOut bytes.Buffer
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, reg, nil, ""); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	// Should have streamed twice (initial + after tool result)
+	if streams != 2 {
+		t.Errorf("model streamed %d times, want 2", streams)
+	}
+
+	// Tool should have been executed
+	if !toolExecuted {
+		t.Error("tool should have been executed even with FinishLength")
+	}
+
+	// Output should contain the final reply
+	if !strings.Contains(out.String(), "done") {
+		t.Errorf("stdout missing final reply: %q", out.String())
+	}
+}
+
+type echoExecStub struct {
+	executed *bool
+}
+
+func (e *echoExecStub) Name() string        { return "echo" }
+func (e *echoExecStub) Description() string { return "Echo input" }
+func (e *echoExecStub) Parameters() map[string]any {
+	return map[string]any{"type": "object"}
+}
+func (e *echoExecStub) Execute(_ json.RawMessage) (string, error) {
+	*e.executed = true
+	return "echoed", nil
+}
+
+// TestRunTurnFinishLengthMaxRetries tests that the agent only retries
+// once on FinishLength (no infinite loop).
+func TestRunTurnFinishLengthMaxRetries(t *testing.T) {
+	var streams int
+	mock := &mockStreamClient{
+		streamFunc: func(_ context.Context, _ llm.Request) (iter.Seq[llm.Event], error) {
+			streams++
+			// Always return FinishLength to simulate hitting the limit every time
+			return func(yield func(llm.Event) bool) {
+				yield(llm.Event{Kind: llm.EventText, Text: "truncated"})
+				yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishLength})
+				yield(llm.Event{Kind: llm.EventUsage, Usage: llm.Usage{PromptTokens: 10, CompletionTokens: 4096, TotalTokens: 4106}})
+			}, nil
+		},
+	}
+
+	var out, errOut bytes.Buffer
+	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, nil, nil, ""); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	// Should have streamed exactly twice (initial + one retry)
+	if streams != 2 {
+		t.Errorf("model streamed %d times, want 2 (one retry only)", streams)
+	}
+
+	// Should have shown the truncation warning on stderr once
+	if !strings.Contains(errOut.String(), "Response truncated") {
+		t.Errorf("stderr missing truncation warning: %q", errOut.String())
+	}
+}
