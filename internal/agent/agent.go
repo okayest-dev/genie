@@ -492,6 +492,11 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				toolContent = prelude + "\n" + toolContent
 			}
 
+			// Print the tool output to errOut so the user can see it.
+			if errOut != nil && toolContent != "" {
+				fmt.Fprintf(errOut, "%s\n", toolContent)
+			}
+
 			// Add the tool result to the conversation.
 			toolMsg := llm.Message{
 				Role:       llm.RoleTool,
