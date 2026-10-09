@@ -33,6 +33,12 @@ jobs:
       - name: Tidy modules
         run: go mod tidy
 
+      - name: Debug Go environment
+        run: |
+          go version
+          go env
+          ls -la ./cmd/genie/
+
       - name: Build
         run: |
           EXT=""
