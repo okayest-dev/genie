@@ -28,7 +28,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: '1.23'
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Tidy modules
+        run: go mod tidy
 
       - name: Build
         run: |
