@@ -12,20 +12,15 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/goreleaser/goreleaser:v2.18.3
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-
       - name: Run GoReleaser
-        uses: docker://ghcr.io/goreleaser/goreleaser:v2.18.3
-        with:
-          args: release --clean
+        run: goreleaser release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
