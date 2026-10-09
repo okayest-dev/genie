@@ -14,11 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin, windows]
-        goarch: [amd64, arm64]
-        exclude:
-          - goos: windows
-            goarch: arm64
+        goos: [linux]
+        goarch: [amd64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,9 +29,6 @@ jobs:
 
       - name: Download dependencies
         run: go mod download
-
-      - name: Tidy modules
-        run: go mod tidy
 
       - name: Build
         run: |
