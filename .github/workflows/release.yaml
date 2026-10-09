@@ -39,6 +39,12 @@ jobs:
           go env
           ls -la ./cmd/genie/
 
+      - name: Test simple build
+        run: |
+          echo 'package main; import "fmt"; func main() { fmt.Println("hello") }' > /tmp/hello.go
+          go build -o /tmp/hello /tmp/hello.go
+          /tmp/hello
+
       - name: Build
         run: |
           EXT=""
