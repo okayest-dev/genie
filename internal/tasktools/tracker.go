@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/okayest-dev/genie/internal/tracker"
@@ -29,6 +30,7 @@ type FakeTracker struct {
 	tasks         map[string]*tracker.TrackerTask
 	claimedID     string
 	frontierOrder []string
+	createdTickets []string
 }
 
 // Ensure FakeTracker implements tracker.TrackerSource
@@ -43,8 +45,9 @@ func NewFakeTracker(tasks []*tracker.TrackerTask) *FakeTracker {
 		order = append(order, t.ID)
 	}
 	return &FakeTracker{
-		tasks:         m,
-		frontierOrder: order,
+		tasks:          m,
+		frontierOrder:  order,
+		createdTickets: make([]string, 0),
 	}
 }
 
@@ -136,12 +139,14 @@ func (f *FakeTracker) Create(ctx context.Context, args tracker.CreateArgs) (*tra
 	if task.Type == "" {
 		task.Type = "task"
 	}
-	if task.Priority == 0 {
+	// Priority 0 is valid (P0/critical), so only default if negative
+	if task.Priority < 0 {
 		task.Priority = 2
 	}
 
 	f.tasks[newID] = task
 	f.frontierOrder = append(f.frontierOrder, newID)
+	f.createdTickets = append(f.createdTickets, newID)
 
 	return task, nil
 }
@@ -154,4 +159,43 @@ func (f *FakeTracker) SetFrontierOrder(order []string) {
 // SetClaimed sets the currently claimed task ID.
 func (f *FakeTracker) SetClaimed(id string) {
 	f.claimedID = id
+}
+
+// GetCreatedTickets returns the IDs of tickets created during this session.
+func (f *FakeTracker) GetCreatedTickets() []string {
+	return f.createdTickets
+}
+
+// SearchOpen searches for open tasks matching the query.
+// It performs a word-based search on title and description.
+func (f *FakeTracker) SearchOpen(ctx context.Context, query string, limit int) ([]*tracker.TrackerTask, error) {
+	queryWords := strings.Fields(strings.ToLower(query))
+	var matches []*tracker.TrackerTask
+
+	for _, task := range f.tasks {
+		if task.Status != "open" {
+			continue
+		}
+
+		titleLower := strings.ToLower(task.Title)
+		descLower := strings.ToLower(task.Description)
+
+		// Check if all query words appear in title or description
+		allMatch := true
+		for _, word := range queryWords {
+			if !strings.Contains(titleLower, word) && !strings.Contains(descLower, word) {
+				allMatch = false
+				break
+			}
+		}
+
+		if allMatch {
+			matches = append(matches, task)
+			if limit > 0 && len(matches) >= limit {
+				break
+			}
+		}
+	}
+
+	return matches, nil
 }

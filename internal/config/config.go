@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/okayest-dev/genie/internal/gates"
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/modelinfo"
 	"github.com/okayest-dev/genie/internal/tasktools"
@@ -188,6 +189,12 @@ type Skills struct {
 // wrong.
 type Provider = llm.Provider
 
+// TaskTools holds configuration for the task tools (og-wm7.1).
+type TaskToolsConfig = tasktools.TaskToolsConfig
+
+// GatesConfig holds configuration for quality gates (og-wm7.2).
+type GatesConfig = gates.GateConfig
+
 // Config is the resolved harness configuration.
 type Config struct {
 	// Providers is the set of declared providers keyed by name, seeded with
@@ -225,9 +232,10 @@ type Config struct {
 	// Hooks is the plugin-hook circuit-breaker policy, resolved from
 	// [plugins] hook_failure_threshold / hook_recovery_seconds.
 	Hooks    Hooks
-Skills      Skills
+	Skills      Skills
 	AgentReg    *AgentReg
-	TaskTools   tasktools.TaskToolsConfig
+	TaskTools   TaskToolsConfig
+	Gates       GatesConfig
 }
 
 // Permissions is the resolved permission policy. Base maps each axis name
@@ -266,6 +274,7 @@ type fileConfig struct {
 	Providers       providerFiles       `toml:"providers"`
 	Permissions     permissionsFile     `toml:"permissions"`
 	TaskTools       taskToolsFile       `toml:"task_tools"`
+	Gates           gatesFile           `toml:"gates"`
 }
 
 // providerFiles is the TOML schema for [providers.*]: nested tables keyed by
@@ -291,8 +300,28 @@ type toolsFile struct {
 }
 
 type taskToolsFile struct {
-	Enable         *bool `toml:"enable"`
-	CommandTimeout *int   `toml:"command_timeout"` // seconds
+	Enable              *bool  `toml:"enable"`
+	CommandTimeout      *int   `toml:"command_timeout"`      // seconds
+	TrackerGuardPolicy  *string `toml:"tracker_guard_policy"` // strict, permissive, off
+	Followup            followupFile `toml:"followup"`
+}
+
+type followupFile struct {
+	PrioritySecurity            *int     `toml:"priority_security"`
+	PriorityRecurrenceThreshold *int     `toml:"priority_recurrence_threshold"`
+	PriorityBlastRadiusThreshold *int    `toml:"priority_blast_radius_threshold"`
+	DedupSimilarityThreshold    *float64 `toml:"dedup_similarity_threshold"`
+	AutoWontfixRules            []string `toml:"auto_wontfix_rules"`
+}
+
+type gatesFile struct {
+	CoverageThreshold *float64 `toml:"coverage_threshold"`
+	RefixAttempts     *int     `toml:"refix_attempts"`
+	EnabledGates      []string `toml:"enabled_gates"`
+	ReportingGates    []string `toml:"reporting_gates"`
+	TestCommand       *string  `toml:"test_command"`
+	BuildCommand      *string  `toml:"build_command"`
+	CoverageCommand   *string  `toml:"coverage_command"`
 }
 
 // permissionsFile is the TOML schema for [permissions]: per-axis base scopes
@@ -398,6 +427,10 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 			cfg.Tools.CodeTimeout = time.Duration(*fc.Tools.CodeTimeout) * time.Second
 		}
 		applyTaskTools(&cfg.TaskTools, fc.TaskTools)
+		if err := cfg.TaskTools.Validate(); err != nil {
+			return nil, err
+		}
+		applyGates(&cfg.Gates, fc.Gates)
 		applyPluginsErr := applyPlugins(&cfg, fc.Plugins, userConfigDir)
 		if applyPluginsErr != nil {
 			return nil, applyPluginsErr
@@ -536,6 +569,7 @@ func defaults(userConfigDir string) Config {
 		Hooks:       Hooks{FailureThreshold: defaultHookFailureThreshold, Recovery: defaultHookRecovery},
 		Permissions: Permissions{Base: map[string][]string{"read": {"."}}},
 		TaskTools:   tasktools.DefaultTaskToolsConfig(),
+		Gates:       defaultGateConfig(),
 	}
 }
 
@@ -619,6 +653,61 @@ func applyTaskTools(dst *tasktools.TaskToolsConfig, src taskToolsFile) {
 			return // validation happens in Parse
 		}
 		dst.CommandTimeout = time.Duration(*src.CommandTimeout) * time.Second
+	}
+	if src.TrackerGuardPolicy != nil {
+		dst.TrackerGuardPolicy = *src.TrackerGuardPolicy
+	}
+	if src.Followup.PrioritySecurity != nil {
+		dst.Followup.PrioritySecurity = *src.Followup.PrioritySecurity
+	}
+	if src.Followup.PriorityRecurrenceThreshold != nil {
+		dst.Followup.PriorityRecurrenceThreshold = *src.Followup.PriorityRecurrenceThreshold
+	}
+	if src.Followup.PriorityBlastRadiusThreshold != nil {
+		dst.Followup.PriorityBlastRadiusThreshold = *src.Followup.PriorityBlastRadiusThreshold
+	}
+	if src.Followup.DedupSimilarityThreshold != nil {
+		dst.Followup.DedupSimilarityThreshold = *src.Followup.DedupSimilarityThreshold
+	}
+	if len(src.Followup.AutoWontfixRules) > 0 {
+		dst.Followup.AutoWontfixRules = src.Followup.AutoWontfixRules
+	}
+}
+
+func applyGates(dst *GatesConfig, src gatesFile) {
+	if src.CoverageThreshold != nil {
+		dst.CoverageThreshold = *src.CoverageThreshold
+	}
+	if src.RefixAttempts != nil {
+		dst.RefixAttempts = *src.RefixAttempts
+	}
+	if len(src.EnabledGates) > 0 {
+		dst.EnabledGates = src.EnabledGates
+	}
+	if len(src.ReportingGates) > 0 {
+		dst.ReportingGates = src.ReportingGates
+	}
+	if src.TestCommand != nil {
+		dst.TestCommand = *src.TestCommand
+	}
+	if src.BuildCommand != nil {
+		dst.BuildCommand = *src.BuildCommand
+	}
+	if src.CoverageCommand != nil {
+		dst.CoverageCommand = *src.CoverageCommand
+	}
+}
+
+// defaultGateConfig returns the default gates configuration.
+func defaultGateConfig() GatesConfig {
+	return GatesConfig{
+		CoverageThreshold: 0.8,
+		RefixAttempts:     3,
+		EnabledGates:      []string{},
+		ReportingGates:    []string{},
+		TestCommand:       "",
+		BuildCommand:      "",
+		CoverageCommand:   "",
 	}
 }
 
