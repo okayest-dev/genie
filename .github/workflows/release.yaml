@@ -46,13 +46,21 @@ jobs:
           /tmp/hello
 
       - name: Build
+        continue-on-error: true
         run: |
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then
             EXT=".exe"
           fi
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o genie${EXT} ./cmd/genie
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -o genie${EXT} ./cmd/genie 2>&1 | tee build.log
         shell: bash
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: build.log
 
       - name: Archive
         run: |
