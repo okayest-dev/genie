@@ -24,7 +24,16 @@ jobs:
           go-version: '1.23'
 
       - name: Install GoReleaser
-        run: go install github.com/goreleaser/goreleaser/v2@latest
+        run: |
+          # Try v2.0.0 which should work with Go 1.22+
+          curl -sL https://github.com/goreleaser/goreleaser/releases/download/v2.0.0/goreleaser_Linux_x86_64.tar.gz | tar -xz -C /tmp
+          echo "/tmp" >> $GITHUB_PATH
+
+      - name: Debug goreleaser version
+        run: goreleaser --version
+
+      - name: Validate config
+        run: goreleaser check
 
       - name: Run GoReleaser
         run: goreleaser release --clean
