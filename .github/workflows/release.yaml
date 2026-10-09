@@ -10,8 +10,15 @@ permissions:
   contents: write
 
 jobs:
-  test-build:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,13 +31,52 @@ jobs:
           go-version: '1.26'
 
       - name: Build
-        run: go build -v ./cmd/genie
+        run: |
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            EXT=".exe"
+          fi
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o genie${EXT} ./cmd/genie
+        shell: bash
 
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v4
+      - name: Archive
+        run: |
+          EXT=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            EXT=".exe"
+            zip genie_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip genie${EXT}
+          else
+            tar -czf genie_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz genie${EXT}
+          fi
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          distribution: goreleaser
-          version: '~> v2'
-          args: release --clean
+          name: genie_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: |
+            genie_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.*
+            genie${{ matrix.goos == 'windows' && '.exe' || '' }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
