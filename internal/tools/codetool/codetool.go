@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/okayest-dev/genie/internal/permissions"
@@ -44,7 +43,7 @@ func (RealRunner) Run(ctx context.Context, snippetPath string, flags []string, c
 
 	cmd := exec.CommandContext(ctx, "deno", args...)
 	cmd.Dir = cwd
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setSysProcAttr(cmd)
 
 	var stdoutBuf, stderrBuf strings.Builder
 	cmd.Stdout = &stdoutBuf

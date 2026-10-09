@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/okayest-dev/genie/internal/tools"
@@ -151,7 +150,7 @@ func (t *Tool) Execute(raw json.RawMessage) (string, error) {
 	cmd := exec.Command("sh", "-c", args.Command)
 	cmd.Dir = t.cwd
 	// Create a new process group so we can kill the entire tree on timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setSysProcAttr(cmd)
 
 	// Merge stdout+stderr into a single buffer.
 	var out []byte
@@ -169,9 +168,7 @@ func (t *Tool) Execute(raw json.RawMessage) (string, error) {
 			// Command finished before timeout.
 		case <-ctx.Done():
 			// Kill the entire process group.
-			if cmd.Process != nil {
-				syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			}
+			killProcessGroup(cmd)
 			<-done
 			return string(out), fmt.Errorf("command timed out")
 		}

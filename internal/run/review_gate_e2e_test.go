@@ -35,7 +35,7 @@ func TestReviewGateWithFollowupEngine(t *testing.T) {
 	config2 := gates.GateConfig{
 		TestCommand: "make test",
 	}
-	observed := gates.NewObservedEvidence()
+	observed := gates.NewObservedEvidenceTracker()
 	deferredStore := gates.NewInMemoryDeferredFindingStore()
 
 	runner := gates.NewGateRunner(registry, ledger, config2, observed, ticketCreator, deferredStore)
@@ -133,7 +133,7 @@ func TestReviewGateWithDedupGuard(t *testing.T) {
 	config2 := gates.GateConfig{
 		EnabledGates: []string{"review"},
 	}
-	observed := gates.NewObservedEvidence()
+	observed := gates.NewObservedEvidenceTracker()
 	deferredStore := gates.NewInMemoryDeferredFindingStore()
 
 	runner := gates.NewGateRunner(registry, ledger, config2, observed, ticketCreator, deferredStore)
@@ -279,7 +279,7 @@ ID:                "finding-4",
 			config2 := gates.GateConfig{
 				EnabledGates: []string{"review"},
 			}
-			observed := gates.NewObservedEvidence()
+			observed := gates.NewObservedEvidenceTracker()
 			deferredStore := gates.NewInMemoryDeferredFindingStore()
 
 			runner := gates.NewGateRunner(registry, ledger, config2, observed, ticketCreator, deferredStore)
@@ -356,7 +356,7 @@ func TestReviewGateWithAutoWontfix(t *testing.T) {
 	registry := gates.NewDefaultGateRegistry()
 	ledger := gates.NewInMemoryEvidenceLedger()
 	config2 := gates.GateConfig{}
-	observed := gates.NewObservedEvidence()
+	observed := gates.NewObservedEvidenceTracker()
 	deferredStore := gates.NewInMemoryDeferredFindingStore()
 
 	runner := gates.NewGateRunner(registry, ledger, config2, observed, ticketCreator, deferredStore)
@@ -424,7 +424,7 @@ func TestGateDeferralWithTicketIDInEvidence(t *testing.T) {
 	config2 := gates.GateConfig{
 		BuildCommand: "make build",
 	}
-	observed := gates.NewObservedEvidence()
+	observed := gates.NewObservedEvidenceTracker()
 	deferredStore := gates.NewInMemoryDeferredFindingStore()
 
 	runner := gates.NewGateRunner(registry, ledger, config2, observed, ticketCreator, deferredStore)
@@ -519,7 +519,7 @@ func TestEmptyFrontierReportWithSuggestions(t *testing.T) {
 	config2 := gates.GateConfig{
 		EnabledGates: []string{"review"},
 	}
-	observed := gates.NewObservedEvidence()
+	observed := gates.NewObservedEvidenceTracker()
 	deferredStore := gates.NewInMemoryDeferredFindingStore()
 
 	runner := gates.NewGateRunner(registry, ledger, config2, observed, ticketCreator, deferredStore)
@@ -583,7 +583,7 @@ func TestClosedLoopReportUnresolvedFindings(t *testing.T) {
 	config2 := gates.GateConfig{
 		EnabledGates: []string{"review"},
 	}
-	observed := gates.NewObservedEvidence()
+	observed := gates.NewObservedEvidenceTracker()
 	deferredStore := gates.NewInMemoryDeferredFindingStore()
 
 	runner := gates.NewGateRunner(registry, ledger, config2, observed, ticketCreator, deferredStore)

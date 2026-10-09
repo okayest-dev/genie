@@ -596,6 +596,32 @@ func (t *trackerPlugin) Create(ctx context.Context, args tracker.CreateArgs) (*t
 	return result.Task, nil
 }
 
+func (t *trackerPlugin) SearchOpen(ctx context.Context, query string, limit int) ([]*tracker.TrackerTask, error) {
+	params := TrackerSearchOpenParams{Query: query, Limit: limit}
+	paramsData, _ := json.Marshal(params)
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  MethodTrackerSearchOpen,
+		Params:  paramsData,
+		ID:      time.Now().UnixNano(),
+	}
+	if err := t.plugin.Codec.WriteRequest(req); err != nil {
+		return nil, err
+	}
+	resp, err := t.plugin.Codec.ReadResponse()
+	if err != nil {
+		return nil, err
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("tracker/search_open: %w", resp.Error)
+	}
+	var result TrackerSearchOpenResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse tracker/search_open: %w", err)
+	}
+	return result.Tasks, nil
+}
+
 func (m *Manager) registerPluginTools(p *Plugin) error {
 	for _, td := range p.Tools {
 		if m.toolReg.IsDisabled(td.Name) {

@@ -25,13 +25,27 @@ type ProgressRecord struct {
 	TrackerNote string `json:"tracker_note,omitempty"`
 }
 
+// DeferredFindingRecord represents a deferred gate finding recorded during task work.
+type DeferredFindingRecord struct {
+	GateName      string `json:"gate_name"`
+	FindingID     string `json:"finding_id"`
+	Invariant     string `json:"invariant"`
+	Severity      string `json:"severity"`
+	Category      string `json:"category"`
+	BlastRadius   int    `json:"blast_radius"`
+	Recurrence    int    `json:"recurrence"`
+	Description   string `json:"description"`
+	RecordedAt    string `json:"recorded_at"`
+}
+
 // TaskState manages the active task state for a session.
 type TaskState struct {
-	active           *ActiveTask
-	onChange         func([]byte) error
-	progressLog      []ProgressRecord
-	evidenceTracker  *gates.ObservedEvidenceTracker
-	taskStartLine    int // transcript line index when task was claimed
+	active               *ActiveTask
+	onChange             func([]byte) error
+	progressLog          []ProgressRecord
+	deferredFindings     []DeferredFindingRecord
+	evidenceTracker      *gates.ObservedEvidenceTracker
+	taskStartLine        int // transcript line index when task was claimed
 }
 
 // NewTaskState creates a new task state manager.
@@ -123,10 +137,25 @@ func (s *TaskState) GetProgressLog() []ProgressRecord {
 	return s.progressLog
 }
 
+// RecordDeferredFinding records a deferred gate finding for the active task.
+func (s *TaskState) RecordDeferredFinding(record DeferredFindingRecord) error {
+	if s.active == nil {
+		return fmt.Errorf("no active task")
+	}
+	record.RecordedAt = time.Now().Format(time.RFC3339)
+	s.deferredFindings = append(s.deferredFindings, record)
+	return nil
+}
+
+// GetDeferredFindings returns the deferred findings for the active task.
+func (s *TaskState) GetDeferredFindings() []DeferredFindingRecord {
+	return s.deferredFindings
+}
+
 // MarshalJSON implements custom JSON serialization for the session transcript marker.
 func (s *TaskState) MarshalJSON() ([]byte, error) {
 	if s.active == nil {
-		return json.Marshal(map[string]any{"active_task": nil, "progress_log": s.progressLog})
+		return json.Marshal(map[string]any{"active_task": nil, "progress_log": s.progressLog, "deferred_findings": s.deferredFindings})
 	}
 	return json.Marshal(map[string]any{
 		"active_task": map[string]any{
@@ -136,17 +165,18 @@ func (s *TaskState) MarshalJSON() ([]byte, error) {
 			"labels":      s.active.Task.Labels,
 			"claimed_at":  s.active.ClaimedAt.Format(time.RFC3339),
 		},
-		"progress_log": s.progressLog,
+		"progress_log":     s.progressLog,
+		"deferred_findings": s.deferredFindings,
 	})
 }
 
-// TaskClaimArgs are the arguments for the task.claim tool.
+// TaskClaimArgs are the arguments for the task_claim tool.
 type TaskClaimArgs struct {
 	// TaskID is the optional task ID to claim. If empty, claims the frontier task.
 	TaskID string `json:"task_id"`
 }
 
-// TaskClaimTool implements the task.claim tool.
+// TaskClaimTool implements the task_claim tool.
 type TaskClaimTool struct {
 	tracker  Tracker
 	state    *TaskState
@@ -155,7 +185,7 @@ type TaskClaimTool struct {
 	sess     *session.Session
 }
 
-// NewTaskClaimTool creates a new task.claim tool.
+// NewTaskClaimTool creates a new task_claim tool.
 func NewTaskClaimTool(tracker Tracker, state *TaskState, enabled bool, timeout time.Duration) *TaskClaimTool {
 	return &TaskClaimTool{
 		tracker:  tracker,
@@ -172,7 +202,7 @@ func (t *TaskClaimTool) SetSession(sess *session.Session) {
 
 // Name returns the tool name.
 func (t *TaskClaimTool) Name() string {
-	return "task.claim"
+	return "task_claim"
 }
 
 // Description returns the tool description.
@@ -198,7 +228,7 @@ func (t *TaskClaimTool) Parameters() map[string]any {
 // Execute claims a task from the tracker.
 func (t *TaskClaimTool) Execute(raw json.RawMessage) (string, error) {
 	if !t.enabled {
-		return "", fmt.Errorf("task.claim is disabled (task_tools not enabled in config)")
+		return "", fmt.Errorf("task_claim is disabled (task_tools not enabled in config)")
 	}
 
 	// Check if a task is already active

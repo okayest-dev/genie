@@ -271,3 +271,129 @@ func TestLoadIntoPopulatesHistory(t *testing.T) {
 		t.Errorf("history[0].Content = %q, want %q", history[0].Content, "first")
 	}
 }
+
+func TestAppendCompactionMarkerSchema(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Append some messages first
+	if err := s.Append(llm.Message{Role: llm.RoleSystem, Content: "instr"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleUser, Content: "question"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "answer"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Append compaction marker
+	summary := `{"task_id":"og-1","title":"Test Task","resolution_summary":"Done","gates_passed":["build","test"],"evidence_pointers":[],"follow_ups":[],"commit_ref":"abc123","worktree_ref":"/tmp/wt"}`
+	if err := s.AppendCompaction(summary, 0, 2); err != nil {
+		t.Fatalf("AppendCompaction: %v", err)
+	}
+
+	// Read the transcript and verify the marker
+	lines, err := s.Lines()
+	if err != nil {
+		t.Fatalf("Lines: %v", err)
+	}
+
+	foundMarker := false
+	for _, ln := range lines {
+		if ln.Role == RoleCompaction {
+			foundMarker = true
+			if ln.Content != summary {
+				t.Errorf("marker content = %q, want %q", ln.Content, summary)
+			}
+			if ln.CompactionFrom != 0 {
+				t.Errorf("CompactionFrom = %d, want 0", ln.CompactionFrom)
+			}
+			if ln.CompactionTo != 2 {
+				t.Errorf("CompactionTo = %d, want 2", ln.CompactionTo)
+			}
+			if ln.Metadata != nil {
+				t.Errorf("marker should not have metadata, got %v", ln.Metadata)
+			}
+			break
+		}
+	}
+	if !foundMarker {
+		t.Error("compaction marker not found in transcript")
+	}
+}
+
+func TestAppendCompactionMarkerRequiredFields(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Test with minimal required fields
+	summary := `{"task_id":"og-1","title":"Test Task"}`
+	if err := s.AppendCompaction(summary, 0, 0); err != nil {
+		t.Fatalf("AppendCompaction: %v", err)
+	}
+
+	lines, err := s.Lines()
+	if err != nil {
+		t.Fatalf("Lines: %v", err)
+	}
+
+	foundMarker := false
+	for _, ln := range lines {
+		if ln.Role == RoleCompaction {
+			foundMarker = true
+			if ln.CompactionFrom != 0 {
+				t.Errorf("CompactionFrom = %d, want 0", ln.CompactionFrom)
+			}
+			if ln.CompactionTo != 0 {
+				t.Errorf("CompactionTo = %d, want 0", ln.CompactionTo)
+			}
+			break
+		}
+	}
+	if !foundMarker {
+		t.Error("compaction marker not found in transcript")
+	}
+}
+
+func TestAppendCompactionMarkerInvalidRange(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Test with invalid range (To < From)
+	summary := `{"task_id":"og-1"}`
+	if err := s.AppendCompaction(summary, 5, 3); err != nil {
+		t.Fatalf("AppendCompaction: %v", err)
+	}
+
+	lines, err := s.Lines()
+	if err != nil {
+		t.Fatalf("Lines: %v", err)
+	}
+
+	foundMarker := false
+	for _, ln := range lines {
+		if ln.Role == RoleCompaction {
+			foundMarker = true
+			if ln.CompactionFrom != 5 {
+				t.Errorf("CompactionFrom = %d, want 5", ln.CompactionFrom)
+			}
+			if ln.CompactionTo != 3 {
+				t.Errorf("CompactionTo = %d, want 3", ln.CompactionTo)
+			}
+			break
+		}
+	}
+	if !foundMarker {
+		t.Error("compaction marker not found in transcript")
+	}
+}

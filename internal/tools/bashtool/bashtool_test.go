@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/okayest-dev/genie/internal/tasktools"
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
@@ -291,5 +292,187 @@ func TestCommandWithOutput(t *testing.T) {
 	}
 	if strings.TrimSpace(out) != "line1\nline2\nline3" {
 		t.Errorf("output = %q, want line1/line2/line3", out)
+	}
+}
+
+// GuardedBashTool tests
+
+func TestGuardedBashToolPolicyOff(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "off")
+
+	// Should pass through even with active task
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	_, err := guarded.Execute(argsJSON("bd close og-1"))
+	// The command will fail because bd isn't available, but the guard shouldn't block
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("policy off should not block, got: %v", err)
+	}
+}
+
+func TestGuardedBashToolNoActiveTask(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	// No active task - should pass through
+	_, err := guarded.Execute(argsJSON("bd close og-1"))
+	// The command will fail because bd isn't available, but the guard shouldn't block
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("no active task should not block, got: %v", err)
+	}
+}
+
+func TestGuardedBashToolStrictBlocksWrite(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	_, err := guarded.Execute(argsJSON("bd close og-1"))
+	if err == nil {
+		t.Fatal("expected error for blocked write")
+	}
+	if !strings.Contains(err.Error(), "Guard: use task.resolve") {
+		t.Errorf("error = %q, want Guard message with task.resolve", err.Error())
+	}
+}
+
+func TestGuardedBashToolStrictBlocksClaim(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	_, err := guarded.Execute(argsJSON("bd claim og-2"))
+	if err == nil {
+		t.Fatal("expected error for blocked claim")
+	}
+	if !strings.Contains(err.Error(), "Guard: use task.claim") {
+		t.Errorf("error = %q, want Guard message with task.claim", err.Error())
+	}
+}
+
+func TestGuardedBashToolStrictBlocksCreate(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	_, err := guarded.Execute(argsJSON("bd create 'New Task'"))
+	if err == nil {
+		t.Fatal("expected error for blocked create")
+	}
+	if !strings.Contains(err.Error(), "Guard: use task.create") {
+		t.Errorf("error = %q, want Guard message with task.create", err.Error())
+	}
+}
+
+func TestGuardedBashToolStrictBlocksComment(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	_, err := guarded.Execute(argsJSON("bd comment og-1 'test'"))
+	if err == nil {
+		t.Fatal("expected error for blocked comment")
+	}
+	if !strings.Contains(err.Error(), "Guard: use task.progress") {
+		t.Errorf("error = %q, want Guard message with task.progress", err.Error())
+	}
+}
+
+func TestGuardedBashToolPermissiveAllowsNonLifecycleWrite(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "permissive")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	// Creating a new task (not the active one) should be allowed in permissive mode
+	// The command will fail because bd isn't real, but the guard shouldn't block
+	_, err := guarded.Execute(argsJSON("bd create 'New Task'"))
+	// Guard should not block - any error is from the command itself
+	// We can't easily test success because bd isn't available, but we can verify
+	// the error is not a guard error
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("permissive mode should not block non-lifecycle writes, got: %v", err)
+	}
+}
+
+func TestGuardedBashToolPermissiveBlocksLifecycleMutation(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "permissive")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	// Closing the active task should be blocked
+	_, err := guarded.Execute(argsJSON("bd close og-1"))
+	if err == nil {
+		t.Fatal("expected error for blocked lifecycle mutation")
+	}
+	if !strings.Contains(err.Error(), "Guard: use task.resolve") {
+		t.Errorf("error = %q, want Guard message with task.resolve", err.Error())
+	}
+}
+
+func TestGuardedBashToolAllowsReads(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	// Reads should be allowed in all modes
+	_, err := guarded.Execute(argsJSON("bd show og-1"))
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("reads should be allowed in strict mode, got: %v", err)
+	}
+
+	_, err = guarded.Execute(argsJSON("bd ready"))
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("bd ready should be allowed in strict mode, got: %v", err)
+	}
+}
+
+func TestGuardedBashToolAllowsNonBdCommands(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	// Non-bd commands should pass through
+	out, err := guarded.Execute(argsJSON("echo hello"))
+	if err != nil {
+		t.Fatalf("unexpected error for non-bd command: %v", err)
+	}
+	if !strings.Contains(out, "hello") {
+		t.Errorf("output = %q, want hello", out)
+	}
+}
+
+func TestGuardedBashToolDescriptionAndParameters(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	if guarded.Name() != "bash" {
+		t.Errorf("Name() = %q, want bash", guarded.Name())
+	}
+	if guarded.Description() == "" {
+		t.Error("Description() should not be empty")
+	}
+	params := guarded.Parameters()
+	if params == nil {
+		t.Error("Parameters() should not be nil")
 	}
 }

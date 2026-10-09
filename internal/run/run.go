@@ -135,6 +135,7 @@ type Handle struct {
 
 	claimTool  *tasktools.TaskClaimTool
 	resolveTool *tasktools.TaskResolveTool
+	resetTool   *tasktools.SessionResetTool
 
 	sess   *session.Session
 	ledger *ledger.Ledger
@@ -235,7 +236,18 @@ func New(opts Options) (*Handle, error) {
 
 		// Create gate registry and runner
 		gateRegistry := gates.NewDefaultGateRegistry()
-		gateRunner := gates.NewGateRunner(gateRegistry, evidenceLedger, opts.Config.Gates, h.taskState.EvidenceTracker().Observed())
+
+		// Create follow-up engine for dedup guard and priority shaping (og-hd8)
+		followupMetrics := &tasktools.FollowupMetrics{}
+		followupEngine := tasktools.NewFollowupEngine(tracker, opts.Config.TaskTools.Followup, followupMetrics)
+
+		// Create ticket creator for gate deferral with follow-up engine
+		ticketCreator := NewTrackerTicketCreatorWithFollowup(tracker, followupEngine)
+
+		// Create deferred finding store
+		deferredFindingStore := gates.NewInMemoryDeferredFindingStore()
+
+		gateRunner := gates.NewGateRunner(gateRegistry, evidenceLedger, opts.Config.Gates, h.taskState.EvidenceTracker().Observed(), ticketCreator, deferredFindingStore)
 		h.gateRunner = gateRunner
 
 		claimTool := tasktools.NewTaskClaimTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
@@ -247,13 +259,21 @@ func New(opts Options) (*Handle, error) {
 		h.resolveTool = resolveTool
 		full.Register(resolveTool)
 
-		// Task create tool
-		createTool := tasktools.NewTaskCreateTool(tracker, true, opts.Config.TaskTools.CommandTimeout)
+		// Task create tool with follow-up engine
+		createTool := tasktools.NewTaskCreateToolWithFollowup(tracker, followupEngine, true, opts.Config.TaskTools.CommandTimeout)
 		full.Register(createTool)
 
 		// Task progress tool
 		progressTool := tasktools.NewTaskProgressTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
 		full.Register(progressTool)
+
+		// Task defer finding tool
+		deferFindingTool := tasktools.NewTaskDeferFindingTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+		full.Register(deferFindingTool)
+
+		// Session reset tool
+		resetTool := tasktools.NewSessionResetTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout, h)
+		full.Register(resetTool)
 	}
 
 	if !opts.Config.Tools.Read {

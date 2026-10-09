@@ -33,6 +33,7 @@ const (
 	MethodTrackerClose           = "tracker/close"
 	MethodTrackerComment         = "tracker/comment"
 	MethodTrackerCreate          = "tracker/create"
+	MethodTrackerSearchOpen      = "tracker/search_open"
 	MethodPing                   = "ping"
 	MethodShutdown               = "shutdown"
 )
@@ -308,6 +309,17 @@ type TrackerCreateParams struct {
 // TrackerCreateResult is the result of tracker/create.
 type TrackerCreateResult struct {
 	Task *TrackerTask `json:"task"`
+}
+
+// TrackerSearchOpenParams are the parameters for tracker/search_open.
+type TrackerSearchOpenParams struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// TrackerSearchOpenResult is the result of tracker/search_open.
+type TrackerSearchOpenResult struct {
+	Tasks []*TrackerTask `json:"tasks"`
 }
 
 // CommandsHelpParams requests curated help for a plugin (Name omitted) or a

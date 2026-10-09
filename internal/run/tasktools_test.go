@@ -27,13 +27,13 @@ func TestTaskClaimToolRegistered(t *testing.T) {
 	}
 
 	registry := h.Registry()
-	tool, ok := registry.Get("task.claim")
+	tool, ok := registry.Get("task_claim")
 	if !ok {
-		t.Error("task.claim tool not registered")
+		t.Error("task_claim tool not registered")
 		return
 	}
 
-	t.Logf("task.claim tool registered: %s", tool.Name())
+	t.Logf("task_claim tool registered: %s", tool.Name())
 
 	// Test the tool
 	result, err := tool.Execute([]byte(`{}`))
@@ -65,13 +65,13 @@ func TestTaskCreateToolRegistered(t *testing.T) {
 	}
 
 	registry := h.Registry()
-	tool, ok := registry.Get("task.create")
+	tool, ok := registry.Get("task_create")
 	if !ok {
-		t.Error("task.create tool not registered")
+		t.Error("task_create tool not registered")
 		return
 	}
 
-	t.Logf("task.create tool registered: %s", tool.Name())
+	t.Logf("task_create tool registered: %s", tool.Name())
 
 	// Test the tool
 	result, err := tool.Execute([]byte(`{"title": "Test Task"}`))
