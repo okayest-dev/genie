@@ -1045,3 +1045,377 @@ func TestHooksWithoutSeamMarkerAreExternal(t *testing.T) {
 		t.Errorf("external hook's Condense should be called")
 	}
 }
+
+// TestBoundaryCompactionTaskIsolation verifies that when a boundary compaction
+// marker is written (simulating task.resolve), the next request excludes the
+// finished task's tool-output layer and contains only the boundary compaction
+// summary marker. This is the core survive-flush contract test at the request seam.
+func TestBoundaryCompactionTaskIsolation(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// Use a resolver with a reasonable budget so compaction doesn't trigger automatically
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Simulate Task A: user asks, assistant calls tools, tool results returned
+	simulateTurn(t, s, "instr", "task A question")
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_a1", Name: "bash", Arguments: `{"cmd":"ls"}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleTool, Content: "task A tool output 1", ToolCallID: "call_a1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_a2", Name: "read", Arguments: `{"path":"f.go"}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleTool, Content: strings.Repeat("task A tool output 2 (large content) ", 50), ToolCallID: "call_a2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "task A done"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write boundary compaction marker (simulating task.resolve)
+	boundarySummary := `{"task_id":"og-A","title":"Task A","resolution_summary":"Completed task A","gates_passed":["build"],"evidence_pointers":[{"tool":"bash","timestamp":"2026-01-01T00:00:00Z"}],"follow_ups":["og-B"],"commit_ref":"abc123","worktree_ref":"/tmp/wt-A"}`
+	if err := s.AppendCompaction(boundarySummary, 1, 6); err != nil {
+		t.Fatalf("AppendCompaction: %v", err)
+	}
+
+	// Now simulate Task B's turn (next turn)
+	req := simulateTurn(t, s, "instr", "task B question")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Verify the request for Task B:
+	// 1. Does NOT contain Task A's tool outputs (call_a1, call_a2)
+	// 2. Contains the boundary compaction summary
+	// 3. Contains the current turn's messages (instruction + user prompt)
+
+	foundTaskAToolOutput1 := false
+	foundTaskAToolOutput2 := false
+	foundBoundarySummary := false
+	foundCurrentInstruction := false
+	foundCurrentPrompt := false
+
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleTool {
+			if msg.ToolCallID == "call_a1" {
+				foundTaskAToolOutput1 = true
+			}
+			if msg.ToolCallID == "call_a2" {
+				foundTaskAToolOutput2 = true
+			}
+		}
+		if msg.Role == llm.RoleUser {
+			// Check for boundary summary (contains the JSON content)
+			if strings.Contains(msg.Content, "og-A") && strings.Contains(msg.Content, "Task A") {
+				foundBoundarySummary = true
+			}
+			if msg.Content == "task B question" {
+				foundCurrentPrompt = true
+			}
+		}
+		if msg.Role == llm.RoleSystem && msg.Content == "instr" {
+			foundCurrentInstruction = true
+		}
+	}
+
+	if foundTaskAToolOutput1 {
+		t.Error("Task B's request should NOT contain Task A's tool output 1 (call_a1)")
+	}
+	if foundTaskAToolOutput2 {
+		t.Error("Task B's request should NOT contain Task A's tool output 2 (call_a2)")
+	}
+	if !foundBoundarySummary {
+		t.Errorf("Task B's request should contain the boundary compaction summary. Got messages: %v", inner.gotReq.Messages)
+	}
+	if !foundCurrentInstruction {
+		t.Error("Task B's request should contain the current instruction")
+	}
+	if !foundCurrentPrompt {
+		t.Error("Task B's request should contain the current user prompt")
+	}
+}
+
+// TestSurviveFlushContractDurableFactsReload verifies that durable facts
+// (AGENTS.md, tracker config, domain glossary) reload per turn and are not
+// carried across compaction boundaries.
+func TestSurviveFlushContractDurableFactsReload(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Simulate prior turn with instruction that would represent AGENTS.md content
+	simulateTurn(t, s, "AGENTS.md v1 content", "question 1")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "answer 1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write boundary compaction
+	if err := s.AppendCompaction(`{"task_id":"og-1"}`, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate next turn with NEW instruction (simulating AGENTS.md v2 reload)
+	req := simulateTurn(t, s, "AGENTS.md v2 content (reloaded)", "question 2")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// The request should have the NEW instruction (v2), not the old one (v1)
+	foundOldInstruction := false
+	foundNewInstruction := false
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleSystem {
+			if msg.Content == "AGENTS.md v1 content" {
+				foundOldInstruction = true
+			}
+			if msg.Content == "AGENTS.md v2 content (reloaded)" {
+				foundNewInstruction = true
+			}
+		}
+	}
+
+	if foundOldInstruction {
+		t.Error("Old instruction (v1) should not survive compaction; durable facts reload per turn")
+	}
+	if !foundNewInstruction {
+		t.Error("New instruction (v2) should be present; durable facts reload per turn")
+	}
+}
+
+// TestSurviveFlushContractActiveTaskMetadataNotFlushed verifies that active-task
+// metadata and gate evidence for the CURRENT task is never flushed mid-task.
+func TestSurviveFlushContractActiveTaskMetadataNotFlushed(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// Small budget to force compaction within the current turn
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 50})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Current turn: user asks, assistant calls tool, tool returns
+	// The tool output is part of the CURRENT turn and should NOT be evicted
+	// even under budget pressure
+	simulateTurn(t, s, "instr", "current task question")
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_current", Name: "bash", Arguments: `{"cmd":"run"}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	currentToolOutput := "current task tool output that should survive"
+	if err := s.Append(llm.Message{Role: llm.RoleTool, Content: currentToolOutput, ToolCallID: "call_current"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stream again with the current tool result (simulating tool loop iteration)
+	req := llm.Request{
+		Model: "m",
+		Messages: []llm.Message{
+			{Role: llm.RoleSystem, Content: "instr"},
+			{Role: llm.RoleUser, Content: "current task question"},
+			{Role: llm.RoleTool, Content: currentToolOutput, ToolCallID: "call_current"},
+		},
+	}
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// The current turn's tool output should be present verbatim (not condensed, not evicted)
+	foundCurrentToolOutput := false
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleTool && msg.ToolCallID == "call_current" {
+			foundCurrentToolOutput = true
+			if msg.Content != currentToolOutput {
+				t.Errorf("current task tool output was modified: got %q, want %q", msg.Content, currentToolOutput)
+			}
+			break
+		}
+	}
+	if !foundCurrentToolOutput {
+		t.Error("current task's tool output should NOT be flushed mid-task")
+	}
+}
+
+// TestSurviveFlushContractFrontierPositionSurvives verifies that frontier
+// position (which task was being worked on) survives compaction.
+func TestSurviveFlushContractFrontierPositionSurvives(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Task A work
+	simulateTurn(t, s, "instr", "task A")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "working on A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendCompaction(`{"task_id":"og-A","follow_ups":["og-B"]}`, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Task B work
+	simulateTurn(t, s, "instr", "task B")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "working on B"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendCompaction(`{"task_id":"og-B","follow_ups":["og-C"]}`, 3, 5); err != nil {
+		t.Fatal(err)
+	}
+
+	// Task C turn - should see both summaries showing the chain
+	req := simulateTurn(t, s, "instr", "task C")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	summariesFound := 0
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleUser {
+			// Check for boundary summaries (they contain the JSON content)
+			if strings.Contains(msg.Content, "og-A") {
+				summariesFound++
+				t.Log("Found Task A summary in Task C's request - frontier position survives")
+			}
+			if strings.Contains(msg.Content, "og-B") {
+				summariesFound++
+				t.Log("Found Task B summary in Task C's request - frontier position survives")
+			}
+		}
+	}
+	if summariesFound < 2 {
+		t.Errorf("Expected at least 2 compaction summaries (og-A and og-B), found %d. Messages: %v", summariesFound, inner.gotReq.Messages)
+	}
+}
+
+// TestResumptionWithCompactionMarkers verifies that a session with compaction
+// markers reconstructs the same view on reopen.
+func TestResumptionWithCompactionMarkers(t *testing.T) {
+	dir := t.TempDir()
+	s1, err := session.New(dir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Build a session with compaction markers
+	if err := s1.Append(llm.Message{Role: llm.RoleSystem, Content: "instr"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Append(llm.Message{Role: llm.RoleUser, Content: "q1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Append(llm.Message{Role: llm.RoleAssistant, Content: "a1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.AppendCompaction(`{"task_id":"og-1","title":"Task 1"}`, 0, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Append(llm.Message{Role: llm.RoleSystem, Content: "instr"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Append(llm.Message{Role: llm.RoleUser, Content: "q2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s1.Append(llm.Message{Role: llm.RoleAssistant, Content: "a2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume with a new session object
+	s2 := &session.Session{
+		ID:             s1.ID,
+		TranscriptPath: s1.TranscriptPath,
+	}
+	if err := s2.LoadInto(); err != nil {
+		t.Fatalf("LoadInto: %v", err)
+	}
+
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+	m := New(inner, s2, WithCounter(c), WithResolver(r))
+
+	req := simulateTurn(t, s2, "instr", "q3")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Verify the compaction summary appears in the reconstructed request
+	foundSummary := false
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleUser {
+			// Check for boundary summary (contains the JSON content)
+			if strings.Contains(msg.Content, "og-1") && strings.Contains(msg.Content, "Task 1") {
+				foundSummary = true
+				break
+			}
+		}
+	}
+	if !foundSummary {
+		t.Errorf("resumed session should reconstruct compaction summary in request. Messages: %v", inner.gotReq.Messages)
+	}
+}
+
+// TestGateEvidenceLedgerAccessibleAfterCompaction verifies that gate evidence
+// ledger entries for completed tasks are accessible after compaction (audit via
+// /changes-style can reconstruct what was verified).
+func TestGateEvidenceLedgerAccessibleAfterCompaction(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+	m := New(inner, s, WithCounter(c), WithResolver(r))
+
+	// Task with gate evidence
+	simulateTurn(t, s, "instr", "task with gates")
+	if err := s.Append(llm.Message{
+		Role:      llm.RoleAssistant,
+		ToolCalls: []llm.ToolCall{{ID: "call_test", Name: "bash", Arguments: `{"cmd":"go test"}`}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleTool, Content: "PASS: TestGateEvidence", ToolCallID: "call_test"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "gates passed"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write boundary compaction with evidence pointers
+	boundarySummary := `{"task_id":"og-gate","title":"Gate Task","resolution_summary":"All gates passed","gates_passed":["build","test"],"evidence_pointers":[{"tool":"bash","timestamp":"2026-01-01T00:00:00Z","exit_code":0,"duration":"1.5s"}],"follow_ups":[],"commit_ref":"abc","worktree_ref":"/tmp/wt"}`
+	if err := s.AppendCompaction(boundarySummary, 0, 4); err != nil {
+		t.Fatal(err)
+	}
+
+	// Next task
+	req := simulateTurn(t, s, "instr", "next task")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Verify the boundary summary with evidence pointers is in the request
+	foundEvidence := false
+	for _, msg := range inner.gotReq.Messages {
+		if msg.Role == llm.RoleUser {
+			// Check for evidence pointers in the boundary summary
+			if strings.Contains(msg.Content, "evidence_pointers") || strings.Contains(msg.Content, "bash") || strings.Contains(msg.Content, "exit_code") {
+				foundEvidence = true
+				break
+			}
+		}
+	}
+	if !foundEvidence {
+		t.Errorf("gate evidence pointers should be accessible in compaction summary for audit. Messages: %v", inner.gotReq.Messages)
+	}
+}

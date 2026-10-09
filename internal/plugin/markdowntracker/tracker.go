@@ -158,7 +158,8 @@ func (m *MarkdownTracker) Create(ctx context.Context, args tracker.CreateArgs) (
 	if task.Type == "" {
 		task.Type = "task"
 	}
-	if task.Priority == 0 {
+	// Priority 0 is valid (P0/critical), so only default if negative
+	if task.Priority < 0 {
 		task.Priority = 2
 	}
 
@@ -167,6 +168,44 @@ func (m *MarkdownTracker) Create(ctx context.Context, args tracker.CreateArgs) (
 	}
 
 	return task, nil
+}
+
+// SearchOpen searches for open tasks matching the query.
+// It performs a simple text search on title and description.
+func (m *MarkdownTracker) SearchOpen(ctx context.Context, query string, limit int) ([]*tracker.TrackerTask, error) {
+	if err := m.ensureDir(); err != nil {
+		return nil, fmt.Errorf("ensure tasks dir: %w", err)
+	}
+
+	files, err := filepath.Glob(filepath.Join(m.tasksDir, "*.md"))
+	if err != nil {
+		return nil, fmt.Errorf("glob tasks: %w", err)
+	}
+
+	query = strings.ToLower(query)
+	var matches []*tracker.TrackerTask
+
+	for _, file := range files {
+		task, err := m.readTask(file)
+		if err != nil {
+			continue // skip unparseable files
+		}
+		if task.Status != "open" {
+			continue
+		}
+
+		// Simple text search on title and description
+		titleLower := strings.ToLower(task.Title)
+		descLower := strings.ToLower(task.Description)
+		if strings.Contains(titleLower, query) || strings.Contains(descLower, query) {
+			matches = append(matches, task)
+			if limit > 0 && len(matches) >= limit {
+				break
+			}
+		}
+	}
+
+	return matches, nil
 }
 
 func (m *MarkdownTracker) readTask(file string) (*tracker.TrackerTask, error) {

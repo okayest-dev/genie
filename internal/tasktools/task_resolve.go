@@ -24,7 +24,7 @@ type FailedGate = gates.FailedGate
 // NoOpGateRunner is a gate runner that reports no gates configured.
 type NoOpGateRunner = gates.NoOpGateRunner
 
-// TaskResolveArgs are the arguments for the task.resolve tool.
+// TaskResolveArgs are the arguments for the task_resolve tool.
 type TaskResolveArgs struct {
 	// Summary is the resolution summary carrying traceability.
 	Summary string `json:"summary"`
@@ -33,7 +33,7 @@ type TaskResolveArgs struct {
 	HumanConfirmed bool `json:"human_confirmed"`
 }
 
-// ResolutionRecord is the return value of task.resolve.
+// ResolutionRecord is the return value of task_resolve.
 type ResolutionRecord struct {
 	TaskID     string   `json:"task_id"`
 	GatesPassed []string `json:"gates_passed"`
@@ -42,7 +42,7 @@ type ResolutionRecord struct {
 	FollowUps  []string `json:"follow_ups"`
 }
 
-// TaskResolveTool implements the task.resolve tool.
+// TaskResolveTool implements the task_resolve tool.
 type TaskResolveTool struct {
 	tracker     Tracker
 	state       *TaskState
@@ -52,7 +52,7 @@ type TaskResolveTool struct {
 	sess        *session.Session
 }
 
-// NewTaskResolveTool creates a new task.resolve tool.
+// NewTaskResolveTool creates a new task_resolve tool.
 func NewTaskResolveTool(tracker Tracker, state *TaskState, gateRunner GateRunner, enabled bool, timeout time.Duration) *TaskResolveTool {
 	if gateRunner == nil {
 		gateRunner = NoOpGateRunner{}
@@ -73,7 +73,7 @@ func (t *TaskResolveTool) SetSession(sess *session.Session) {
 
 // Name returns the tool name.
 func (t *TaskResolveTool) Name() string {
-	return "task.resolve"
+	return "task_resolve"
 }
 
 // Description returns the tool description.
@@ -104,7 +104,7 @@ func (t *TaskResolveTool) Parameters() map[string]any {
 // Execute resolves the active task.
 func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 	if !t.enabled {
-		return "", fmt.Errorf("task.resolve is disabled (task_tools not enabled in config)")
+		return "", fmt.Errorf("task_resolve is disabled (task_tools not enabled in config)")
 	}
 
 	// Check if a task is active
@@ -136,7 +136,27 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 		CreatedAt:   active.Task.CreatedAt,
 		UpdatedAt:   active.Task.UpdatedAt,
 	}
-	gateResult, err := t.gateRunner.Run(ctx, gatesTask)
+	
+	// Get deferred findings from task state
+	deferredFindings := t.state.GetDeferredFindings()
+	
+	// Convert to gates.DeferredFindingRecord
+	var gateDeferredFindings []gates.DeferredFindingRecord
+	for _, df := range deferredFindings {
+		gateDeferredFindings = append(gateDeferredFindings, gates.DeferredFindingRecord{
+			GateName:      df.GateName,
+			FindingID:     df.FindingID,
+			Invariant:     df.Invariant,
+			Severity:      df.Severity,
+			Category:      df.Category,
+			BlastRadius:   df.BlastRadius,
+			Recurrence:    df.Recurrence,
+			Description:   df.Description,
+			RecordedAt:    df.RecordedAt,
+		})
+	}
+	
+	gateResult, err := t.gateRunner.Run(ctx, gatesTask, gateDeferredFindings)
 	if err != nil {
 		return "", fmt.Errorf("gate runner failed: %w", err)
 	}

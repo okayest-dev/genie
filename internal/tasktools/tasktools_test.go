@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/okayest-dev/genie/internal/gates"
 	"github.com/okayest-dev/genie/internal/plugin"
+	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/tracker"
 )
 
@@ -77,7 +79,7 @@ func TestTaskStateMarshalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalJSON failed: %v", err)
 	}
-	expected := `{"active_task":null}`
+	expected := `{"active_task":null,"deferred_findings":null,"progress_log":null}`
 	if string(data) != expected {
 		t.Errorf("MarshalJSON() = %s, want %s", data, expected)
 	}
@@ -112,6 +114,14 @@ func TestTaskStateMarshalJSON(t *testing.T) {
 	}
 	if activeTask["title"] != "Test Task" {
 		t.Errorf("title = %v, want Test Task", activeTask["title"])
+	}
+	// Verify progress_log is present (empty array when active task set)
+	progressLog, ok := result["progress_log"].([]any)
+	if !ok {
+		t.Fatal("progress_log not an array")
+	}
+	if len(progressLog) != 0 {
+		t.Errorf("progress_log length = %d, want 0", len(progressLog))
 	}
 }
 
@@ -446,9 +456,9 @@ func TestTaskResolveToolPostsCommentAndCloses(t *testing.T) {
 // failingGateRunner is a test gate runner that always fails.
 type failingGateRunner struct{}
 
-func (f *failingGateRunner) Run(ctx context.Context, task *Task) (GateResult, error) {
-	return GateResult{
-		Failed: []FailedGate{
+func (f *failingGateRunner) Run(ctx context.Context, task *gates.Task, deferredFindings []gates.DeferredFindingRecord) (gates.GateResult, error) {
+	return gates.GateResult{
+		Failed: []gates.FailedGate{
 			{Name: "gate1", EvidenceGap: "missing evidence"},
 		},
 	}, nil
@@ -500,8 +510,8 @@ func TestTaskResolveToolName(t *testing.T) {
 	tracker := NewFakeTracker(nil)
 	tool := NewTaskResolveTool(tracker, state, NoOpGateRunner{}, true, 30*time.Second)
 
-	if tool.Name() != "task.resolve" {
-		t.Errorf("Name() = %q, want task.resolve", tool.Name())
+	if tool.Name() != "task_resolve" {
+		t.Errorf("Name() = %q, want task_resolve", tool.Name())
 	}
 }
 
@@ -618,7 +628,8 @@ func TestFakeTrackerCreateDefaults(t *testing.T) {
 	ft := NewFakeTracker(tasks)
 
 	task, err := ft.Create(context.Background(), tracker.CreateArgs{
-		Title: "Minimal Task",
+		Title:    "Minimal Task",
+		Priority: 2, // Explicitly set default priority
 	})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
@@ -714,8 +725,8 @@ func TestTaskCreateToolName(t *testing.T) {
 	tracker := NewFakeTracker(nil)
 	tool := NewTaskCreateTool(tracker, true, 30*time.Second)
 
-	if tool.Name() != "task.create" {
-		t.Errorf("Name() = %q, want task.create", tool.Name())
+	if tool.Name() != "task_create" {
+		t.Errorf("Name() = %q, want task_create", tool.Name())
 	}
 }
 
@@ -789,5 +800,519 @@ func TestTaskCreateToolParameters(t *testing.T) {
 	}
 	if !minOk || !maxOk || minF != 0 || maxF != 4 {
 		t.Errorf("priority should have minimum 0 and maximum 4, got min=%v (%T) max=%v (%T)", minVal, minVal, maxVal, maxVal)
+	}
+}
+
+func TestTaskProgressToolNoActiveTask(t *testing.T) {
+	state := NewTaskState()
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	_, err := tool.Execute([]byte(`{"summary": "test"}`))
+	if err == nil {
+		t.Error("expected error when no active task")
+	}
+	if !strings.Contains(err.Error(), "no active task") {
+		t.Errorf("error = %q, want 'no active task'", err.Error())
+	}
+}
+
+func TestTaskProgressToolEmptyArgs(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	// Set active task
+	state.Set(tasks[0])
+
+	_, err := tool.Execute([]byte(`{}`))
+	if err == nil {
+		t.Error("expected error when no fields provided")
+	}
+	if !strings.Contains(err.Error(), "at least one of summary, notes, or tracker_note must be provided") {
+		t.Errorf("error = %q, want 'at least one of summary, notes, or tracker_note must be provided'", err.Error())
+	}
+}
+
+func TestTaskProgressToolWithSummary(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	// Set active task
+	state.Set(tasks[0])
+
+	result, err := tool.Execute([]byte(`{"summary": "Implemented feature X"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if result == "" {
+		t.Error("result should not be empty")
+	}
+	if !strings.Contains(result, "og-1") {
+		t.Errorf("result = %q, want task ID in output", result)
+	}
+	if !strings.Contains(result, "Implemented feature X") {
+		t.Errorf("result = %q, want summary in output", result)
+	}
+
+	// Verify progress log
+	log := state.GetProgressLog()
+	if len(log) != 1 {
+		t.Errorf("progress log length = %d, want 1", len(log))
+	}
+	if log[0].Summary != "Implemented feature X" {
+		t.Errorf("progress summary = %q, want 'Implemented feature X'", log[0].Summary)
+	}
+}
+
+func TestTaskProgressToolWithNotes(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+
+	result, err := tool.Execute([]byte(`{"notes": "Detailed evidence about the implementation"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(result, "Detailed evidence") {
+		t.Errorf("result = %q, want notes in output", result)
+	}
+
+	log := state.GetProgressLog()
+	if len(log) != 1 {
+		t.Errorf("progress log length = %d, want 1", len(log))
+	}
+	if log[0].Notes != "Detailed evidence about the implementation" {
+		t.Errorf("progress notes = %q, want 'Detailed evidence about the implementation'", log[0].Notes)
+	}
+}
+
+func TestTaskProgressToolWithTrackerNote(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+
+	result, err := tool.Execute([]byte(`{"tracker_note": "Checkpoint: done with phase 1"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(result, "Tracker note appended") {
+		t.Errorf("result = %q, want tracker note appended message", result)
+	}
+
+	log := state.GetProgressLog()
+	if len(log) != 1 {
+		t.Errorf("progress log length = %d, want 1", len(log))
+	}
+	if log[0].TrackerNote != "Checkpoint: done with phase 1" {
+		t.Errorf("progress tracker_note = %q, want 'Checkpoint: done with phase 1'", log[0].TrackerNote)
+	}
+}
+
+func TestTaskProgressToolWithAllFields(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+
+	result, err := tool.Execute([]byte(`{"summary": "Phase 1 done", "notes": "Evidence details", "tracker_note": "Checkpoint comment"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if !strings.Contains(result, "Phase 1 done") {
+		t.Errorf("result = %q, want summary", result)
+	}
+	if !strings.Contains(result, "Evidence details") {
+		t.Errorf("result = %q, want notes", result)
+	}
+	if !strings.Contains(result, "Tracker note appended") {
+		t.Errorf("result = %q, want tracker note appended", result)
+	}
+
+	log := state.GetProgressLog()
+	if len(log) != 1 {
+		t.Errorf("progress log length = %d, want 1", len(log))
+	}
+	if log[0].Summary != "Phase 1 done" {
+		t.Errorf("summary = %q", log[0].Summary)
+	}
+	if log[0].Notes != "Evidence details" {
+		t.Errorf("notes = %q", log[0].Notes)
+	}
+	if log[0].TrackerNote != "Checkpoint comment" {
+		t.Errorf("tracker_note = %q", log[0].TrackerNote)
+	}
+}
+
+func TestTaskProgressToolMultipleCheckpoints(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+
+	// First checkpoint
+	_, err := tool.Execute([]byte(`{"summary": "Checkpoint 1"}`))
+	if err != nil {
+		t.Fatalf("first checkpoint failed: %v", err)
+	}
+
+	// Second checkpoint
+	_, err = tool.Execute([]byte(`{"summary": "Checkpoint 2"}`))
+	if err != nil {
+		t.Fatalf("second checkpoint failed: %v", err)
+	}
+
+	log := state.GetProgressLog()
+	if len(log) != 2 {
+		t.Errorf("progress log length = %d, want 2", len(log))
+	}
+	if log[0].Summary != "Checkpoint 1" {
+		t.Errorf("first summary = %q", log[0].Summary)
+	}
+	if log[1].Summary != "Checkpoint 2" {
+		t.Errorf("second summary = %q", log[1].Summary)
+	}
+}
+
+func TestTaskProgressToolLifecycleStateUntouched(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+
+	// Record progress
+	_, err := tool.Execute([]byte(`{"summary": "Checkpoint"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Active task should still be the same
+	if !state.HasActive() {
+		t.Error("task should still be active after progress")
+	}
+	if state.ActiveTaskID() != "og-1" {
+		t.Errorf("active task ID = %q, want og-1", state.ActiveTaskID())
+	}
+}
+
+func TestTaskProgressToolDisabled(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, false, 30*time.Second)
+
+	state.Set(tasks[0])
+
+	_, err := tool.Execute([]byte(`{"summary": "test"}`))
+	if err == nil {
+		t.Error("expected error when tool is disabled")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error = %q, want 'disabled'", err.Error())
+	}
+}
+
+func TestTaskProgressToolTrackerNotePosted(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+
+	_, err := tool.Execute([]byte(`{"tracker_note": "Test comment"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	// Verify comment was posted by checking the fake tracker (it's a no-op but we can verify no error)
+	// The fake tracker Comment method just returns nil if task exists
+}
+
+func TestTaskProgressToolName(t *testing.T) {
+	state := NewTaskState()
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	if tool.Name() != "task_progress" {
+		t.Errorf("Name() = %q, want task_progress", tool.Name())
+	}
+}
+
+func TestTaskProgressToolDescription(t *testing.T) {
+	state := NewTaskState()
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	desc := tool.Description()
+	if desc == "" {
+		t.Error("Description() should not be empty")
+	}
+	if !strings.Contains(desc, "progress") {
+		t.Errorf("Description() = %q, should mention progress", desc)
+	}
+}
+
+func TestTaskProgressToolParameters(t *testing.T) {
+	state := NewTaskState()
+	tracker := NewFakeTracker(nil)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	params := tool.Parameters()
+	if params == nil {
+		t.Error("Parameters() should not be nil")
+	}
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("properties missing")
+	}
+	// Check all optional fields exist
+	optionalFields := []string{"summary", "notes", "tracker_note"}
+	for _, field := range optionalFields {
+		if _, ok := props[field]; !ok {
+			t.Errorf("parameters should have '%s'", field)
+		}
+	}
+	// No required fields
+	req, ok := params["required"].([]any)
+	if !ok {
+		t.Fatal("required missing")
+	}
+	if len(req) != 0 {
+		t.Errorf("required should be empty, got %v", req)
+	}
+}
+
+func TestTaskStateProgressLogClearedOnClear(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+	_, err := tool.Execute([]byte(`{"summary": "Checkpoint"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if len(state.GetProgressLog()) != 1 {
+		t.Error("progress log should have 1 entry before clear")
+	}
+
+	state.Clear()
+
+	if state.HasActive() {
+		t.Error("task should not be active after clear")
+	}
+	if len(state.GetProgressLog()) != 0 {
+		t.Error("progress log should be cleared after clear")
+	}
+}
+
+func TestTaskStateMarshalJSONIncludesProgressLog(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open", Labels: []string{"test"}}}
+	tracker := NewFakeTracker(tasks)
+	tool := NewTaskProgressTool(tracker, state, true, 30*time.Second)
+
+	state.Set(tasks[0])
+	_, err := tool.Execute([]byte(`{"summary": "Checkpoint 1"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	progressLog, ok := result["progress_log"].([]any)
+	if !ok {
+		t.Fatal("progress_log not an array")
+	}
+	if len(progressLog) != 1 {
+		t.Errorf("progress_log length = %d, want 1", len(progressLog))
+	}
+	entry, ok := progressLog[0].(map[string]any)
+	if !ok {
+		t.Fatal("progress_log entry not a map")
+	}
+	if entry["summary"] != "Checkpoint 1" {
+		t.Errorf("summary = %v, want 'Checkpoint 1'", entry["summary"])
+	}
+}
+
+type fakeRunHandle struct {
+	sessions []*session.Session
+	callCount int
+}
+
+func (f *fakeRunHandle) NewSession() (*session.Session, error) {
+	f.callCount++
+	// Create a real session for testing
+	sess, err := session.New(f.sessions[0].TranscriptPath[:len(f.sessions[0].TranscriptPath)-len(f.sessions[0].ID)-5])
+	if err != nil {
+		return nil, err
+	}
+	f.sessions = append(f.sessions, sess)
+	return sess, nil
+}
+
+func TestSessionResetToolNoActiveTask(t *testing.T) {
+	state := NewTaskState()
+	// Create a temp dir for sessions
+	dir := t.TempDir()
+	initialSess, err := session.New(dir)
+	if err != nil {
+		t.Fatalf("failed to create initial session: %v", err)
+	}
+	runHandle := &fakeRunHandle{sessions: []*session.Session{initialSess}}
+	
+	tool := NewSessionResetTool(state, true, 30*time.Second, runHandle)
+
+	result, err := tool.Execute([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if result == "" {
+		t.Error("result should not be empty")
+	}
+	if !strings.Contains(result, "Session reset") {
+		t.Errorf("result = %q, want session reset message", result)
+	}
+	if runHandle.callCount != 1 {
+		t.Errorf("NewSession called %d times, want 1", runHandle.callCount)
+	}
+}
+
+func TestSessionResetToolWithActiveTask(t *testing.T) {
+	state := NewTaskState()
+	tasks := []*plugin.TrackerTask{{ID: "og-1", Title: "Task 1", Type: "task", Status: "open"}}
+	state.Set(tasks[0])
+
+	dir := t.TempDir()
+	initialSess, err := session.New(dir)
+	if err != nil {
+		t.Fatalf("failed to create initial session: %v", err)
+	}
+	runHandle := &fakeRunHandle{sessions: []*session.Session{initialSess}}
+	
+	tool := NewSessionResetTool(state, true, 30*time.Second, runHandle)
+
+	_, err = tool.Execute([]byte(`{}`))
+	if err == nil {
+		t.Error("expected error when task is active")
+	}
+	if !strings.Contains(err.Error(), "cannot reset session with active task") {
+		t.Errorf("error = %q, want 'cannot reset session with active task'", err.Error())
+	}
+	if !strings.Contains(err.Error(), "og-1") {
+		t.Errorf("error = %q, want task ID in error", err.Error())
+	}
+	if runHandle.callCount != 0 {
+		t.Errorf("NewSession should not be called when task is active, called %d times", runHandle.callCount)
+	}
+}
+
+func TestSessionResetToolDisabled(t *testing.T) {
+	state := NewTaskState()
+
+	dir := t.TempDir()
+	initialSess, err := session.New(dir)
+	if err != nil {
+		t.Fatalf("failed to create initial session: %v", err)
+	}
+	runHandle := &fakeRunHandle{sessions: []*session.Session{initialSess}}
+	
+	tool := NewSessionResetTool(state, false, 30*time.Second, runHandle)
+
+	_, err = tool.Execute([]byte(`{}`))
+	if err == nil {
+		t.Error("expected error when tool is disabled")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("error = %q, want 'disabled'", err.Error())
+	}
+}
+
+func TestSessionResetToolName(t *testing.T) {
+	state := NewTaskState()
+	dir := t.TempDir()
+	initialSess, _ := session.New(dir)
+	runHandle := &fakeRunHandle{sessions: []*session.Session{initialSess}}
+	
+	tool := NewSessionResetTool(state, true, 30*time.Second, runHandle)
+
+	if tool.Name() != "session_reset" {
+		t.Errorf("Name() = %q, want session_reset", tool.Name())
+	}
+}
+
+func TestSessionResetToolDescription(t *testing.T) {
+	state := NewTaskState()
+	dir := t.TempDir()
+	initialSess, _ := session.New(dir)
+	runHandle := &fakeRunHandle{sessions: []*session.Session{initialSess}}
+	
+	tool := NewSessionResetTool(state, true, 30*time.Second, runHandle)
+
+	desc := tool.Description()
+	if desc == "" {
+		t.Error("Description() should not be empty")
+	}
+	if !strings.Contains(desc, "Reset") {
+		t.Errorf("Description() = %q, should mention Reset", desc)
+	}
+	if !strings.Contains(desc, "active task") && !strings.Contains(desc, "is active") {
+		t.Errorf("Description() = %q, should mention active task refusal", desc)
+	}
+}
+
+func TestSessionResetToolParameters(t *testing.T) {
+	state := NewTaskState()
+	dir := t.TempDir()
+	initialSess, _ := session.New(dir)
+	runHandle := &fakeRunHandle{sessions: []*session.Session{initialSess}}
+	
+	tool := NewSessionResetTool(state, true, 30*time.Second, runHandle)
+
+	params := tool.Parameters()
+	if params == nil {
+		t.Error("Parameters() should not be nil")
+	}
+	props, ok := params["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("properties missing")
+	}
+	// No properties for session_reset
+	if len(props) != 0 {
+		t.Errorf("properties should be empty, got %v", props)
+	}
+	req, ok := params["required"].([]any)
+	if !ok {
+		t.Fatal("required missing")
+	}
+	if len(req) != 0 {
+		t.Errorf("required should be empty, got %v", req)
 	}
 }

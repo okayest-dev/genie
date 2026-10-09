@@ -194,10 +194,18 @@ func loadLifecycleScriptsOpt(t *testing.T, policy *HookBreakerPolicy, notify fun
 		t.Fatal("LoadPlugins timed out")
 	}
 	plug := mgr.PluginsInOrder()
-	if len(plug) != len(names) {
-		t.Fatalf("loaded %d plugins, want %d: %v", len(plug), len(names), names)
+	// Filter out built-in markdown tracker if present (auto-loaded by manager)
+	filtered := make([]*Plugin, 0, len(plug))
+	for _, p := range plug {
+		if p.Name == "markdown-tracker" {
+			continue
+		}
+		filtered = append(filtered, p)
 	}
-	return mgr, plug
+	if len(filtered) != len(names) {
+		t.Fatalf("loaded %d plugins, want %d: %v", len(filtered), len(names), names)
+	}
+	return mgr, filtered
 }
 
 // hookLog turns on per-method call logging for the counting plugins and
