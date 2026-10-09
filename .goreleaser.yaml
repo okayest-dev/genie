@@ -3,8 +3,7 @@ version: 2
 project_name: genie
 
 builds:
-  - id: genie
-    main: ./cmd/genie
+  - main: ./cmd/genie
     binary: genie
     goos:
       - linux
@@ -17,16 +16,11 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
-    flags:
-      - -trimpath
 
 archives:
-  - id: genie
-    formats:
+  - formats:
       - tar.gz
     name_template: "genie_{{.Version}}_{{.Os}}_{{.Arch}}"
-    files:
-      - README.md
 
 checksum:
   name_template: "checksums.txt"
