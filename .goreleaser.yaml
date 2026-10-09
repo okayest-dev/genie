@@ -9,6 +9,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -24,6 +25,7 @@ archives:
   - id: genie
     formats:
       - tar.gz
+      - zip
     name_template: "genie_{{.Version}}_{{.Os}}_{{.Arch}}"
     files:
       - README.md
