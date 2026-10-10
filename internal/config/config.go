@@ -1050,7 +1050,10 @@ func environMap() map[string]string {
 // validateGlyphTier validates that the glyph_tier value is one of the allowed values.
 func validateGlyphTier(tier string) error {
 	_, err := theme.ResolveGlyphTier(tier)
-	return err
+	if err != nil {
+		return fmt.Errorf("config: invalid glyph_tier: %w", err)
+	}
+	return nil
 }
 
 // resolveTheme resolves the theme name to either a builtin preset or a user theme file.
@@ -1101,7 +1104,11 @@ func resolveTheme(cfg *Config, userConfigDir string) error {
 // LoadTheme loads and parses the theme specified in the config.
 // This should be called after Load() to get the fully resolved theme data.
 func (c *Config) LoadTheme() (*theme.Theme, error) {
-	return theme.Load(c.Theme, c.getUserConfigDir())
+	th, err := theme.Load(c.Theme, c.getUserConfigDir())
+	if err != nil {
+		return nil, fmt.Errorf("config: load theme: %w", err)
+	}
+	return th, nil
 }
 
 // getUserConfigDir returns the user config directory used for deriving paths.
