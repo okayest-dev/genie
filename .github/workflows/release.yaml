@@ -14,8 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux]
-        goarch: [amd64]
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,34 +36,14 @@ jobs:
       - name: Tidy modules
         run: go mod tidy
 
-      - name: Debug Go environment
-        run: |
-          go version
-          go env
-          ls -la ./cmd/genie/
-
-      - name: Test simple build
-        run: |
-          echo 'package main; import "fmt"; func main() { fmt.Println("hello") }' > /tmp/hello.go
-          go build -o /tmp/hello /tmp/hello.go
-          /tmp/hello
-
       - name: Build
-        continue-on-error: true
         run: |
           EXT=""
           if [ "${{ matrix.goos }}" = "windows" ]; then
             EXT=".exe"
           fi
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -o genie${EXT} ./cmd/genie 2>&1 | tee build.log
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -ldflags="-s -w -X main.version=${{ github.ref_name }}" -o genie${EXT} ./cmd/genie
         shell: bash
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: build.log
 
       - name: Archive
         run: |
