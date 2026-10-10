@@ -23,7 +23,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"context_before":true,"context_after":true,"context_compact":true,"context_condense":true,"lifecycle_tool_before":true,"lifecycle_turn_error":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"context_before":true,"context_after":true,"context_compact":true,"context_condense":true,"lifecycle_tool_before":true,"lifecycle_turn_error":true,"version":1},"id":'"$id"'}'
             ;;
         "context/before_request")
             # Append a marker to each user message to prove the hook ran.
@@ -60,7 +60,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"context_before":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"context_before":true,"version":1},"id":'"$id"'}'
             ;;
         "context/before_request")
             echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal explosion"},"id":'"$id"'}'
@@ -198,7 +198,7 @@ while IFS= read -r line; do
     fi
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"context_before":true,"context_after":true,"context_compact":true,"context_condense":true,"lifecycle_tool_before":true,"lifecycle_turn_error":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"context_before":true,"context_after":true,"context_compact":true,"context_condense":true,"lifecycle_tool_before":true,"lifecycle_turn_error":true,"version":1},"id":'"$id"'}'
             ;;
         "ping")
             echo '{"jsonrpc":"2.0","result":{},"id":'"$id"'}'

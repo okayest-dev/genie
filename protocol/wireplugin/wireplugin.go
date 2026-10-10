@@ -65,7 +65,6 @@ type Error struct {
 
 type Capabilities struct {
 	Tools bool `json:"tools"`
-	Providers bool `json:"providers"`
 	Commands bool `json:"commands"`
 	BeforeRequest bool `json:"context_before"`
 	AfterResponse bool `json:"context_after"`

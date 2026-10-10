@@ -21,7 +21,7 @@ handle_request() {
 
     case "$method" in
         "capabilities/list")
-            write_response '{"jsonrpc":"2.0","result":{"tools":true,"providers":false,"version":1},"id":'"$id"'}'
+            write_response '{"jsonrpc":"2.0","result":{"tools":true,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             write_response '{"jsonrpc":"2.0","result":{"tools":[{"name":"greet","description":"A greeting tool from plugin","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Name to greet"}},"required":["name"]}}]},"id":'"$id"'}'

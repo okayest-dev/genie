@@ -104,9 +104,6 @@ types:
       - name: Tools
         json: tools
         type: bool
-      - name: Providers
-        json: providers
-        type: bool
       - name: Commands
         json: commands
         type: bool

@@ -828,7 +828,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"context_before":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"context_before":true,"version":1},"id":'"$id"'}'
             ;;
         "context/before_request")
             echo '{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal explosion"},"id":'"$id"'}'
