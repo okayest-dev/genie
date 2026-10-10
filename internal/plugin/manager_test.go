@@ -13,6 +13,7 @@ import (
 
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/tools"
+	"github.com/okayest-dev/genie/internal/tracker"
 )
 
 func TestParseManifest(t *testing.T) {
@@ -235,6 +236,119 @@ func TestCapabilitiesValidation(t *testing.T) {
 	caps.Tools = false
 	if err := caps.Validate(); err != ErrCapabilitiesMismatch {
 		t.Errorf("expected ErrCapabilitiesMismatch, got %v", err)
+	}
+}
+
+func TestCapabilitiesTrackerIsolationValidation(t *testing.T) {
+	valid := []Capabilities{
+		{Tracker: true, TrackerIsolation: TrackerIsolationShared, Version: ProtocolVersion},
+		{Tracker: true, TrackerIsolation: TrackerIsolationPerCheckout, Version: ProtocolVersion},
+		{Tracker: true, Version: ProtocolVersion},
+	}
+	for i, caps := range valid {
+		if err := caps.Validate(); err != nil {
+			t.Errorf("valid capabilities[%d] should not error: %v", i, err)
+		}
+	}
+
+	invalid := []Capabilities{
+		{Tools: true, TrackerIsolation: TrackerIsolationShared, Version: ProtocolVersion},
+		{Tracker: true, TrackerIsolation: "sometimes", Version: ProtocolVersion},
+	}
+	for i, caps := range invalid {
+		if err := caps.Validate(); err == nil {
+			t.Errorf("invalid capabilities[%d] should error: %+v", i, caps)
+		}
+	}
+}
+
+func TestTrackerIsolationDeclarationRoundTrip(t *testing.T) {
+	for _, want := range []string{TrackerIsolationShared, TrackerIsolationPerCheckout} {
+		caps := Capabilities{Tracker: true, TrackerIsolation: want, Version: ProtocolVersion}
+		data, err := json.Marshal(caps)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(data), want) {
+			t.Errorf("marshalled capabilities should carry tracker_isolation %q, got %s", want, data)
+		}
+		var out Capabilities
+		if err := json.Unmarshal(data, &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		out.Version = ProtocolVersion
+		if err := out.Validate(); err != nil {
+			t.Errorf("round-tripped capabilities should validate: %v", err)
+		}
+	}
+
+	// An omitted isolation must not appear on the wire at all.
+	clean, err := json.Marshal(Capabilities{Tracker: true})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(clean), "tracker_isolation") {
+		t.Errorf("omitted tracker_isolation must be omitted from wire JSON, got %s", clean)
+	}
+}
+
+func TestBuiltinMarkdownTrackerIsolation(t *testing.T) {
+	mgr := NewManager(t.TempDir(), nil, nil, nil)
+	p := mgr.newBuiltinMarkdownTracker()
+	if p.Capabilities.TrackerIsolation != TrackerIsolationShared {
+		t.Errorf("builtin markdown capabilities isolation = %q, want %q", p.Capabilities.TrackerIsolation, TrackerIsolationShared)
+	}
+	if p.BuiltinTracker == nil {
+		t.Fatal("builtin markdown plugin should carry a TrackerSource")
+	}
+	if got := p.BuiltinTracker.Isolation(); got != tracker.IsolationShared {
+		t.Errorf("builtin markdown tracker isolation = %v, want shared", got)
+	}
+	if !p.BuiltinTracker.Isolation().WorktreeSafe() {
+		t.Error("builtin markdown tracker must be worktree-safe")
+	}
+}
+
+func TestTrackerPluginIsolationForwardsDeclaration(t *testing.T) {
+	cases := []struct {
+		decl string
+		want tracker.Isolation
+	}{
+		{TrackerIsolationShared, tracker.IsolationShared},
+		{TrackerIsolationPerCheckout, tracker.IsolationPerCheckout},
+		{"", tracker.IsolationUnknown},
+		{"bogus", tracker.IsolationUnknown},
+	}
+	for _, c := range cases {
+		tp := &trackerPlugin{plugin: &Plugin{Capabilities: Capabilities{TrackerIsolation: c.decl}}}
+		if got := tp.Isolation(); got != c.want {
+			t.Errorf("Isolation(%q) = %v, want %v", c.decl, got, c.want)
+		}
+	}
+}
+
+func TestManagerTrackerIsolation(t *testing.T) {
+	mgr := NewManager(t.TempDir(), nil, nil, nil)
+	if got := mgr.TrackerIsolation(); got != tracker.IsolationUnknown {
+		t.Errorf("no tracker present: isolation = %v, want unknown", got)
+	}
+
+	mgr.pluginsMu.Lock()
+	mgr.plugins["markdown-tracker"] = mgr.newBuiltinMarkdownTracker()
+	mgr.pluginOrder = append(mgr.pluginOrder, "markdown-tracker")
+	mgr.pluginsMu.Unlock()
+	if got := mgr.TrackerIsolation(); got != tracker.IsolationShared {
+		t.Errorf("with builtin tracker: isolation = %v, want shared", got)
+	}
+
+	// A non-tracker plugin must not mask the resolution.
+	mgr2 := NewManager(t.TempDir(), nil, nil, nil)
+	mgr2.pluginsMu.Lock()
+	mgr2.plugins["tools-only"] = &Plugin{Capabilities: Capabilities{Tools: true}}
+	mgr2.pluginOrder = append(mgr2.pluginOrder, "tools-only")
+	mgr2.pluginsMu.Unlock()
+	if got := mgr2.TrackerIsolation(); got != tracker.IsolationUnknown {
+		t.Errorf("tools-only plugin: isolation = %v, want unknown", got)
 	}
 }
 

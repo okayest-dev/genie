@@ -86,9 +86,20 @@ func NewSuccessResponse(id any, result any) (*Response, error) {
 	}, nil
 }
 
+// TrackerIsolation wire values, declared by a tracker plugin in its
+// capabilities. See tracker.Isolation for the semantics.
+const (
+	TrackerIsolationShared      = "shared"
+	TrackerIsolationPerCheckout = "per_checkout"
+)
+
 type Capabilities struct {
 	Tools   bool `json:"tools"`
 	Tracker bool `json:"tracker"`
+	// TrackerIsolation declares where the tracker's state lives relative to a
+	// git worktree ("shared" | "per_checkout"). Empty defaults to the
+	// conservative unknown. Only meaningful when Tracker is true.
+	TrackerIsolation string `json:"tracker_isolation,omitempty"`
 	// Commands registers user-typed slash commands the plugin exposes in the
 	// REPL as /<plugin> <command>, discovered via commands/list and driven via
 	// commands/run.
@@ -490,6 +501,16 @@ func (c *Capabilities) Validate() error {
 	}
 	if !c.HasAny() {
 		return ErrCapabilitiesMismatch
+	}
+	if c.TrackerIsolation != "" {
+		if !c.Tracker {
+			return fmt.Errorf("tracker_isolation declared without the tracker capability")
+		}
+		switch c.TrackerIsolation {
+		case TrackerIsolationShared, TrackerIsolationPerCheckout:
+		default:
+			return fmt.Errorf("tracker_isolation must be %q or %q, got %q", TrackerIsolationShared, TrackerIsolationPerCheckout, c.TrackerIsolation)
+		}
 	}
 	return nil
 }
