@@ -25,21 +25,25 @@ STEPS_COMPLETED=()
 TMP_DIR=""
 
 log_info() {
-    echo "[INFO] $*" >&2
+    echo -e "\033[1;34m[INFO]\033[0m $*" >&2
 }
 
 log_warn() {
-    echo "[WARN] $*" >&2
+    echo -e "\033[1;33m[WARN]\033[0m $*" >&2
 }
 
 log_error() {
-    echo "[ERROR] $*" >&2
+    echo -e "\033[1;31m[ERROR]\033[0m $*" >&2
 }
 
 log_debug() {
     if [ "${DEBUG:-0}" = "1" ]; then
-        echo "[DEBUG] $*" >&2
+        echo -e "\033[1;90m[DEBUG]\033[0m $*" >&2
     fi
+}
+
+log_step() {
+    echo -e "\033[1;32m[STEP]\033[0m $*" >&2
 }
 
 die() {
@@ -1326,20 +1330,23 @@ main() {
         esac
     done
 
-    log_info "Starting Genie installer v${SCRIPT_VERSION}"
+    echo -e "\033[1;36m╔══════════════════════════════════════════════════════════╗\033[0m" >&2
+    echo -e "\033[1;36m║           Genie Installer v${SCRIPT_VERSION}                    ║\033[0m" >&2
+    echo -e "\033[1;36m╚══════════════════════════════════════════════════════════╝\033[0m" >&2
+    echo >&2
     log_info "Target version: ${version}"
     log_info "Install directory: ${install_dir}"
 
     if [ "$dry_run" = "1" ]; then
-        log_info "DRY RUN MODE - no changes will be made"
+        log_warn "DRY RUN MODE - no changes will be made"
     fi
 
+    log_step "Detecting platform..."
     detect_platform
     validate_platform
     create_temp_dir
 
-    log_info "Platform detection and validation complete"
-    log_info "GOOS=${GOOS} GOARCH=${GOARCH}${GOARM:+ GOARM=${GOARM}}"
+    log_info "Platform: ${GOOS}_${GOARCH}${GOARM:+v${GOARM}}"
 
     if [ "$dry_run" = "1" ]; then
         log_info "DRY RUN: Would proceed with download and installation"
@@ -1347,7 +1354,7 @@ main() {
     fi
 
     if [ "$version" = "latest" ]; then
-        log_info "Resolving latest version from GitHub..."
+        log_step "Resolving latest version from GitHub..."
         version=$(fetch_latest_version) || {
             log_error "Failed to fetch latest version from GitHub API"
             die $EXIT_DOWNLOAD "Cannot resolve latest version"
@@ -1358,19 +1365,21 @@ main() {
     # Check for existing installation and prompt for upgrade if needed
     check_and_prompt_upgrade "$version" "$install_dir" "$force"
 
+    log_step "Downloading release assets for version ${version}..."
     if ! install_binary "$version" "$install_dir"; then
         log_warn "Release installation failed for version ${version}"
+        log_step "Falling back to 'go install'..."
         if ! fallback_go_install "$version"; then
             die $EXIT_INSTALL "Both release download and go install fallback failed"
         fi
     fi
 
-    # Set up PATH if not already configured
+    log_step "Setting up PATH..."
     setup_path "$install_dir"
 
     # Run config wizard if requested
     if [ "$config_wizard" = "1" ]; then
-        log_info "Running config wizard..."
+        log_step "Running config wizard..."
         run_config_wizard "$config_path" "$config_provider" "$config_api_key" || {
             log_warn "Config wizard cancelled or failed"
         }
@@ -1378,15 +1387,16 @@ main() {
 
     # Run Deno installation flow if not disabled
     if [ "$no_deno" = "0" ]; then
-        log_info "Checking for Deno..."
+        log_step "Checking for Deno..."
         run_deno_install_flow || {
             log_warn "Deno installation skipped or failed"
         }
     fi
 
-    log_info "Installation complete!"
-    log_info "Binary installed to: ${install_dir}/${BINARY_NAME}"
-    log_info "Ensure ${install_dir} is in your PATH"
+    echo >&2
+    echo -e "\033[1;32m✓ Installation complete!\033[0m" >&2
+    echo -e "  Binary installed to: \033[1m${install_dir}/${BINARY_NAME}\033[0m" >&2
+    echo -e "  Ensure \033[1m${install_dir}\033[0m is in your PATH" >&2
 }
 
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
