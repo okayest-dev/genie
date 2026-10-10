@@ -68,7 +68,7 @@ func TestManifestValidate(t *testing.T) {
 	m := &Manifest{
 		Name:         "test",
 		Version:      "1.0.0",
-		Capabilities: []string{"tools", "providers"},
+		Capabilities: []string{"tools"},
 	}
 	if err := m.Validate(); err != nil {
 		t.Errorf("valid manifest should not error: %v", err)
@@ -117,7 +117,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":true,"providers":false,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             echo '{"jsonrpc":"2.0","result":{"tools":[{"name":"test-tool","description":"A test tool","parameters":{"type":"object","properties":{}}}]},"id":'"$id"'}'
@@ -215,9 +215,8 @@ func TestProtocolValidation(t *testing.T) {
 
 func TestCapabilitiesValidation(t *testing.T) {
 	caps := Capabilities{
-		Tools:     true,
-		Providers: false,
-		Version:   ProtocolVersion,
+		Tools:   true,
+		Version: ProtocolVersion,
 	}
 	if err := caps.Validate(); err != nil {
 		t.Errorf("valid capabilities should not error: %v", err)
@@ -234,7 +233,6 @@ func TestCapabilitiesValidation(t *testing.T) {
 
 	caps.Version = ProtocolVersion
 	caps.Tools = false
-	caps.Providers = false
 	if err := caps.Validate(); err != ErrCapabilitiesMismatch {
 		t.Errorf("expected ErrCapabilitiesMismatch, got %v", err)
 	}
@@ -264,7 +262,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":true,"providers":false,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             echo '{"jsonrpc":"2.0","result":{"tools":[]},"id":'"$id"'}'
@@ -329,7 +327,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":true,"providers":false,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             echo '{"jsonrpc":"2.0","result":{"tools":[{"name":"dir-tool","description":"A directory plugin tool","parameters":{"type":"object","properties":{}}}]},"id":'"$id"'}'
@@ -416,7 +414,7 @@ func TestParseManifestDirectoryLayout(t *testing.T) {
 	manifestContent := `
 name = "my-plugin"
 version = "2.0.0"
-capabilities = ["providers"]
+capabilities = ["tools"]
 `
 	manifestPath := filepath.Join(pluginDir, "manifest.toml")
 	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
@@ -433,8 +431,8 @@ capabilities = ["providers"]
 	if m.Version != "2.0.0" {
 		t.Errorf("expected version '2.0.0', got %q", m.Version)
 	}
-	if !m.HasCapability("providers") {
-		t.Error("expected capability 'providers'")
+	if !m.HasCapability("tools") {
+		t.Error("expected capability 'tools'")
 	}
 }
 
@@ -459,7 +457,7 @@ capabilities = ["tools"]
 	dirManifest := `
 name = "flat-plugin"
 version = "2.0.0"
-capabilities = ["providers"]
+capabilities = ["tools"]
 `
 	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.toml"), []byte(dirManifest), 0644); err != nil {
 		t.Fatal(err)
@@ -472,8 +470,8 @@ capabilities = ["providers"]
 	if m.Version != "2.0.0" {
 		t.Errorf("expected directory layout to take precedence, got version %q", m.Version)
 	}
-	if !m.HasCapability("providers") {
-		t.Error("expected directory layout capability 'providers'")
+	if !m.HasCapability("tools") {
+		t.Error("expected directory layout capability 'tools'")
 	}
 }
 
@@ -484,7 +482,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"greet","description":"Greet someone","usage":"<name>"}]},"id":'"$id"'}'
@@ -576,7 +574,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"slow","description":"A slow command"}]},"id":'"$id"'}'
@@ -640,7 +638,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"fail","description":"A command that fails"}]},"id":'"$id"'}'
@@ -703,7 +701,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"bye","description":"Exit"}]},"id":'"$id"'}'
@@ -797,7 +795,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[]},"id":'"$id"'}'
@@ -885,7 +883,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"good","description":"kept"},{"name":"two words","description":"dropped"},{"name":"good","description":"last-wins"},{"name":"/nope","description":"leading slash"}]},"id":'"$id"'}'
@@ -942,7 +940,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","error":{"code":-32601,"message":"Method not found"},"id":'"$id"'}'
@@ -992,7 +990,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":"not-an-object","id":'"$id"'}'
@@ -1046,7 +1044,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":true,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":true,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "tools/list")
             echo '{"jsonrpc":"2.0","result":{"tools":[]},"id":'"$id"'}'

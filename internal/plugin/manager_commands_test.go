@@ -18,7 +18,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"greet","description":"Greet someone"},{"name":"helpme","description":"show help"}]},"id":'"$id"'}'
@@ -55,7 +55,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"greet","description":"Greet someone"}]},"id":'"$id"'}'
@@ -280,7 +280,7 @@ while IFS= read -r line; do
     id=$(echo "$line" | jq -r .id)
     case "$method" in
         "capabilities/list")
-            echo '{"jsonrpc":"2.0","result":{"tools":false,"providers":false,"commands":true,"version":1},"id":'"$id"'}'
+            echo '{"jsonrpc":"2.0","result":{"tools":false,"commands":true,"version":1},"id":'"$id"'}'
             ;;
         "commands/list")
             echo '{"jsonrpc":"2.0","result":{"commands":[{"name":"greet","description":"hi"}]},"id":'"$id"'}'

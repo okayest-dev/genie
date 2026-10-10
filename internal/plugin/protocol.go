@@ -87,9 +87,8 @@ func NewSuccessResponse(id any, result any) (*Response, error) {
 }
 
 type Capabilities struct {
-	Tools     bool `json:"tools"`
-	Providers bool `json:"providers"`
-	Tracker   bool `json:"tracker"`
+	Tools   bool `json:"tools"`
+	Tracker bool `json:"tracker"`
 	// Commands registers user-typed slash commands the plugin exposes in the
 	// REPL as /<plugin> <command>, discovered via commands/list and driven via
 	// commands/run.
@@ -113,7 +112,7 @@ type Capabilities struct {
 // HasAny reports whether the plugin declares at least one capability. A plugin
 // that declares none is a protocol/validation error.
 func (c *Capabilities) HasAny() bool {
-	return c.Tools || c.Providers || c.Tracker || c.Commands || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
+	return c.Tools || c.Tracker || c.Commands || c.BeforeRequest || c.AfterResponse || c.CompactHook || c.CondenseHook ||
 		c.LifecycleRequestBuilt || c.LifecycleToolBefore || c.LifecycleToolAfter || c.LifecycleResponseReady || c.LifecycleTurnError
 }
 
@@ -123,7 +122,6 @@ type PresenceMask int
 
 const (
 	PresenceTools PresenceMask = 1 << iota
-	PresenceProviders
 	PresenceTracker
 	PresenceCommands
 	PresenceBeforeRequest
@@ -142,9 +140,6 @@ func (c *Capabilities) Mask() PresenceMask {
 	var m PresenceMask
 	if c.Tools {
 		m |= PresenceTools
-	}
-	if c.Providers {
-		m |= PresenceProviders
 	}
 	if c.Tracker {
 		m |= PresenceTracker
