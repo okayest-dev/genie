@@ -1049,12 +1049,8 @@ func environMap() map[string]string {
 
 // validateGlyphTier validates that the glyph_tier value is one of the allowed values.
 func validateGlyphTier(tier string) error {
-	switch tier {
-	case "nerd", "powerline", "ascii":
-		return nil
-	default:
-		return fmt.Errorf("config: glyph_tier must be one of nerd, powerline, ascii, got %q", tier)
-	}
+	_, err := theme.ResolveGlyphTier(tier)
+	return err
 }
 
 // resolveTheme resolves the theme name to either a builtin preset or a user theme file.
@@ -1069,6 +1065,7 @@ func resolveTheme(cfg *Config, userConfigDir string) error {
 
 	// Builtin presets - closed set, cannot be shadowed
 	if theme == "classic" || theme == "lean" {
+		slog.Debug("theme resolved", "theme", theme, "source", "builtin")
 		return nil
 	}
 
@@ -1097,6 +1094,7 @@ func resolveTheme(cfg *Config, userConfigDir string) error {
 		return fmt.Errorf("config: cannot read theme file %s: %w", themeFile, err)
 	}
 
+	slog.Debug("theme resolved", "theme", theme, "source", "file", "path", themeFile)
 	return nil
 }
 

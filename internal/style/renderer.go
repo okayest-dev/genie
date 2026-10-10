@@ -284,8 +284,9 @@ func rgbToAnsi256(r, g, b int) int {
 		if r > 248 {
 			return 231 // white
 		}
-		// Grayscale ramp: 232-255
-		return 232 + (r-8)*24/247
+		// Grayscale ramp: 232-255 (24 steps)
+		// Map r in [8, 248] to [232, 255]
+		return 232 + (r-8)*24/248
 	}
 
 	// 6x6x6 colour cube: 16-231
@@ -307,36 +308,32 @@ func rgbToAnsi256(r, g, b int) int {
 	return 16 + 36*ri + 6*gi + bi
 }
 
+// ANSI 16-colour palette (standard xterm values).
+// Indices 0-7: standard; 8-15: bright.
+var ansiPalette = [16][3]int{
+	{0, 0, 0},       // 0: black
+	{205, 0, 0},     // 1: red
+	{0, 205, 0},     // 2: green
+	{205, 205, 0},   // 3: yellow
+	{0, 0, 238},     // 4: blue
+	{205, 0, 205},   // 5: magenta
+	{0, 205, 205},   // 6: cyan
+	{229, 229, 229}, // 7: white
+	{127, 127, 127}, // 8: bright black (gray)
+	{255, 0, 0},     // 9: bright red
+	{0, 255, 0},     // 10: bright green
+	{255, 255, 0},   // 11: bright yellow
+	{92, 92, 255},   // 12: bright blue
+	{255, 0, 255},   // 13: bright magenta
+	{0, 255, 255},   // 14: bright cyan
+	{255, 255, 255}, // 15: bright white
+}
+
 // rgbToAnsi16 converts RGB to the closest 16-colour index (0-15).
 func rgbToAnsi16(r, g, b int) int {
-	// Use luminance to determine closest
-	// Standard ANSI palette indices:
-	// 0: black, 1: red, 2: green, 3: yellow, 4: blue, 5: magenta, 6: cyan, 7: white
-	// 8-15: bright versions
-
-	// Simple distance-based matching to 16 colours
-	ansiColours := [16][3]int{
-		{0, 0, 0},       // 0: black
-		{205, 0, 0},     // 1: red
-		{0, 205, 0},     // 2: green
-		{205, 205, 0},   // 3: yellow
-		{0, 0, 238},     // 4: blue
-		{205, 0, 205},   // 5: magenta
-		{0, 205, 205},   // 6: cyan
-		{229, 229, 229}, // 7: white
-		{127, 127, 127}, // 8: bright black (gray)
-		{255, 0, 0},     // 9: bright red
-		{0, 255, 0},     // 10: bright green
-		{255, 255, 0},   // 11: bright yellow
-		{92, 92, 255},   // 12: bright blue
-		{255, 0, 255},   // 13: bright magenta
-		{0, 255, 255},   // 14: bright cyan
-		{255, 255, 255}, // 15: bright white
-	}
-
 	minDist := 255*255*3 + 1
 	bestIdx := 0
-	for i, c := range ansiColours {
+	for i, c := range ansiPalette {
 		dr := r - c[0]
 		dg := g - c[1]
 		db := b - c[2]
@@ -410,6 +407,17 @@ func runeWidth(r rune) int {
 		(r >= 0xFFE0 && r <= 0xFFE6) ||
 		(r >= 0x20000 && r <= 0x2FFFD) ||
 		(r >= 0x30000 && r <= 0x3FFFD)) {
+		return 2
+	}
+
+	// Emoji and symbols (commonly rendered as double-width)
+	if (r >= 0x1F300 && r <= 0x1F5FF) || // Misc Symbols and Pictographs
+		(r >= 0x1F600 && r <= 0x1F64F) || // Emoticons
+		(r >= 0x1F680 && r <= 0x1F6FF) || // Transport and Map Symbols
+		(r >= 0x1F900 && r <= 0x1F9FF) || // Supplemental Symbols and Pictographs
+		(r >= 0x1FA70 && r <= 0x1FAFF) || // Symbols and Pictographs Extended-A
+		(r >= 0x2600 && r <= 0x26FF) ||   // Miscellaneous Symbols
+		(r >= 0x2700 && r <= 0x27BF) {    // Dingbats
 		return 2
 	}
 

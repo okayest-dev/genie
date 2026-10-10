@@ -697,8 +697,8 @@ func TestRuneWidth(t *testing.T) {
 		{0x4E00, 2}, // CJK unified ideograph
 		{0xFF01, 2}, // fullwidth exclamation mark
 		{0x20, 1},   // regular space
-		// Emoji U+1F600 is not in the East Asian Wide range in this implementation
-		{0x1F600, 1},
+		// Emoji U+1F600 is in the emoji range, rendered as double-width
+		{0x1F600, 2},
 	}
 	for _, tc := range tests {
 		got := runeWidth(tc.r)

@@ -375,7 +375,7 @@ func TestGlyphTierInvalidValue(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Parse accepted %q %v; want an error for invalid glyph_tier", tc.file, tc.envVars)
 			}
-			if !strings.Contains(err.Error(), "glyph_tier must be one of") {
+			if !strings.Contains(err.Error(), "must be one of") {
 				t.Errorf("error = %q, want glyph_tier validation error", err)
 			}
 		})
