@@ -76,7 +76,11 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum * > checksums.txt
+          for f in *; do
+            if [ -f "$f" ]; then
+              sha256sum "$f" >> checksums.txt
+            fi
+          done
 
       - name: Create release
         uses: softprops/action-gh-release@v2
