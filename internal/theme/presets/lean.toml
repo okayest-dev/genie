@@ -1,0 +1,62 @@
+version = "1"
+"$schema" = "https://genie.dev/schema/theme-v1.json"
+
+# Lean preset - calm, gap-separated, no connectors
+# Segments: dir · git · agent · prompt_char
+# Separators: gap (whitespace)
+# Glyph tiers: nerd/powerline/ascii (all render as gap)
+
+[roles]
+# Same role defaults as Classic for non-prompt output (ADR-0009)
+model = { fg = "", bg = "", attrs = [], glyphs = {} }
+tool  = { fg = "cyan", bg = "", attrs = [], glyphs = {} }
+error = { fg = "red", bg = "", attrs = [], glyphs = {} }
+warning = { fg = "yellow", bg = "", attrs = [], glyphs = {} }
+turn_cancelled = { fg = "", bg = "", attrs = ["dim"], glyphs = {} }
+banner = { fg = "", bg = "", attrs = ["dim"], glyphs = {} }
+log = { fg = "bright-black", bg = "", attrs = [], glyphs = {} }
+prompt = { fg = "", bg = "", attrs = ["bold"], glyphs = {} }
+pick = { fg = "", bg = "", attrs = [], glyphs = {} }
+slash = { fg = "", bg = "", attrs = [], glyphs = {} }
+plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
+
+# Prompt segment layout - minimal, gap-separated
+[[segments]]
+name = "dir"
+style = "dir"
+options = { "dir.max_len" = "40", always = "false" }
+  [segments.states]
+  anchored = { fg = "green", bg = "", attrs = [], glyphs = {} }
+  shortened = { fg = "bright-black", bg = "", attrs = ["dim"], glyphs = {} }
+
+[[segments]]
+name = "git"
+style = "git"
+options = { always = "false" }
+  [segments.states]
+  clean = { fg = "white", bg = "", attrs = [], glyphs = {} }
+  dirty = { fg = "yellow", bg = "", attrs = [], glyphs = {} }
+  unknown = { fg = "bright-black", bg = "", attrs = ["dim"], glyphs = {} }
+
+[[segments]]
+name = "agent"
+style = "agent"
+options = { always = "false" }
+
+[[segments]]
+name = "prompt_char"
+style = "prompt_char"
+options = { always = "true" }
+  [segments.states]
+  ok = { fg = "white", bg = "", attrs = [], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }
+  error = { fg = "white", bg = "", attrs = [], glyphs = { nerd = "✗", powerline = "✗", ascii = "!" } }
+  cancelled = { fg = "bright-black", bg = "", attrs = ["dim"], glyphs = { nerd = "⊘", powerline = "⊘", ascii = "?" } }
+
+# Separators: gap (whitespace) - no connectors
+[separators]
+default = { nerd = " ", powerline = " ", ascii = " " }
+overrides = {}
+
+# Prompt config
+[prompt]
+split_threshold = 50

@@ -261,7 +261,7 @@ func TestParseAgentDefUnknownKeys(t *testing.T) {
 		name string
 		file string
 	}{
-		{name: "unknown scalar", file: `theme = "dark"`},
+		{name: "unknown scalar", file: `unknown_key = "value"`},
 		{name: "unknown bool", file: `verbose = true`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
