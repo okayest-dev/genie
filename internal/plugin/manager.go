@@ -203,7 +203,7 @@ func (m *Manager) newBuiltinMarkdownTracker() *Plugin {
 	return &Plugin{
 		Name:            "markdown-tracker",
 		Manifest:        &Manifest{Name: "markdown-tracker", Version: "1.0.0"},
-		Capabilities:    Capabilities{Tracker: true},
+		Capabilities:    Capabilities{Tracker: true, TrackerIsolation: TrackerIsolationShared},
 		BuiltinTracker:  tracker,
 	}
 }
@@ -620,6 +620,12 @@ func (t *trackerPlugin) SearchOpen(ctx context.Context, query string, limit int)
 		return nil, fmt.Errorf("parse tracker/search_open: %w", err)
 	}
 	return result.Tasks, nil
+}
+
+// Isolation forwards the isolation the plugin declared at capabilities
+// negotiation. A plugin that made no declaration is conservatively unknown.
+func (t *trackerPlugin) Isolation() tracker.Isolation {
+	return tracker.ParseIsolation(t.plugin.Capabilities.TrackerIsolation)
 }
 
 func (m *Manager) registerPluginTools(p *Plugin) error {
@@ -1136,6 +1142,18 @@ func (m *Manager) GetTrackerSource() tracker.TrackerSource {
 		}
 	}
 	return nil
+}
+
+// TrackerIsolation reports the resolved tracker's worktree isolation, or the
+// conservative unknown when no tracker is present. Worktree-allocation
+// machinery (og-wm7.3) consults this before rebinding a session into a
+// parallel checkout.
+func (m *Manager) TrackerIsolation() tracker.Isolation {
+	src := m.GetTrackerSource()
+	if src == nil {
+		return tracker.IsolationUnknown
+	}
+	return src.Isolation()
 }
 
 func (m *Manager) RegisterToolFactory(factory func() tools.Tool) {

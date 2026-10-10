@@ -31,6 +31,7 @@ type FakeTracker struct {
 	claimedID     string
 	frontierOrder []string
 	createdTickets []string
+	isolation     tracker.Isolation
 }
 
 // Ensure FakeTracker implements tracker.TrackerSource
@@ -48,8 +49,16 @@ func NewFakeTracker(tasks []*tracker.TrackerTask) *FakeTracker {
 		tasks:          m,
 		frontierOrder:  order,
 		createdTickets: make([]string, 0),
+		isolation:      tracker.IsolationUnknown,
 	}
 }
+
+// Isolation reports the fake's declared isolation (default unknown; set via
+// SetIsolation).
+func (f *FakeTracker) Isolation() tracker.Isolation { return f.isolation }
+
+// SetIsolation overrides the isolation the fake reports to the harness.
+func (f *FakeTracker) SetIsolation(i tracker.Isolation) { f.isolation = i }
 
 // Ensure FakeTracker implements tracker.TrackerSource
 var _ tracker.TrackerSource = (*FakeTracker)(nil)

@@ -240,6 +240,7 @@ func New(opts Options) (*Handle, error) {
 			}
 		}
 		h.tracker = tracker
+		slog.Info("tracker resolved", "isolation", tracker.Isolation().String())
 
 		// Create evidence ledger
 		ledgerPath := filepath.Join(opts.Config.SessionDir, "gates")

@@ -30,6 +30,10 @@ func NewMarkdownTracker(tasksDir string) *MarkdownTracker {
 	return &MarkdownTracker{tasksDir: tasksDir}
 }
 
+// Isolation declares the tracker's state lives outside the checkout — in a
+// fixed user-directory — so every git worktree resolves the same task state.
+func (m *MarkdownTracker) Isolation() tracker.Isolation { return tracker.IsolationShared }
+
 func (m *MarkdownTracker) ensureDir() error {
 	return os.MkdirAll(m.tasksDir, 0755)
 }

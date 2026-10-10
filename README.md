@@ -100,6 +100,12 @@ By default, Genie uses a markdown-based tracker (files in `~/.config/genie/tasks
 - **bd/beads** - install the `bd-tracker` plugin from the genie plugins repo
 - **Custom** - implement the `TrackerSource` interface in a plugin for Jira, Trello, GitHub Issues, etc.
 
+#### Tracker isolation and worktree safety
+
+Every tracker declares where its state lives relative to a git worktree. The plugin handshake carries `tracker_isolation` in its capabilities — `"shared"` when every checkout resolves the identical task state (a remote store, or a local store outside the checkout), or `"per_checkout"` when the store lives inside the checkout and diverges across parallel worktrees. An absent declaration is treated as the conservative `unknown` and is *not* worktree-safe. The built-in markdown tracker stores tasks in `~/.config/genie/tasks/` (outside the checkout) and declares `"shared"`.
+
+The worktree-allocation machinery refuses to rebind a session into a parallel checkout unless the active tracker reports `"shared"`. A tracker plugin must therefore declare `tracker_isolation = "shared"` (when that claim holds) for its users to get parallel worktrees.
+
 ### Tracker write guard
 
 While a task is active, Genie prevents the model from bypassing the governed task tools by running raw tracker commands (e.g., `bd close`, `bd claim`, `bd create`) through the bash tool. The `tracker_guard_policy` config option controls this behavior:
