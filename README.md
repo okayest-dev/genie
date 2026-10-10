@@ -274,6 +274,12 @@ Precedence: **defaults < config file < environment variables**.
 # -p mode falls back to the first declared provider with a warning.
 provider = "zen"
 
+# Theme: "classic" (default, connected p10k-style chips), "lean" (gap-separated),
+# or a custom theme file name from ~/.config/genie/themes/<name>.toml
+# theme = "classic"
+# Glyph tier for prompt connectors: "nerd", "powerline", or "ascii" (default)
+# glyph_tier = "ascii"
+
 # api_key_env, model, base_url, and wire live inside [providers.<name>] tables.
 # instruction_file = ""      # path to agent instruction file
 # session_dir = ""           # defaults to ~/.config/genie/sessions
@@ -496,6 +502,8 @@ The previous `tools.Confirmer` seam (bash every-call prompts, write-overwrite pr
 | `GENIE_PLUGIN_DIR` | Plugin discovery directory |
 | `GENIE_SKILL_DIR` | Skill discovery directory (replaces all skill dirs) |
 | `GENIE_CONTEXT_TURNS` | Prior turns of history carried into each new turn (`0` = all) |
+| `GENIE_THEME` | Theme name (builtin or user theme file) |
+| `GENIE_GLYPH_TIER` | Glyph tier: `nerd`, `powerline`, or `ascii` |
 | `GENIE_DEBUG` | Enable debug mode (`true`/`1`/`yes`) |
 
 ### Debug and verbose modes

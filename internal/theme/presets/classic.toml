@@ -1,0 +1,87 @@
+version = "1"
+"$schema" = "https://genie.dev/schema/theme-v1.json"
+
+# Classic preset - the connected p10k-style chip-and-connector layout
+# Segments: dir · git · provider · model · agent · time · tokens · prompt_char
+# Separators: powerline connectors (welded same-band chips)
+# Glyph tiers: nerd/powerline/ascii
+
+[roles]
+# Salience ladder: content plain, harness chatter muted/tinted, problems coloured, security dialog bold
+# Colours downconvert through render profile (ADR-0006); backgrounds added for prompt chips (ADR-0012)
+# fg/bg/attrs/glyphs per role; missing keys fall back to plain (ADR-0009)
+
+model = { fg = "", bg = "", attrs = [], glyphs = {} }
+tool  = { fg = "cyan", bg = "", attrs = [], glyphs = {} }
+error = { fg = "red", bg = "", attrs = [], glyphs = {} }
+warning = { fg = "yellow", bg = "", attrs = [], glyphs = {} }
+turn_cancelled = { fg = "", bg = "", attrs = ["dim"], glyphs = {} }
+banner = { fg = "", bg = "", attrs = ["dim"], glyphs = {} }
+log = { fg = "bright-black", bg = "", attrs = [], glyphs = {} }
+prompt = { fg = "", bg = "", attrs = ["bold"], glyphs = {} }
+pick = { fg = "", bg = "", attrs = [], glyphs = {} }
+slash = { fg = "", bg = "", attrs = [], glyphs = {} }
+plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
+
+# Prompt segment layout (ordered entries)
+# Each entry: name, style (role reference), options, states
+[[segments]]
+name = "dir"
+style = "dir"
+options = { "dir.max_len" = "40", always = "false" }
+  [segments.states]
+  anchored = { fg = "green", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  shortened = { fg = "bright-black", bg = "blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
+
+[[segments]]
+name = "git"
+style = "git"
+options = { always = "false" }
+  [segments.states]
+  clean = { fg = "white", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  dirty = { fg = "yellow", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  unknown = { fg = "bright-black", bg = "blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
+
+[[segments]]
+name = "provider"
+style = "provider"
+options = { always = "false" }
+
+[[segments]]
+name = "model"
+style = "model"
+options = { always = "false" }
+
+[[segments]]
+name = "agent"
+style = "agent"
+options = { always = "false" }
+
+[[segments]]
+name = "time"
+style = "time"
+options = { "time.format" = "15:04:05", always = "false" }
+
+[[segments]]
+name = "tokens"
+style = "tokens"
+options = { always = "false" }
+
+[[segments]]
+name = "prompt_char"
+style = "prompt_char"
+options = { always = "true" }
+  [segments.states]
+  ok = { fg = "white", bg = "magenta", attrs = [], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }
+  error = { fg = "white", bg = "red", attrs = [], glyphs = { nerd = "✗", powerline = "✗", ascii = "!" } }
+  cancelled = { fg = "bright-black", bg = "magenta", attrs = ["dim"], glyphs = { nerd = "⊘", powerline = "⊘", ascii = "?" } }
+
+# Separators: theme-level default with per-segment overrides
+# Whitespace gap is a separator type (ADR-0007)
+[separators]
+default = { nerd = "", powerline = "", ascii = ">" }
+overrides = {}
+
+# Prompt config
+[prompt]
+split_threshold = 50

@@ -248,7 +248,7 @@ func TestUnknownKeysFailFast(t *testing.T) {
 	}{
 		{name: "typo base_url", file: "bas_url = \"https://example.com\""},
 		{name: "unknown tool", file: "[tools]\nls = true"},
-		{name: "unknown scalar", file: "theme = \"dark\""},
+		{name: "unknown scalar", file: "not_a_real_key = \"value\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.file), "/home/u", nil)
@@ -318,6 +318,186 @@ func TestEmptyEnvVarMeansUnset(t *testing.T) {
 	}
 	if cfg.Provider != "file-provider" {
 		t.Errorf("Provider = %q, want %q (empty env var must not override)", cfg.Provider, "file-provider")
+	}
+}
+
+func TestThemeDefaultsToClassic(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Theme != "classic" {
+		t.Errorf("Theme = %q, want classic", cfg.Theme)
+	}
+}
+
+func TestGlyphTierDefaultsToAscii(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.GlyphTier != "ascii" {
+		t.Errorf("GlyphTier = %q, want ascii", cfg.GlyphTier)
+	}
+}
+
+func TestThemeFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("theme = \"lean\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Theme != "lean" {
+		t.Errorf("Theme = %q, want lean", cfg.Theme)
+	}
+}
+
+func TestGlyphTierFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("glyph_tier = \"nerd\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.GlyphTier != "nerd" {
+		t.Errorf("GlyphTier = %q, want nerd", cfg.GlyphTier)
+	}
+}
+
+func TestGlyphTierInvalidValue(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		file    string
+		envVars map[string]string
+	}{
+		{name: "file invalid", file: "glyph_tier = \"invalid\""},
+		{name: "env invalid", file: "", envVars: env("GENIE_GLYPH_TIER", "invalid")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", tc.envVars)
+			if err == nil {
+				t.Fatalf("Parse accepted %q %v; want an error for invalid glyph_tier", tc.file, tc.envVars)
+			}
+			if !strings.Contains(err.Error(), "glyph_tier must be one of") {
+				t.Errorf("error = %q, want glyph_tier validation error", err)
+			}
+		})
+	}
+}
+
+func TestThemeEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("theme = \"classic\"\n"), "/home/u", env("GENIE_THEME", "lean"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Theme != "lean" {
+		t.Errorf("Theme = %q, want lean (env overrides file)", cfg.Theme)
+	}
+}
+
+func TestGlyphTierEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("glyph_tier = \"powerline\"\n"), "/home/u", env("GENIE_GLYPH_TIER", "nerd"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.GlyphTier != "nerd" {
+		t.Errorf("GlyphTier = %q, want nerd (env overrides file)", cfg.GlyphTier)
+	}
+}
+
+func TestEmptyThemeEnvMeansUnset(t *testing.T) {
+	cfg, err := Parse([]byte("theme = \"lean\"\n"), "/home/u", env("GENIE_THEME", ""))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Theme != "lean" {
+		t.Errorf("Theme = %q, want lean (empty env must not override)", cfg.Theme)
+	}
+}
+
+func TestEmptyGlyphTierEnvMeansUnset(t *testing.T) {
+	cfg, err := Parse([]byte("glyph_tier = \"powerline\"\n"), "/home/u", env("GENIE_GLYPH_TIER", ""))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.GlyphTier != "powerline" {
+		t.Errorf("GlyphTier = %q, want powerline (empty env must not override)", cfg.GlyphTier)
+	}
+}
+
+func TestThemeBuiltinClassic(t *testing.T) {
+	// classic is a builtin preset, should resolve without needing a file
+	cfg, err := Parse([]byte("theme = \"classic\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Theme != "classic" {
+		t.Errorf("Theme = %q, want classic", cfg.Theme)
+	}
+}
+
+func TestThemeBuiltinLean(t *testing.T) {
+	// lean is a builtin preset, should resolve without needing a file
+	cfg, err := Parse([]byte("theme = \"lean\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Theme != "lean" {
+		t.Errorf("Theme = %q, want lean", cfg.Theme)
+	}
+}
+
+func TestThemeUnknownValueFails(t *testing.T) {
+	// dark is not a builtin preset and no user theme file exists
+	_, err := Parse([]byte("theme = \"dark\"\n"), "/home/u", nil)
+	if err == nil {
+		t.Fatal("Parse accepted unknown theme; want an error")
+	}
+	if !strings.Contains(err.Error(), "theme \"dark\" not found") {
+		t.Errorf("error = %q, want theme not found error", err)
+	}
+}
+
+func TestLoadThemeBuiltinClassic(t *testing.T) {
+	cfg, err := Parse([]byte("theme = \"classic\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	th, err := cfg.LoadTheme()
+	if err != nil {
+		t.Fatalf("LoadTheme: %v", err)
+	}
+	if th.Name != "classic" {
+		t.Errorf("Theme.Name = %q, want classic", th.Name)
+	}
+	if th.Source != "builtin" {
+		t.Errorf("Theme.Source = %q, want builtin", th.Source)
+	}
+	if th.Data.Version == "" {
+		t.Error("Theme.Data.Version should not be empty")
+	}
+	if len(th.Data.Roles) != 11 {
+		t.Errorf("Theme.Data.Roles = %d, want 11", len(th.Data.Roles))
+	}
+	if len(th.Data.Segments) != 8 {
+		t.Errorf("Theme.Data.Segments = %d, want 8", len(th.Data.Segments))
+	}
+}
+
+func TestLoadThemeBuiltinLean(t *testing.T) {
+	cfg, err := Parse([]byte("theme = \"lean\"\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	th, err := cfg.LoadTheme()
+	if err != nil {
+		t.Fatalf("LoadTheme: %v", err)
+	}
+	if th.Name != "lean" {
+		t.Errorf("Theme.Name = %q, want lean", th.Name)
+	}
+	if th.Source != "builtin" {
+		t.Errorf("Theme.Source = %q, want builtin", th.Source)
+	}
+	if len(th.Data.Segments) != 4 {
+		t.Errorf("Theme.Data.Segments = %d, want 4 (lean has fewer segments)", len(th.Data.Segments))
 	}
 }
 

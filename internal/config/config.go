@@ -26,6 +26,7 @@ import (
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/modelinfo"
 	"github.com/okayest-dev/genie/internal/tasktools"
+	"github.com/okayest-dev/genie/internal/theme"
 )
 
 // Defaults for every configurable scalar.
@@ -97,11 +98,11 @@ var defaultProviders = map[string]Provider{
 // Tools holds the four per-tool toggles. All default to enabled; a disabled
 // tool is omitted from the tools array sent to the provider.
 type Tools struct {
-	Read      bool
-	Write     bool
-	Edit      bool
-	Bash      bool
-	Code      bool
+	Read        bool
+	Write       bool
+	Edit        bool
+	Bash        bool
+	Code        bool
 	CodeTimeout time.Duration
 }
 
@@ -205,6 +206,12 @@ type Config struct {
 	// first declared provider (og-z1m.4). There is no global model — every
 	// model a turn can start on belongs to the active provider.
 	Provider string
+	// Theme is the active theme name (builtin preset or user theme file).
+	// Empty means unset; defaults to "classic" at load time.
+	Theme string
+	// GlyphTier is the terminal glyph tier: "nerd", "powerline", or "ascii".
+	// Defaults to "ascii".
+	GlyphTier string
 	// InstructionFile is an optional agent-instruction source loaded after
 	// the built-in default. Unset means none.
 	InstructionFile string
@@ -231,11 +238,11 @@ type Config struct {
 	Lifecycle Lifecycle
 	// Hooks is the plugin-hook circuit-breaker policy, resolved from
 	// [plugins] hook_failure_threshold / hook_recovery_seconds.
-	Hooks    Hooks
-	Skills      Skills
-	AgentReg    *AgentReg
-	TaskTools   TaskToolsConfig
-	Gates       GatesConfig
+	Hooks     Hooks
+	Skills    Skills
+	AgentReg  *AgentReg
+	TaskTools TaskToolsConfig
+	Gates     GatesConfig
 }
 
 // Permissions is the resolved permission policy. Base maps each axis name
@@ -261,20 +268,22 @@ type PermanentGrant struct {
 // (og-z1m.8). provider keeps its dual role as the file-set selection and the
 // GENIE_PROVIDER env override.
 type fileConfig struct {
-	Provider        string              `toml:"provider"`
-	InstructionFile string              `toml:"instruction_file"`
-	SessionDir      string              `toml:"session_dir"`
-	BashTimeout     *int                `toml:"bash_timeout"` // seconds
-	Tools           toolsFile           `toml:"tools"`
-	Plugins         pluginsFile         `toml:"plugins"`
-	Skills          skillsFile          `toml:"skills"`
-	Context         contextFile         `toml:"context"`
-	Lifecycle       lifecycleFile       `toml:"lifecycle"`
-	DefaultAgent    string              `toml:"default_agent"`
-	Providers       providerFiles       `toml:"providers"`
-	Permissions     permissionsFile     `toml:"permissions"`
-	TaskTools       taskToolsFile       `toml:"task_tools"`
-	Gates           gatesFile           `toml:"gates"`
+	Provider        string          `toml:"provider"`
+	Theme           string          `toml:"theme"`
+	GlyphTier       string          `toml:"glyph_tier"`
+	InstructionFile string          `toml:"instruction_file"`
+	SessionDir      string          `toml:"session_dir"`
+	BashTimeout     *int            `toml:"bash_timeout"` // seconds
+	Tools           toolsFile       `toml:"tools"`
+	Plugins         pluginsFile     `toml:"plugins"`
+	Skills          skillsFile      `toml:"skills"`
+	Context         contextFile     `toml:"context"`
+	Lifecycle       lifecycleFile   `toml:"lifecycle"`
+	DefaultAgent    string          `toml:"default_agent"`
+	Providers       providerFiles   `toml:"providers"`
+	Permissions     permissionsFile `toml:"permissions"`
+	TaskTools       taskToolsFile   `toml:"task_tools"`
+	Gates           gatesFile       `toml:"gates"`
 }
 
 // providerFiles is the TOML schema for [providers.*]: nested tables keyed by
@@ -300,18 +309,18 @@ type toolsFile struct {
 }
 
 type taskToolsFile struct {
-	Enable              *bool  `toml:"enable"`
-	CommandTimeout      *int   `toml:"command_timeout"`      // seconds
-	TrackerGuardPolicy  *string `toml:"tracker_guard_policy"` // strict, permissive, off
-	Followup            followupFile `toml:"followup"`
+	Enable             *bool        `toml:"enable"`
+	CommandTimeout     *int         `toml:"command_timeout"`      // seconds
+	TrackerGuardPolicy *string      `toml:"tracker_guard_policy"` // strict, permissive, off
+	Followup           followupFile `toml:"followup"`
 }
 
 type followupFile struct {
-	PrioritySecurity            *int     `toml:"priority_security"`
-	PriorityRecurrenceThreshold *int     `toml:"priority_recurrence_threshold"`
-	PriorityBlastRadiusThreshold *int    `toml:"priority_blast_radius_threshold"`
-	DedupSimilarityThreshold    *float64 `toml:"dedup_similarity_threshold"`
-	AutoWontfixRules            []string `toml:"auto_wontfix_rules"`
+	PrioritySecurity             *int     `toml:"priority_security"`
+	PriorityRecurrenceThreshold  *int     `toml:"priority_recurrence_threshold"`
+	PriorityBlastRadiusThreshold *int     `toml:"priority_blast_radius_threshold"`
+	DedupSimilarityThreshold     *float64 `toml:"dedup_similarity_threshold"`
+	AutoWontfixRules             []string `toml:"auto_wontfix_rules"`
 }
 
 type gatesFile struct {
@@ -409,6 +418,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		if fc.Provider != "" {
 			cfg.Provider = fc.Provider
 		}
+		if fc.Theme != "" {
+			cfg.Theme = fc.Theme
+		}
+		if fc.GlyphTier != "" {
+			cfg.GlyphTier = fc.GlyphTier
+		}
 		cfg.InstructionFile = fc.InstructionFile
 		if fc.SessionDir != "" {
 			cfg.SessionDir = fc.SessionDir
@@ -500,6 +515,14 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		return nil, err
 	}
 
+	if err := validateGlyphTier(cfg.GlyphTier); err != nil {
+		return nil, err
+	}
+
+	if err := resolveTheme(&cfg, userConfigDir); err != nil {
+		return nil, err
+	}
+
 	if err := validateProviders(cfg.Providers); err != nil {
 		return nil, err
 	}
@@ -570,6 +593,8 @@ func defaults(userConfigDir string) Config {
 		Permissions: Permissions{Base: map[string][]string{"read": {"."}}},
 		TaskTools:   tasktools.DefaultTaskToolsConfig(),
 		Gates:       defaultGateConfig(),
+		Theme:       "classic",
+		GlyphTier:   "ascii",
 	}
 }
 
@@ -898,6 +923,14 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 		cfg.Context.NetDrop = b
 		applied = append(applied, "GENIE_CONTEXT_NET_DROP")
 	}
+	if v := env["GENIE_THEME"]; v != "" {
+		cfg.Theme = v
+		applied = append(applied, "GENIE_THEME")
+	}
+	if v := env["GENIE_GLYPH_TIER"]; v != "" {
+		cfg.GlyphTier = v
+		applied = append(applied, "GENIE_GLYPH_TIER")
+	}
 	return applied, nil
 }
 
@@ -1012,4 +1045,77 @@ func environMap() map[string]string {
 		}
 	}
 	return out
+}
+
+// validateGlyphTier validates that the glyph_tier value is one of the allowed values.
+func validateGlyphTier(tier string) error {
+	switch tier {
+	case "nerd", "powerline", "ascii":
+		return nil
+	default:
+		return fmt.Errorf("config: glyph_tier must be one of nerd, powerline, ascii, got %q", tier)
+	}
+}
+
+// resolveTheme resolves the theme name to either a builtin preset or a user theme file.
+// Builtin presets (classic, lean) take precedence and cannot be shadowed by user files.
+// If the theme is not a builtin and no user theme file exists, returns an error.
+func resolveTheme(cfg *Config, userConfigDir string) error {
+	theme := cfg.Theme
+	if theme == "" {
+		theme = "classic"
+		cfg.Theme = theme
+	}
+
+	// Builtin presets - closed set, cannot be shadowed
+	if theme == "classic" || theme == "lean" {
+		return nil
+	}
+
+	// User theme file: <config-dir>/genie/themes/<name>.toml
+	themesDir := filepath.Join(userConfigDir, "genie", "themes")
+	themeFile := filepath.Join(themesDir, theme+".toml")
+
+	// Check if themes dir exists
+	info, err := os.Stat(themesDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Info("themes directory not found, no user themes available", "dir", themesDir)
+			return fmt.Errorf("config: theme %q not found (not a builtin preset, no user theme file at %s)", theme, themeFile)
+		}
+		return fmt.Errorf("config: cannot read themes directory %s: %w", themesDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("config: themes path %s exists but is not a directory", themesDir)
+	}
+
+	// Check if theme file exists
+	if _, err := os.Stat(themeFile); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("config: theme %q not found (not a builtin preset, no user theme file at %s)", theme, themeFile)
+		}
+		return fmt.Errorf("config: cannot read theme file %s: %w", themeFile, err)
+	}
+
+	return nil
+}
+
+// LoadTheme loads and parses the theme specified in the config.
+// This should be called after Load() to get the fully resolved theme data.
+func (c *Config) LoadTheme() (*theme.Theme, error) {
+	return theme.Load(c.Theme, c.getUserConfigDir())
+}
+
+// getUserConfigDir returns the user config directory used for deriving paths.
+func (c *Config) getUserConfigDir() string {
+	dir := os.Getenv("GENIE_CONFIG_DIR")
+	if dir == "" {
+		var err error
+		dir, err = os.UserConfigDir()
+		if err != nil {
+			// Fallback to session dir parent's parent (config dir)
+			dir = filepath.Dir(filepath.Dir(c.SessionDir))
+		}
+	}
+	return dir
 }
