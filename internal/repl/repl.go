@@ -25,10 +25,13 @@ import (
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/llm/copilot"
 	"github.com/okayest-dev/genie/internal/plugin"
+	"github.com/okayest-dev/genie/internal/prompt"
 	"github.com/okayest-dev/genie/internal/run"
+	"github.com/okayest-dev/genie/internal/style"
+	"github.com/okayest-dev/genie/internal/theme"
 )
 
-const prompt = "genie> "
+const defaultPrompt = "genie> "
 
 // Config is the thin entry-point surface a REPL needs. The run.Handle owns
 // everything a turn touches; the stream fields route the REPL's own IO.
@@ -44,6 +47,12 @@ type Config struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// PromptBar is the prompt bar renderer for the idle prompt.
+	PromptBar *prompt.PromptBar
+	// Theme is the loaded theme for prompt rendering.
+	Theme *theme.Theme
+	// Profile is the render profile for prompt rendering.
+	Profile *style.RenderProfile
 }
 
 // Run starts the interactive REPL loop. It reads user input, runs agent
@@ -84,7 +93,17 @@ func Run(ctx context.Context, cfg *Config) error {
 	cfg.Run.SetNegotiator(&interactiveNegotiator{lines: lines, out: cfg.Stdout, router: router})
 
 	for {
-		fmt.Fprint(cfg.Stdout, prompt)
+		// Render the idle prompt bar
+		if cfg.PromptBar != nil {
+			ctx := prompt.BuildContext(cfg.Run, cfg.Cfg, cfg.Theme)
+			barLines := cfg.PromptBar.Render(ctx)
+			for _, line := range barLines {
+				fmt.Fprint(cfg.Stdout, line)
+			}
+		} else {
+			fmt.Fprint(cfg.Stdout, defaultPrompt)
+		}
+
 		select {
 		case <-router.idleCh:
 			// Ctrl+C at idle: exit.

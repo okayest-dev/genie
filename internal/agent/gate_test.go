@@ -76,7 +76,7 @@ func gateRun(t *testing.T, tool *permissionedStub, gate *permissions.Gate) []llm
 	if gate != nil {
 		opts = append(opts, WithPermissions(gate))
 	}
-	if err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, nil, nil, reg, nil, "/work", opts...); err != nil {
+	if _, err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, nil, nil, reg, nil, "/work", opts...); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	return reqs

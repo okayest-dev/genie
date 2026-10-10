@@ -21,9 +21,11 @@ import (
 	_ "github.com/okayest-dev/genie/internal/llm/openai"
 	_ "github.com/okayest-dev/genie/internal/llm/responses"
 	"github.com/okayest-dev/genie/internal/permissions"
+	"github.com/okayest-dev/genie/internal/prompt"
 	"github.com/okayest-dev/genie/internal/repl"
 	runpkg "github.com/okayest-dev/genie/internal/run"
 	"github.com/okayest-dev/genie/internal/skill"
+	"github.com/okayest-dev/genie/internal/style"
 )
 
 var version = "dev"
@@ -119,7 +121,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("genie", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { fmt.Fprint(stderr, usage) }
-	prompt := fs.String("p", "", "run a single prompt")
+	promptFlag := fs.String("p", "", "run a single prompt")
 	agentFlag := fs.String("a", "", "agent definition to load for this run")
 	verbose := fs.Bool("v", false, "verbose output")
 	debug := fs.Bool("d", false, "debug output (implies -v)")
@@ -130,13 +132,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	// If stdinPrompt was set, use it as the prompt.
 	if stdinPrompt != "" {
-		*prompt = stdinPrompt
+		*promptFlag = stdinPrompt
 	}
 
 	// --approve-all is headless-only: in the interactive REPL there is a user
 	// to ask, and a blanket approval has no single-turn scope to expire in.
 	// Refuse rather than silently approve everything (og-uy5.6).
-	if *approveAll && *prompt == "" {
+	if *approveAll && *promptFlag == "" {
 		fmt.Fprintln(stderr, "Error: --approve-all requires headless mode; pass a prompt with -p")
 		return 3
 	}
@@ -217,7 +219,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// model are resolved inside run.New — the registry is only the named
 	// provider surface here.
 	reg := llm.NewRegistry(cfg.Providers)
-	provider, err := selectStartupProvider(reg, cfg.Provider, *prompt == "", os.Stdin, stdout, stderr)
+	provider, err := selectStartupProvider(reg, cfg.Provider, *promptFlag == "", os.Stdin, stdout, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
@@ -249,7 +251,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// No -p flag: start the interactive REPL.
-	if *prompt == "" {
+	if *promptFlag == "" {
 		// Fail at startup when the boot instruction cannot be assembled
 		// (matches the pre-run.Handle behavior).
 		if ierr := h.LoadInstruction(); ierr != nil {
@@ -259,16 +261,44 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "Error: %v\n", ierr)
 			return 1
 		}
-		replCfg := &repl.Config{
-			Run:        h,
-			Cfg:        cfg,
-			SessionDir: cfg.SessionDir,
-			Cwd:        cwd,
-			Stdin:      os.Stdin,
-			Stdout:     stdout,
-			Stderr:     stderr,
+
+		// Load theme and create render profile for prompt bar
+		th, err := cfg.LoadTheme()
+		if err != nil {
+			fmt.Fprintf(stderr, "Error loading theme: %v\n", err)
+			return 1
 		}
-		err := repl.Run(context.Background(), replCfg)
+
+		// Create render profile for stdout
+		env := make(map[string]string)
+		for _, kv := range os.Environ() {
+			if i := strings.IndexByte(kv, '='); i >= 0 {
+				env[kv[:i]] = kv[i+1:]
+			}
+		}
+		profile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stdout)
+		if err != nil {
+			fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
+			return 1
+		}
+
+		// Create prompt bar
+		termWidth := profile.Width
+		promptBar := prompt.NewPromptBar(th, profile, termWidth)
+
+		replCfg := &repl.Config{
+			Run:         h,
+			Cfg:         cfg,
+			SessionDir:  cfg.SessionDir,
+			Cwd:         cwd,
+			Stdin:       os.Stdin,
+			Stdout:      stdout,
+			Stderr:      stderr,
+			PromptBar:   promptBar,
+			Theme:       th,
+			Profile:     profile,
+		}
+		err = repl.Run(context.Background(), replCfg)
 		if cerr := h.Close(); cerr != nil {
 			slog.Error("failed to close ledger", "error", cerr)
 		}
@@ -304,7 +334,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	err = h.Turn(ctx, *prompt, stdout, stderr)
+	err = h.Turn(ctx, *promptFlag, stdout, stderr)
 
 	// Close the ledger to flush any recorded mutations and shut down the
 	// plugin manager regardless of the turn's outcome.

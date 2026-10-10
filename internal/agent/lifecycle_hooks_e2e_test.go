@@ -249,7 +249,7 @@ func TestLifecycleHooksFireInShapeInRunTurn(t *testing.T) {
 
 	client := &scriptedClient{}
 	var out, errOut strings.Builder
-	if err := agent.RunTurn(context.Background(), client, "test-model", "sys", "hi", &out, &errOut, nil, reg, nil, "", agent.WithHooks(seam)); err != nil {
+	if _, err := agent.RunTurn(context.Background(), client, "test-model", "sys", "hi", &out, &errOut, nil, reg, nil, "", agent.WithHooks(seam)); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 
@@ -326,7 +326,7 @@ func TestLifecycleHookToolBeforeSuppressionKillsCall(t *testing.T) {
 
 	client := &scriptedClient{}
 	var out, errOut strings.Builder
-	if err := agent.RunTurn(context.Background(), client, "test-model", "sys", "hi", &out, &errOut, nil, reg, nil, "", agent.WithHooks(seam)); err != nil {
+	if _, err := agent.RunTurn(context.Background(), client, "test-model", "sys", "hi", &out, &errOut, nil, reg, nil, "", agent.WithHooks(seam)); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 
@@ -368,7 +368,7 @@ func TestLifecycleHookToolBeforeWipeFailsClosed(t *testing.T) {
 
 	client := &scriptedClient{}
 	var out, errOut strings.Builder
-	if err := agent.RunTurn(context.Background(), client, "test-model", "sys", "hi", &out, &errOut, nil, reg, nil, "", agent.WithHooks(seam)); err != nil {
+	if _, err := agent.RunTurn(context.Background(), client, "test-model", "sys", "hi", &out, &errOut, nil, reg, nil, "", agent.WithHooks(seam)); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 
@@ -406,7 +406,7 @@ func TestLifecycleHookTurnErrorFiresOnceWithRootCause(t *testing.T) {
 	mgr, seam := loadLifecycleScript(t)
 	defer mgr.Shutdown()
 
-	err := agent.RunTurn(context.Background(), &scriptedClient{errOn: 1}, "test-model", "sys", "hi", &strings.Builder{}, &strings.Builder{}, nil, nil, nil, "", agent.WithHooks(seam))
+	_, err := agent.RunTurn(context.Background(), &scriptedClient{errOn: 1}, "test-model", "sys", "hi", &strings.Builder{}, &strings.Builder{}, nil, nil, nil, "", agent.WithHooks(seam))
 	if err == nil {
 		t.Fatal("RunTurn should fail when the stream cannot open")
 	}
