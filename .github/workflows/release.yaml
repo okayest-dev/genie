@@ -68,10 +68,18 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Copy install.sh to artifacts
+        run: cp install.sh artifacts/
 
       - name: Generate checksums
         run: |
