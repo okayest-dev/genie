@@ -285,8 +285,8 @@ func rgbToAnsi256(r, g, b int) int {
 			return 231 // white
 		}
 		// Grayscale ramp: 232-255 (24 steps)
-		// Map r in [8, 248] to [232, 255]
-		return 232 + (r-8)*24/248
+		// Map r in [8, 248] to [232, 255] using standard formula
+		return 232 + (r-8)*24/247
 	}
 
 	// 6x6x6 colour cube: 16-231
