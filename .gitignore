@@ -39,3 +39,6 @@ go.work.sum
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# goreleaser output
+dist/
