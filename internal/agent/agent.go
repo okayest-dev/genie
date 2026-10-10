@@ -117,7 +117,8 @@ func NewFatalHookError(plugin, event string, cause error) *FatalHookError {
 // Prior-turn history is not threaded here: the client wrapping c owns history
 // injection from the session. opts configures optional behaviour (e.g.
 // WithAgentName for session logging).
-func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string, opts ...Option) (err error) {
+// Returns the provider-reported usage for the completed turn and any error.
+func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt string, out, errOut io.Writer, sess *session.Session, registry *tools.Registry, ldg *ledger.Ledger, cwd string, opts ...Option) (usage llm.Usage, err error) {
 	var to turnOptions
 	for _, o := range opts {
 		o(&to)
@@ -144,12 +145,12 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 			// Attach agent name metadata to the user message.
 			if to.agentName != "" && msg.Role == llm.RoleUser {
 				if err := sess.AppendWithMeta(msg, map[string]string{"agent": to.agentName}); err != nil {
-					return err
+					return llm.Usage{}, err
 				}
 				continue
 			}
 			if err := sess.Append(msg); err != nil {
-				return err
+				return llm.Usage{}, err
 			}
 		}
 	}
@@ -171,7 +172,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		var herr error
 		req, herr = to.hooks.RequestBuilt(ctx, req)
 		if herr != nil {
-			return herr
+			return llm.Usage{}, herr
 		}
 	}
 
@@ -195,14 +196,14 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 							Role:    llm.RoleAssistant,
 							Content: reply.String(),
 						}); err != nil {
-							return err
+							return llm.Usage{}, err
 						}
 					}
 					reply.Reset()
 					continue
 				}
 			}
-			return err
+			return llm.Usage{}, err
 		}
 
 		var usage llm.Usage
@@ -217,11 +218,11 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 					var herr error
 					chunk, herr = to.hooks.ResponseReady(ctx, ev.Text, false, "", llm.Usage{})
 					if herr != nil {
-						return herr
+						return llm.Usage{}, herr
 					}
 				}
 				if _, err := io.WriteString(out, chunk); err != nil {
-					return err
+					return llm.Usage{}, err
 				}
 				reply.WriteString(chunk)
 				delta.WriteString(chunk)
@@ -232,7 +233,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 			case llm.EventToolCall:
 				toolCalls = ev.ToolCalls
 			case llm.EventError:
-				return ev.Err
+				return llm.Usage{}, ev.Err
 			}
 		}
 
@@ -251,7 +252,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		// If we got a text reply, print the trailing newline and persist.
 		if reply.Len() > 0 {
 			if _, err := io.WriteString(out, "\n"); err != nil {
-				return err
+				return llm.Usage{}, err
 			}
 		}
 
@@ -265,7 +266,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				assistantMsg.ToolCalls = toolCalls
 			}
 			if err := sess.Append(assistantMsg); err != nil {
-				return err
+				return llm.Usage{}, err
 			}
 		} else if len(toolCalls) > 0 && reply.Len() == 0 && sess != nil {
 			// Tool-call-only message (no text content).
@@ -273,7 +274,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				Role:      llm.RoleAssistant,
 				ToolCalls: toolCalls,
 			}); err != nil {
-				return err
+				return llm.Usage{}, err
 			}
 		}
 
@@ -300,7 +301,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 						Role:    llm.RoleUser,
 						Content: "Your previous response was cut off due to the token limit. Please continue from where you left off.",
 					}); err != nil {
-						return err
+						return llm.Usage{}, err
 					}
 				}
 				// Reset reply for the continuation response.
@@ -312,7 +313,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 			// turn ended with, so plugins can alert/log the turn-end summary.
 			if to.hooks != nil {
 				if _, herr := to.hooks.ResponseReady(ctx, "", true, finishReason, usage); herr != nil {
-					return herr
+					return llm.Usage{}, herr
 				}
 			}
 			slog.Info("turn completed",
@@ -321,7 +322,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				"completion_tokens", usage.CompletionTokens,
 				"total_tokens", usage.TotalTokens,
 			)
-			return nil
+			return usage, nil
 		}
 
 		// Execute tool calls serially and feed results back.
@@ -343,7 +344,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				var herr error
 				args, suppress, herr = to.hooks.ToolBefore(ctx, tc.Name, tc.ID, tc.Arguments)
 				if herr != nil {
-					return herr
+					return llm.Usage{}, herr
 				}
 				if suppress {
 					toolMsg := llm.Message{
@@ -354,7 +355,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 					req.Messages = append(req.Messages, toolMsg)
 					if sess != nil {
 						if err := sess.Append(toolMsg); err != nil {
-							return err
+							return llm.Usage{}, err
 						}
 					}
 					continue
@@ -464,7 +465,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 				var herr error
 				result, herr = to.hooks.ToolAfter(ctx, tc.Name, tc.ID, args, result, errText)
 				if herr != nil {
-					return herr
+					return llm.Usage{}, herr
 				}
 			}
 
@@ -508,7 +509,7 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 			// Persist the tool result.
 			if sess != nil {
 				if err := sess.Append(toolMsg); err != nil {
-					return err
+					return llm.Usage{}, err
 				}
 			}
 		}

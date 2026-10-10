@@ -104,6 +104,20 @@ type env struct {
 	gate       *permissions.Gate
 }
 
+// PromptStatus is the exit status of the last completed turn.
+type PromptStatus int
+
+const (
+	// PromptStatusUnknown means no turn has completed yet.
+	PromptStatusUnknown PromptStatus = iota
+	// PromptStatusOK means the last turn completed successfully.
+	PromptStatusOK
+	// PromptStatusError means the last turn ended with an error.
+	PromptStatusError
+	// PromptStatusCancelled means the last turn was cancelled by the user.
+	PromptStatusCancelled
+)
+
 // Handle is a fully assembled, ready-to-turn genie run. It owns the session
 // (and optionally a ledger) and every component a turn touches, and exposes
 // the locked read surface plus granular reconfiguration methods.
@@ -141,6 +155,11 @@ type Handle struct {
 	ledger *ledger.Ledger
 
 	degrade func(string)
+
+	// Token accumulation and prompt status for the idle prompt bar.
+	// Guarded by mu.
+	totalTokens    int
+	lastPromptStatus PromptStatus
 
 	mu  sync.RWMutex
 	cur env
@@ -622,6 +641,11 @@ func (h *Handle) Provider() string {
 	return cur.provider
 }
 
+// Cwd returns the working directory for this run.
+func (h *Handle) Cwd() string {
+	return h.opts.Cwd
+}
+
 // ProviderNames returns the declared provider names in order. A nil source
 // reports none.
 func (h *Handle) ProviderNames() []string {
@@ -692,8 +716,40 @@ func (h *Handle) Turn(ctx context.Context, prompt string, out, errOut io.Writer)
 	if ierr != nil {
 		slog.Error("failed to resolve instruction", "error", ierr)
 	}
-	return agent.RunTurn(ctx, cur.client, model, instruction, prompt, out, errOut,
+
+	usage, err := agent.RunTurn(ctx, cur.client, model, instruction, prompt, out, errOut,
 		sess, registry, h.ledger, h.opts.Cwd, opts...)
+
+	// Update token accumulator and prompt status on turn completion.
+	// Only completed turns count; in-flight turn is not counted.
+	// On error or cancel, we still record the usage if the turn completed,
+	// but the status reflects the outcome.
+	h.mu.Lock()
+	if err == nil {
+		h.totalTokens += usage.TotalTokens
+		h.lastPromptStatus = PromptStatusOK
+	} else if errors.Is(err, context.Canceled) {
+		h.lastPromptStatus = PromptStatusCancelled
+	} else {
+		h.lastPromptStatus = PromptStatusError
+	}
+	h.mu.Unlock()
+
+	return err
+}
+
+// TotalTokens returns the accumulated token count from completed turns.
+func (h *Handle) TotalTokens() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.totalTokens
+}
+
+// LastPromptStatus returns the exit status of the last completed turn.
+func (h *Handle) LastPromptStatus() PromptStatus {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.lastPromptStatus
 }
 
 // SetModel switches the requested/run model. An agent-declared model continues
