@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 
+# If stdin is not a terminal (e.g., piped from curl), save script to temp file and re-exec
+# This avoids issues with read commands consuming the piped script content.
+if [ ! -t 0 ]; then
+    TMP_SCRIPT=$(mktemp -t genie-install.XXXXXX)
+    cat > "$TMP_SCRIPT"
+    chmod +x "$TMP_SCRIPT"
+    exec bash "$TMP_SCRIPT" "$@"
+fi
+
 readonly SCRIPT_VERSION="1.0.0"
 readonly REPO_OWNER="okayest-dev"
 readonly REPO_NAME="genie"
