@@ -93,7 +93,8 @@ func Run(ctx context.Context, cfg *Config) error {
 	// Swap in the interactive negotiator: the deny-point gate and the
 	// request_permission tool both follow, so inline escalation prompts are
 	// byte-identical to pre-negotiation prompts.
-	cfg.Run.SetNegotiator(&interactiveNegotiator{lines: lines, out: cfg.Stdout, router: router})
+	promptOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "prompt")
+	cfg.Run.SetNegotiator(&interactiveNegotiator{lines: lines, out: promptOut, router: router})
 
 	for {
 		// Render the idle prompt bar
@@ -161,13 +162,13 @@ func parseInlineAgent(line string) (agentName, prompt string, ok bool) {
 // agent (or the default flow).
 func handleInlineAgent(ctx context.Context, agentName, prompt string, cfg *Config, router *interruptRouter) {
 	if prompt == "" {
-		fmt.Fprintf(cfg.Stderr, "genie: @%s requires a prompt\n", agentName)
+		fmt.Fprintf(cfg.roleWriter(cfg.Stderr, cfg.StderrProfile, "error"), "genie: @%s requires a prompt\n", agentName)
 		return
 	}
 
 	previous := cfg.Run.CurrentAgent()
 	if _, err := cfg.Run.SwitchAgent(agentName); err != nil {
-		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
+		fmt.Fprintf(cfg.roleWriter(cfg.Stderr, cfg.StderrProfile, "error"), "genie: %v\n", err)
 		return
 	}
 
@@ -261,7 +262,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		if len(pathParts) > 1 {
 			changeID = pathParts[1]
 		}
-		handleChanges(changeID, cfg, cfg.Run.Session().ID, cfg.Stdout)
+		handleChanges(changeID, cfg, cfg.Run.Session().ID)
 		return false
 
 	case "/task":
@@ -318,56 +319,60 @@ func notifySlashCommandCompleted(cmd string, cfg *Config) {
 
 // printHelp prints the main help text.
 func printHelp(cfg *Config) {
-	fmt.Fprintln(cfg.Stdout, "Commands:")
-	fmt.Fprintln(cfg.Stdout, "  /help                    show this help")
-	fmt.Fprintln(cfg.Stdout, "  /quit, /exit             exit the REPL")
-	fmt.Fprintln(cfg.Stdout, "  /new                     start a new session")
-	fmt.Fprintln(cfg.Stdout, "  /changes                 list change batches")
-	fmt.Fprintln(cfg.Stdout, "  /changes:<id>            show change details")
-	fmt.Fprintln(cfg.Stdout, "  /task                    show the active task and its lifecycle")
-	fmt.Fprintln(cfg.Stdout, "  /provider                list available providers (numbered)")
-	fmt.Fprintln(cfg.Stdout, "  /provider:<name|num>     switch to a provider by name or number")
-	fmt.Fprintln(cfg.Stdout, "  /model                   list available models (numbered)")
-	fmt.Fprintln(cfg.Stdout, "  /model:<id|num>          switch to a model by ID or number")
-	fmt.Fprintln(cfg.Stdout, "  /agent                   list available agents (numbered)")
-	fmt.Fprintln(cfg.Stdout, "  /agent:<name|num>        switch to an agent by name or number")
-	fmt.Fprintln(cfg.Stdout, "  /copilot                 manage Copilot credentials")
-	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:login      start device-flow login")
-	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:status     show credential status")
-	fmt.Fprintln(cfg.Stdout, "")
-	fmt.Fprintln(cfg.Stdout, "  @<name> <prompt>         one-shot agent switch")
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+	fmt.Fprintln(slashOut, "Commands:")
+	fmt.Fprintln(slashOut, "  /help                    show this help")
+	fmt.Fprintln(slashOut, "  /quit, /exit             exit the REPL")
+	fmt.Fprintln(slashOut, "  /new                     start a new session")
+	fmt.Fprintln(slashOut, "  /changes                 list change batches")
+	fmt.Fprintln(slashOut, "  /changes:<id>            show change details")
+	fmt.Fprintln(slashOut, "  /task                    show the active task and its lifecycle")
+	fmt.Fprintln(slashOut, "  /provider                list available providers (numbered)")
+	fmt.Fprintln(slashOut, "  /provider:<name|num>     switch to a provider by name or number")
+	fmt.Fprintln(slashOut, "  /model                   list available models (numbered)")
+	fmt.Fprintln(slashOut, "  /model:<id|num>          switch to a model by ID or number")
+	fmt.Fprintln(slashOut, "  /agent                   list available agents (numbered)")
+	fmt.Fprintln(slashOut, "  /agent:<name|num>        switch to an agent by name or number")
+	fmt.Fprintln(slashOut, "  /copilot                 manage Copilot credentials")
+	fmt.Fprintln(slashOut, "  /copilot:auth:login      start device-flow login")
+	fmt.Fprintln(slashOut, "  /copilot:auth:status     show credential status")
+	fmt.Fprintln(slashOut, "")
+	fmt.Fprintln(slashOut, "  @<name> <prompt>         one-shot agent switch")
 	if cmds := cfg.Run.Commands(); cmds != nil {
-		printPluginCommandsHelp(cmds, cfg.Stdout)
+		pluginOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "plugin")
+		printPluginCommandsHelp(cmds, pluginOut)
 	}
-	fmt.Fprintln(cfg.Stdout, "")
-	fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
+	fmt.Fprintln(slashOut, "")
+	fmt.Fprintln(slashOut, "Ctrl+C: quit at idle, cancel mid-turn")
 }
 
 // printCopilotHelp prints the copilot command help.
 func printCopilotHelp(cfg *Config) {
-	fmt.Fprintln(cfg.Stdout, "Usage: /copilot:auth:login|status [--host <domain>]")
-	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:login [--host github.com]  Start device-flow login")
-	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:status [--host github.com] Show credential status")
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+	fmt.Fprintln(slashOut, "Usage: /copilot:auth:login|status [--host <domain>]")
+	fmt.Fprintln(slashOut, "  /copilot:auth:login [--host github.com]  Start device-flow login")
+	fmt.Fprintln(slashOut, "  /copilot:auth:status [--host github.com] Show credential status")
 }
 
 // listProviders prints the declared providers and marks the session's current
 // one.
 func listProviders(cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	names := cfg.Run.ProviderNames()
 	if len(names) == 0 {
-		fmt.Fprintln(cfg.Stdout, "no providers configured")
+		fmt.Fprintln(slashOut, "no providers configured")
 		return
 	}
 	cur := cfg.Run.Provider()
-	fmt.Fprintln(cfg.Stdout, "Available providers:")
+	fmt.Fprintln(slashOut, "Available providers:")
 	for i, name := range names {
 		marker := "  "
 		if name == cur {
 			marker = "* "
 		}
-		fmt.Fprintf(cfg.Stdout, "%s%d: %s\n", marker, i+1, name)
+		fmt.Fprintf(slashOut, "%s%d: %s\n", marker, i+1, name)
 	}
-	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cur)
+	fmt.Fprintf(slashOut, "\nCurrent: %s\n", cur)
 }
 
 // switchProvider switches the run to the named provider. The transcript
@@ -375,32 +380,34 @@ func listProviders(cfg *Config) {
 // the new provider's default. An unknown name prints the available set and
 // leaves the session untouched.
 func switchProvider(target string, cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	names := cfg.Run.ProviderNames()
 	resolved := resolveByNameOrIndex(target, names)
 	if resolved == "" {
-		fmt.Fprintf(cfg.Stdout, "genie: no such provider: %s (available: %s)\n", target, strings.Join(names, ", "))
+		fmt.Fprintf(slashOut, "genie: no such provider: %s (available: %s)\n", target, strings.Join(names, ", "))
 		return
 	}
 	if err := cfg.Run.SwitchProvider(resolved); err != nil {
-		fmt.Fprintf(cfg.Stdout, "%s\n", err)
+		fmt.Fprintf(slashOut, "%s\n", err)
 		return
 	}
-	fmt.Fprintf(cfg.Stdout, "provider: %s (model: %s)\n", cfg.Run.Provider(), cfg.Run.Model())
+	fmt.Fprintf(slashOut, "provider: %s (model: %s)\n", cfg.Run.Provider(), cfg.Run.Model())
 }
 
 // listModels prints the active provider's model catalog, marking the current
 // model. A catalog failure degrades to the active model alone.
 func listModels(ctx context.Context, cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	models, err := activeCatalog(ctx, cfg)
 	if err != nil {
 		// Degrade: show the active model. Streaming still runs on it.
-		fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
-		fmt.Fprintln(cfg.Stdout, "Available models:")
-		fmt.Fprintf(cfg.Stdout, "  1: * %s\n", cfg.Run.Model())
-		fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Run.Model())
+		fmt.Fprintf(cfg.roleWriter(cfg.Stderr, cfg.StderrProfile, "error"), "Error: fetching model catalog: %v\n", err)
+		fmt.Fprintln(slashOut, "Available models:")
+		fmt.Fprintf(slashOut, "  1: * %s\n", cfg.Run.Model())
+		fmt.Fprintf(slashOut, "\nCurrent: %s\n", cfg.Run.Model())
 		return
 	}
-	fmt.Fprintln(cfg.Stdout, "Available models:")
+	fmt.Fprintln(slashOut, "Available models:")
 	modelIDs := make([]string, len(models))
 	for i, m := range models {
 		marker := "  "
@@ -408,17 +415,18 @@ func listModels(ctx context.Context, cfg *Config) {
 			marker = "* "
 		}
 		modelIDs[i] = m.ID
-		fmt.Fprintf(cfg.Stdout, "%s%d: %s\n", marker, i+1, m.ID)
+		fmt.Fprintf(slashOut, "%s%d: %s\n", marker, i+1, m.ID)
 	}
-	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Run.Model())
+	fmt.Fprintf(slashOut, "\nCurrent: %s\n", cfg.Run.Model())
 }
 
 // setModel switches the run model, validating it against the active
 // provider's catalog.
 func setModel(ctx context.Context, target string, cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	models, err := activeCatalog(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
+		fmt.Fprintf(cfg.roleWriter(cfg.Stderr, cfg.StderrProfile, "error"), "Error: fetching model catalog: %v\n", err)
 		return
 	}
 	modelIDs := make([]string, len(models))
@@ -427,11 +435,11 @@ func setModel(ctx context.Context, target string, cfg *Config) {
 	}
 	resolved := resolveByNameOrIndex(target, modelIDs)
 	if resolved == "" {
-		fmt.Fprintf(cfg.Stdout, "genie: no such model: %s\n", target)
+		fmt.Fprintf(slashOut, "genie: no such model: %s\n", target)
 		return
 	}
 	cfg.Run.SetModel(resolved)
-	fmt.Fprintf(cfg.Stdout, "model: %s\n", resolved)
+	fmt.Fprintf(slashOut, "model: %s\n", resolved)
 }
 
 // activeCatalog returns the active provider's model catalog from the run's
@@ -442,18 +450,19 @@ func activeCatalog(ctx context.Context, cfg *Config) ([]llm.Model, error) {
 
 // listAgents prints the available agents and marks the current one.
 func listAgents(cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	reg := cfg.Run.AgentReg()
 	if reg == nil {
-		fmt.Fprintln(cfg.Stdout, "no agents configured")
+		fmt.Fprintln(slashOut, "no agents configured")
 		return
 	}
 	names := reg.List()
 	if len(names) == 0 {
-		fmt.Fprintln(cfg.Stdout, "no agents configured")
+		fmt.Fprintln(slashOut, "no agents configured")
 		return
 	}
 	cur := cfg.Run.CurrentAgent()
-	fmt.Fprintln(cfg.Stdout, "Available agents:")
+	fmt.Fprintln(slashOut, "Available agents:")
 	for i, name := range names {
 		marker := "  "
 		if cur != nil && cur.Name == name {
@@ -468,12 +477,12 @@ func listAgents(cfg *Config) {
 		if def != nil && def.Tools != nil {
 			toolsStr = fmt.Sprintf("  tools: %s", strings.Join(def.Tools, ", "))
 		}
-		fmt.Fprintf(cfg.Stdout, "%s%d: %s%s%s\n", marker, i+1, name, modelStr, toolsStr)
+		fmt.Fprintf(slashOut, "%s%d: %s%s%s\n", marker, i+1, name, modelStr, toolsStr)
 	}
 	if cur != nil {
-		fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cur.Name)
+		fmt.Fprintf(slashOut, "\nCurrent: %s\n", cur.Name)
 	} else {
-		fmt.Fprintln(cfg.Stdout, "\nCurrent: (default)")
+		fmt.Fprintln(slashOut, "\nCurrent: (default)")
 	}
 }
 
@@ -481,19 +490,20 @@ func listAgents(cfg *Config) {
 // the active registry and its [permissions] base replaces the global base
 // wholly.
 func switchAgent(target string, cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	reg := cfg.Run.AgentReg()
 	if reg == nil {
-		fmt.Fprintln(cfg.Stderr, "no agents configured")
+		fmt.Fprintln(cfg.roleWriter(cfg.Stderr, cfg.StderrProfile, "error"), "no agents configured")
 		return
 	}
 	names := reg.List()
 	resolved := resolveByNameOrIndex(target, names)
 	if resolved == "" {
-		fmt.Fprintf(cfg.Stderr, "genie: no such agent: %s\n", target)
+		fmt.Fprintf(slashOut, "genie: no such agent: %s\n", target)
 		return
 	}
 	if _, err := cfg.Run.SwitchAgent(resolved); err != nil {
-		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
+		fmt.Fprintf(slashOut, "genie: %v\n", err)
 		return
 	}
 	resolvedAgent := cfg.Run.CurrentAgent()
@@ -505,7 +515,7 @@ func switchAgent(target string, cfg *Config) {
 	if resolvedAgent.Model != "" {
 		modelStr = fmt.Sprintf(" (model: %s)", resolvedAgent.Model)
 	}
-	fmt.Fprintf(cfg.Stdout, "switched to %s%s%s\n", resolvedAgent.Name, modelStr, toolsStr)
+	fmt.Fprintf(slashOut, "switched to %s%s%s\n", resolvedAgent.Name, modelStr, toolsStr)
 }
 
 // handlePluginCommand routes /<plugin>[:<command>] [args...] to the plugin command source.
@@ -527,24 +537,26 @@ func handlePluginCommand(line string, cmds plugin.CommandSource, cfg *Config) bo
 		command = pathParts[1]
 	}
 
+	pluginOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "plugin")
+
 	if command == "" {
-		return handlePluginBare(pluginName, cmds, cfg)
+		return handlePluginBare(pluginName, cmds, cfg, pluginOut)
 	}
 
 	result, err := cmds.RunCommand(pluginName, command, args)
 	if err != nil {
-		fmt.Fprintf(cfg.Stdout, "%s\n", formatPluginError(pluginName, command, err))
+		fmt.Fprintf(pluginOut, "%s\n", formatPluginError(pluginName, command, err))
 		return true
 	}
 
 	if result.Text != "" {
-		fmt.Fprintln(cfg.Stdout, result.Text)
+		fmt.Fprintln(pluginOut, result.Text)
 	} else if result.Data != nil {
 		b, err := json.Marshal(result.Data)
 		if err != nil {
 			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
 		} else {
-			fmt.Fprintln(cfg.Stdout, string(b))
+			fmt.Fprintln(pluginOut, string(b))
 		}
 	}
 	return true
@@ -552,25 +564,25 @@ func handlePluginCommand(line string, cmds plugin.CommandSource, cfg *Config) bo
 
 // handlePluginBare handles a bare /<plugin> by showing curated help or listing
 // the plugin's commands.
-func handlePluginBare(pluginName string, cmds plugin.CommandSource, cfg *Config) bool {
+func handlePluginBare(pluginName string, cmds plugin.CommandSource, cfg *Config, pluginOut io.Writer) bool {
 	text, err := cmds.Help(pluginName, "")
 	if err == nil && text != "" {
-		fmt.Fprintln(cfg.Stdout, text)
+		fmt.Fprintln(pluginOut, text)
 		return true
 	}
 
 	cmds2, err := cmds.ListCommands(pluginName)
 	if err != nil {
-		fmt.Fprintf(cfg.Stdout, "%s\n", formatPluginError(pluginName, "", err))
+		fmt.Fprintf(pluginOut, "%s\n", formatPluginError(pluginName, "", err))
 		return true
 	}
 	if len(cmds2) == 0 {
-		fmt.Fprintf(cfg.Stdout, "%s has no commands\n", pluginName)
+		fmt.Fprintf(pluginOut, "%s has no commands\n", pluginName)
 		return true
 	}
-	fmt.Fprintf(cfg.Stdout, "%s commands:\n", pluginName)
+	fmt.Fprintf(pluginOut, "%s commands:\n", pluginName)
 	for _, c := range cmds2 {
-		fmt.Fprintf(cfg.Stdout, "  %s  %s\n", c.Name, c.Description)
+		fmt.Fprintf(pluginOut, "  %s  %s\n", c.Name, c.Description)
 	}
 	return true
 }
@@ -652,7 +664,8 @@ func fileNames(files []ledger.File) string {
 }
 
 // handleChanges handles the /changes slash command.
-func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
+func handleChanges(args string, cfg *Config, sessionID string) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	args = strings.TrimSpace(args)
 	if args == "" {
 		batches, err := ledger.LoadBatches(cfg.SessionDir, sessionID)
@@ -661,7 +674,7 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 			return
 		}
 		if len(batches) == 0 {
-			fmt.Fprintln(out, "no changes")
+			fmt.Fprintln(slashOut, "no changes")
 			return
 		}
 		for _, b := range batches {
@@ -669,7 +682,7 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 			for _, f := range b.Files {
 				totalDelta += f.Delta.Added + f.Delta.Removed
 			}
-			fmt.Fprintf(out, "%03d  %s  %d lines  %s\n",
+			fmt.Fprintf(slashOut, "%03d  %s  %d lines  %s\n",
 				b.Seq, b.Time, totalDelta, fileNames(b.Files))
 		}
 		return
@@ -677,7 +690,7 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 
 	id, err := strconv.Atoi(args)
 	if err != nil {
-		fmt.Fprintf(out, "genie: invalid change id: %s\n", args)
+		fmt.Fprintf(slashOut, "genie: invalid change id: %s\n", args)
 		return
 	}
 	batch, err := ledger.LoadBatchByID(cfg.SessionDir, sessionID, id)
@@ -686,58 +699,59 @@ func handleChanges(args string, cfg *Config, sessionID string, out io.Writer) {
 		return
 	}
 	if batch == nil {
-		fmt.Fprintf(out, "genie: no such change id: %d\n", id)
+		fmt.Fprintf(slashOut, "genie: no such change id: %d\n", id)
 		return
 	}
 	for _, f := range batch.Files {
-		fmt.Fprintf(out, "--- %s (%s)\n", f.Path, f.Ops)
-		fmt.Fprintf(out, "+++ delta: +%d/-%d\n", f.Delta.Added, f.Delta.Removed)
+		fmt.Fprintf(slashOut, "--- %s (%s)\n", f.Path, f.Ops)
+		fmt.Fprintf(slashOut, "+++ delta: +%d/-%d\n", f.Delta.Added, f.Delta.Removed)
 		if strings.Contains(f.Diff, "[binary]") {
-			fmt.Fprintln(out, "[binary file]")
+			fmt.Fprintln(slashOut, "[binary file]")
 		} else if strings.Contains(f.Diff, "[truncated") {
-			fmt.Fprintf(out, "%s\n", f.Diff)
+			fmt.Fprintf(slashOut, "%s\n", f.Diff)
 		} else {
-			fmt.Fprint(out, f.Diff)
+			fmt.Fprint(slashOut, f.Diff)
 		}
-		fmt.Fprintln(out)
+		fmt.Fprintln(slashOut)
 	}
 }
 
 // handleTask shows the active task and its lifecycle record.
 func handleTask(cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 	state := cfg.Run.TaskState()
 	active := state.Get()
 	if active == nil {
-		fmt.Fprintln(cfg.Stdout, "no active task")
+		fmt.Fprintln(slashOut, "no active task")
 		return
 	}
 
-	fmt.Fprintf(cfg.Stdout, "Active Task: %s\n", active.Task.ID)
-	fmt.Fprintf(cfg.Stdout, "Title:       %s\n", active.Task.Title)
-	fmt.Fprintf(cfg.Stdout, "Type:        %s\n", active.Task.Type)
-	fmt.Fprintf(cfg.Stdout, "Labels:      %v\n", active.Task.Labels)
-	fmt.Fprintf(cfg.Stdout, "Claimed at:  %s\n", active.ClaimedAt.Format(time.RFC3339))
+	fmt.Fprintf(slashOut, "Active Task: %s\n", active.Task.ID)
+	fmt.Fprintf(slashOut, "Title:       %s\n", active.Task.Title)
+	fmt.Fprintf(slashOut, "Type:        %s\n", active.Task.Type)
+	fmt.Fprintf(slashOut, "Labels:      %v\n", active.Task.Labels)
+	fmt.Fprintf(slashOut, "Claimed at:  %s\n", active.ClaimedAt.Format(time.RFC3339))
 
 	// Progress checkpoints (from task.progress, og-wm7.1.4)
-	fmt.Fprintf(cfg.Stdout, "Progress checkpoints: (not yet implemented — see og-wm7.1.4)\n")
+	fmt.Fprintf(slashOut, "Progress checkpoints: (not yet implemented — see og-wm7.1.4)\n")
 
 	// Lifecycle history from session transcript markers
-	fmt.Fprintf(cfg.Stdout, "Lifecycle history:\n")
+	fmt.Fprintf(slashOut, "Lifecycle history:\n")
 	sess := cfg.Run.Session()
 	if sess != nil {
 		lines, err := sess.Lines()
 		if err != nil {
-			fmt.Fprintf(cfg.Stdout, "  (error reading session: %v)\n", err)
+			fmt.Fprintf(slashOut, "  (error reading session: %v)\n", err)
 		} else {
 			found := false
 			for _, ln := range lines {
 				if meta, ok := ln.Metadata["task_state"]; ok {
 					found = true
-					fmt.Fprintf(cfg.Stdout, "  %s\n", meta)
+					fmt.Fprintf(slashOut, "  %s\n", meta)
 				}
 			}
 			if !found {
-				fmt.Fprintf(cfg.Stdout, "  (no task state markers in transcript)\n")
+				fmt.Fprintf(slashOut, "  (no task state markers in transcript)\n")
 			}
 		}
 	}
@@ -763,19 +777,21 @@ func handleCopilotCommand(ctx context.Context, subPath, args string, cfg *Config
 		}
 	}
 
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+
 	switch subcmd {
 	case "login":
-		handleCopilotLogin(ctx, host, cfg)
+		handleCopilotLogin(ctx, host, cfg, slashOut)
 	case "status":
-		handleCopilotStatus(host, cfg)
+		handleCopilotStatus(host, cfg, slashOut)
 	default:
-		fmt.Fprintf(cfg.Stdout, "unknown copilot auth command: %s (try login|status)\n", subcmd)
+		fmt.Fprintf(slashOut, "unknown copilot auth command: %s (try login|status)\n", subcmd)
 	}
 }
 
 // handleCopilotLogin runs the device-flow login for the given host.
-func handleCopilotLogin(ctx context.Context, host string, cfg *Config) {
-	fmt.Fprintf(cfg.Stdout, "Starting device-flow login for %s...\n", host)
+func handleCopilotLogin(ctx context.Context, host string, cfg *Config, slashOut io.Writer) {
+	fmt.Fprintf(slashOut, "Starting device-flow login for %s...\n", host)
 
 	dcr, err := copilot.StartDeviceFlow(ctx, host)
 	if err != nil {
@@ -783,22 +799,22 @@ func handleCopilotLogin(ctx context.Context, host string, cfg *Config) {
 		return
 	}
 
-	fmt.Fprintf(cfg.Stdout, "\nOpen %s and enter code: %s\n\n", dcr.VerificationURI, dcr.UserCode)
+	fmt.Fprintf(slashOut, "\nOpen %s and enter code: %s\n\n", dcr.VerificationURI, dcr.UserCode)
 
 	// Try to open browser
 	if err := copilot.OpenBrowser(dcr.VerificationURI); err != nil {
-		fmt.Fprintf(cfg.Stdout, "(Could not open browser automatically: %v)\n", err)
+		fmt.Fprintf(slashOut, "(Could not open browser automatically: %v)\n", err)
 	}
 
-	fmt.Fprint(cfg.Stdout, "Waiting for authorization...")
+	fmt.Fprint(slashOut, "Waiting for authorization...")
 
 	tr, err := copilot.PollForToken(ctx, host, dcr.DeviceCode, dcr.Interval)
 	if err != nil {
-		fmt.Fprintf(cfg.Stdout, "\nError: %v\n", err)
+		fmt.Fprintf(slashOut, "\nError: %v\n", err)
 		return
 	}
 
-	fmt.Fprint(cfg.Stdout, "\n")
+	fmt.Fprint(slashOut, "\n")
 
 	// Fetch user info
 	ui, err := copilot.FetchUserInfo(ctx, host, tr.AccessToken)
@@ -814,18 +830,18 @@ func handleCopilotLogin(ctx context.Context, host string, cfg *Config) {
 		return
 	}
 
-	fmt.Fprintf(cfg.Stdout, "Logged in as %s on %s\n", ui.Login, host)
-	fmt.Fprintf(cfg.Stdout, "Credentials stored at %s/copilot/credentials.json\n", xdgDataHome)
+	fmt.Fprintf(slashOut, "Logged in as %s on %s\n", ui.Login, host)
+	fmt.Fprintf(slashOut, "Credentials stored at %s/copilot/credentials.json\n", xdgDataHome)
 }
 
 // handleCopilotStatus shows the credential status for the given host.
-func handleCopilotStatus(host string, cfg *Config) {
+func handleCopilotStatus(host string, cfg *Config, slashOut io.Writer) {
 	xdgDataHome := copilot.DefaultXDGDataHome()
 	path := copilot.StorePath(xdgDataHome)
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(cfg.Stdout, "No credentials found at %s\n", path)
+		fmt.Fprintf(slashOut, "No credentials found at %s\n", path)
 		return
 	}
 
@@ -837,19 +853,19 @@ func handleCopilotStatus(host string, cfg *Config) {
 
 	entry, ok := store.Hosts[host]
 	if !ok {
-		fmt.Fprintf(cfg.Stdout, "No credentials for host %s\n", host)
+		fmt.Fprintf(slashOut, "No credentials for host %s\n", host)
 		return
 	}
 
-	fmt.Fprintf(cfg.Stdout, "Host: %s\n", host)
-	fmt.Fprintf(cfg.Stdout, "User: %s\n", entry.User)
-	fmt.Fprintf(cfg.Stdout, "Updated: %s\n", entry.UpdatedAt)
+	fmt.Fprintf(slashOut, "Host: %s\n", host)
+	fmt.Fprintf(slashOut, "User: %s\n", entry.User)
+	fmt.Fprintf(slashOut, "Updated: %s\n", entry.UpdatedAt)
 	if entry.OAuthToken != "" {
 		// Show only prefix for security
 		token := entry.OAuthToken
 		if len(token) > 8 {
 			token = token[:8] + "..."
 		}
-		fmt.Fprintf(cfg.Stdout, "OAuth Token: %s\n", token)
+		fmt.Fprintf(slashOut, "OAuth Token: %s\n", token)
 	}
 }

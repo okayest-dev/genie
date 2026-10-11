@@ -219,8 +219,8 @@ func TestHandleChangesListsBatches(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	cfg := &Config{SessionDir: dir, Stderr: &bytes.Buffer{}}
-	handleChanges("", cfg, sessionID, &stdout)
+	cfg := &Config{SessionDir: dir, Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	handleChanges("", cfg, sessionID)
 
 	out := stdout.String()
 	if !strings.Contains(out, "foo.txt") {
@@ -250,8 +250,8 @@ func TestHandleChangesShowBatch(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	cfg := &Config{SessionDir: dir, Stderr: &bytes.Buffer{}}
-	handleChanges("0", cfg, sessionID, &stdout)
+	cfg := &Config{SessionDir: dir, Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	handleChanges("0", cfg, sessionID)
 
 	out := stdout.String()
 	if !strings.Contains(out, "foo.txt") {
@@ -267,8 +267,8 @@ func TestHandleChangesShowBatch(t *testing.T) {
 
 func TestHandleChangesBatchNotFound(t *testing.T) {
 	var stdout bytes.Buffer
-	cfg := &Config{SessionDir: t.TempDir(), Stderr: &bytes.Buffer{}}
-	handleChanges("0", cfg, "nonexistent", &stdout)
+	cfg := &Config{SessionDir: t.TempDir(), Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	handleChanges("0", cfg, "nonexistent")
 	if !strings.Contains(stdout.String(), "no such change id: 0") {
 		t.Errorf("output = %q, want 'no such change id: 0'", stdout.String())
 	}
@@ -276,8 +276,8 @@ func TestHandleChangesBatchNotFound(t *testing.T) {
 
 func TestHandleChangesInvalidID(t *testing.T) {
 	var stdout bytes.Buffer
-	cfg := &Config{SessionDir: t.TempDir(), Stderr: &bytes.Buffer{}}
-	handleChanges("abc", cfg, "test", &stdout)
+	cfg := &Config{SessionDir: t.TempDir(), Stdout: &stdout, Stderr: &bytes.Buffer{}}
+	handleChanges("abc", cfg, "test")
 	if !strings.Contains(stdout.String(), "invalid change id: abc") {
 		t.Errorf("output = %q, want 'invalid change id: abc'", stdout.String())
 	}

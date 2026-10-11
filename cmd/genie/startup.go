@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/okayest-dev/genie/internal/llm"
+	"github.com/okayest-dev/genie/internal/style"
+	"github.com/okayest-dev/genie/internal/theme"
 )
 
 // selectStartupProvider resolves the provider the harness boots on. An
@@ -15,7 +17,7 @@ import (
 // -p run falls back to the first declared provider (the registry's
 // deterministic sorted order) and warns on stderr. With no declared providers
 // anywhere, startup fails in both modes with an error naming the requirement.
-func selectStartupProvider(reg *llm.Registry, selected string, interactive bool, stdin io.Reader, stdout, stderr io.Writer) (string, error) {
+func selectStartupProvider(reg *llm.Registry, selected string, interactive bool, stdin io.Reader, stdout, stderr io.Writer, th *theme.Theme, stdoutProfile, stderrProfile *style.RenderProfile) (string, error) {
 	if selected != "" {
 		return selected, nil
 	}
@@ -24,10 +26,12 @@ func selectStartupProvider(reg *llm.Registry, selected string, interactive bool,
 		return "", errors.New("no active provider: no declared providers — declare at least one [providers.*] table in config")
 	}
 	if interactive {
-		return promptProviderChoice(names, stdin, stdout)
+		return promptProviderChoice(names, stdin, stdout, th, stdoutProfile)
 	}
 	first := names[0]
-	fmt.Fprintf(stderr, "warning: no provider selected, using first declared provider %q\n", first)
+	// warning role for the fallback warning
+	warnOut := th.RoleWriter(stderr, stderrProfile, "warning")
+	fmt.Fprintf(warnOut, "warning: no provider selected, using first declared provider %q\n", first)
 	return first, nil
 }
 
@@ -36,13 +40,15 @@ func selectStartupProvider(reg *llm.Registry, selected string, interactive bool,
 // reads stdin next. An exact declared name picks it. An unknown name or an
 // empty line re-prompts. EOF aborts with an error: no more input can arrive,
 // so there is no point asking again.
-func promptProviderChoice(names []string, stdin io.Reader, stdout io.Writer) (string, error) {
+func promptProviderChoice(names []string, stdin io.Reader, stdout io.Writer, th *theme.Theme, stdoutProfile *style.RenderProfile) (string, error) {
+	// pick role for the provider selection dialog
+	pickOut := th.RoleWriter(stdout, stdoutProfile, "pick")
 	for {
-		fmt.Fprintln(stdout, "Available providers:")
+		fmt.Fprintln(pickOut, "Available providers:")
 		for _, name := range names {
-			fmt.Fprintf(stdout, "  %s\n", name)
+			fmt.Fprintf(pickOut, "  %s\n", name)
 		}
-		fmt.Fprint(stdout, "Select provider: ")
+		fmt.Fprint(pickOut, "Select provider: ")
 		line, readErr := readPromptLine(stdin)
 		choice := strings.TrimSpace(line)
 		for _, name := range names {
@@ -57,7 +63,7 @@ func promptProviderChoice(names []string, stdin io.Reader, stdout io.Writer) (st
 			return "", fmt.Errorf("no such provider: %q", choice)
 		}
 		if choice != "" {
-			fmt.Fprintf(stdout, "no such provider: %s\n", choice)
+			fmt.Fprintf(pickOut, "no such provider: %s\n", choice)
 		}
 	}
 }

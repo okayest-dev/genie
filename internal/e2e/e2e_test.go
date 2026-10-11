@@ -181,10 +181,26 @@ func assertCleanFailure(t *testing.T, stdout, stderr string, code int, wantStder
 	if stdout != "" {
 		t.Errorf("stdout = %q, want empty on failure", stdout)
 	}
-	// The boot session notice and code tool disabled warning precede the
-	// failure line; skip them when checking that stderr opens with the Error:
-	// banner.
-	firstLine := stderr
+	// The boot session notice, code tool disabled warning, slog INFO lines,
+	// and warnings precede the failure line; skip them when checking that
+	// stderr opens with the Error: banner. Also strip ANSI escape codes
+	// (styling) from these lines.
+	stripANSI := func(s string) string {
+		// Remove ESC[...m sequences
+		for {
+			start := strings.Index(s, "\x1b[")
+			if start == -1 {
+				break
+			}
+			end := strings.IndexByte(s[start:], 'm')
+			if end == -1 {
+				break
+			}
+			s = s[:start] + s[start+end+1:]
+		}
+		return s
+	}
+	firstLine := stripANSI(stderr)
 	for {
 		if strings.HasPrefix(firstLine, "session: ") {
 			if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
@@ -193,6 +209,19 @@ func assertCleanFailure(t *testing.T, stdout, stderr string, code int, wantStder
 			continue
 		}
 		if strings.HasPrefix(firstLine, "code tool disabled: ") {
+			if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+				firstLine = firstLine[idx+1:]
+			}
+			continue
+		}
+		if strings.HasPrefix(firstLine, "warning: ") {
+			if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
+				firstLine = firstLine[idx+1:]
+			}
+			continue
+		}
+		// Skip slog lines (timestamp + level + message)
+		if len(firstLine) >= 20 && firstLine[4] == '/' && firstLine[7] == '/' && firstLine[10] == ' ' {
 			if idx := strings.IndexByte(firstLine, '\n'); idx >= 0 {
 				firstLine = firstLine[idx+1:]
 			}

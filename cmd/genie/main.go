@@ -152,8 +152,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	debug = boolPtr(*debug || debugEnv)
 	verbose = boolPtr(*verbose || *debug)
 
-	configureSlog(stderr, *verbose, *debug)
-
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -164,6 +162,29 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+
+	// Assemble the render surface (theme + per-writer profiles) early so
+	// all startup output (provider pick, warnings, slog) can be styled.
+	th, err := cfg.LoadTheme()
+	if err != nil {
+		fmt.Fprintf(stderr, "Error loading theme: %v\n", err)
+		return 1
+	}
+	env := buildEnv()
+	stdoutProfile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
+		return 1
+	}
+	stderrProfile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
+		return 1
+	}
+
+	// Configure slog with the log role writer so all structured logs are styled.
+	logOut := th.RoleWriter(stderr, stderrProfile, "log")
+	configureSlog(logOut, *verbose, *debug)
 
 	// Permanent grants persist to the config file; if the path cannot be
 	// resolved they stay in-memory for the run. The effective-policy store
@@ -191,8 +212,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+	// warning role for skill pool warnings
+	warnOut := th.RoleWriter(stderr, stderrProfile, "warning")
 	for _, w := range poolWarns {
-		fmt.Fprintf(stderr, "warning: %s\n", w.Message)
+		fmt.Fprintf(warnOut, "warning: %s\n", w.Message)
 	}
 	skillNames := skill.Names(skillPool)
 
@@ -219,37 +242,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// model are resolved inside run.New — the registry is only the named
 	// provider surface here.
 	reg := llm.NewRegistry(cfg.Providers)
-	provider, err := selectStartupProvider(reg, cfg.Provider, *promptFlag == "", os.Stdin, stdout, stderr)
+	provider, err := selectStartupProvider(reg, cfg.Provider, *promptFlag == "", os.Stdin, stdout, stderr, th, stdoutProfile, stderrProfile)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
-		return 1
-	}
-
-	// Assemble the run handle once; the REPL and -p share it. run.New owns
-	// every derivable component (store, tools, skills, plugins, seams, tokens,
-	// modelinfo, session, ledger, boot provider) and applies the agent's
-	// permissions base and model precedence.
-	//
-	// The render surface (loaded theme + per-writer profiles) feeds both the
-	// prompt bar and the live role styling of the turn surface (model stream,
-	// tool frames, turn errors, the cancelled notice). It is assembled before
-	// the handle so the run can style its own turn output; a failure here
-	// fails startup fast — a bad theme is a config error, not a runtime one
-	// (og-2ep).
-	th, err := cfg.LoadTheme()
-	if err != nil {
-		fmt.Fprintf(stderr, "Error loading theme: %v\n", err)
-		return 1
-	}
-	env := buildEnv()
-	stdoutProfile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stdout)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
-		return 1
-	}
-	stderrProfile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stderr)
-	if err != nil {
-		fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
 		return 1
 	}
 
@@ -265,7 +260,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		AgentReg:       agentReg,
 		Negotiator:     headlessNeg,
 		PermanentSink:  permSink,
-		OnUsageDegrade: func(msg string) { fmt.Fprintf(stderr, "%s\n", msg) },
+		OnUsageDegrade: func(msg string) {
+			warnOut := th.RoleWriter(stderr, stderrProfile, "warning")
+			fmt.Fprintf(warnOut, "%s\n", msg)
+		},
 		WithLedger:     true,
 		SkillPool:      skillPool,
 		Theme:          th,

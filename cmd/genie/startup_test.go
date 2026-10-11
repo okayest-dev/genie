@@ -9,7 +9,19 @@ import (
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/permissions"
+	"github.com/okayest-dev/genie/internal/style"
+	"github.com/okayest-dev/genie/internal/theme"
 )
+
+func testThemeAndProfiles(t *testing.T) (*theme.Theme, *style.RenderProfile, *style.RenderProfile) {
+	th, err := theme.Load("classic", "/tmp")
+	if err != nil {
+		t.Fatalf("theme.Load: %v", err)
+	}
+	stdoutProfile := &style.RenderProfile{IsTTY: true, ColourProfile: style.ColourProfileTrueColor, GlyphTier: style.GlyphTierNerd, Width: 80}
+	stderrProfile := &style.RenderProfile{IsTTY: true, ColourProfile: style.ColourProfileTrueColor, GlyphTier: style.GlyphTierNerd, Width: 80}
+	return th, stdoutProfile, stderrProfile
+}
 
 // TestRegistrySeededFromConfigResolvesDefaults is the integration seam: the
 // parsed config tables seed the registry directly and boot the named provider
@@ -39,12 +51,13 @@ func TestRegistrySeededFromConfigResolvesDefaults(t *testing.T) {
 // TestSelectStartupProviderExplicitWins: an explicitly selected provider is
 // returned as-is in both modes — no prompt, no fallback, no warning.
 func TestSelectStartupProviderExplicitWins(t *testing.T) {
+	th, stdoutProfile, stderrProfile := testThemeAndProfiles(t)
 	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen": {Wire: "openai", Model: "big-pickle"},
 	})
 	for _, interactive := range []bool{true, false} {
 		var stderr bytes.Buffer
-		picked, err := selectStartupProvider(r, "zen", interactive, strings.NewReader(""), io.Discard, &stderr)
+		picked, err := selectStartupProvider(r, "zen", interactive, strings.NewReader(""), io.Discard, &stderr, th, stdoutProfile, stderrProfile)
 		if err != nil {
 			t.Fatalf("interactive=%v: selectStartupProvider: %v", interactive, err)
 		}
@@ -60,11 +73,12 @@ func TestSelectStartupProviderExplicitWins(t *testing.T) {
 // TestSelectStartupProviderInteractivePrompts: with the selection key unset,
 // an interactive run prompts for a pick from the declared set and returns it.
 func TestSelectStartupProviderInteractivePrompts(t *testing.T) {
+	th, stdoutProfile, stderrProfile := testThemeAndProfiles(t)
 	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen": {Wire: "openai", Model: "big-pickle"},
 	})
 	var stdout bytes.Buffer
-	picked, err := selectStartupProvider(r, "", true, strings.NewReader("zen\n"), &stdout, io.Discard)
+	picked, err := selectStartupProvider(r, "", true, strings.NewReader("zen\n"), &stdout, io.Discard, th, stdoutProfile, stderrProfile)
 	if err != nil {
 		t.Fatalf("selectStartupProvider: %v", err)
 	}
@@ -80,13 +94,14 @@ func TestSelectStartupProviderInteractivePrompts(t *testing.T) {
 // -p rule: with no selection, the run starts on the first declared provider —
 // the registry's deterministic sorted order — and warns on stderr naming it.
 func TestSelectStartupProviderOneShotFallsBackToFirstDeclared(t *testing.T) {
+	th, stdoutProfile, stderrProfile := testThemeAndProfiles(t)
 	r := llm.NewRegistry(map[string]llm.Provider{
 		"zen":   {Wire: "openai", Model: "zen-model"},
 		"alpha": {Wire: "openai", Model: "alpha-model"},
 		"mid":   {Wire: "openai", Model: "mid-model"},
 	})
 	var stderr bytes.Buffer
-	picked, err := selectStartupProvider(r, "", false, nil, io.Discard, &stderr)
+	picked, err := selectStartupProvider(r, "", false, nil, io.Discard, &stderr, th, stdoutProfile, stderrProfile)
 	if err != nil {
 		t.Fatalf("selectStartupProvider: %v", err)
 	}
@@ -103,9 +118,10 @@ func TestSelectStartupProviderOneShotFallsBackToFirstDeclared(t *testing.T) {
 // shipped defaults make this unreachable through config alone, so it is pinned
 // at the unit seam on an empty registry.
 func TestSelectStartupProviderZeroProvidersError(t *testing.T) {
+	th, stdoutProfile, stderrProfile := testThemeAndProfiles(t)
 	r := llm.NewRegistry(map[string]llm.Provider{})
 	for _, interactive := range []bool{true, false} {
-		_, err := selectStartupProvider(r, "", interactive, strings.NewReader(""), io.Discard, io.Discard)
+		_, err := selectStartupProvider(r, "", interactive, strings.NewReader(""), io.Discard, io.Discard, th, stdoutProfile, stderrProfile)
 		if err == nil {
 			t.Fatalf("interactive=%v: selectStartupProvider should error with no declared providers", interactive)
 		}
@@ -120,9 +136,10 @@ func TestSelectStartupProviderZeroProvidersError(t *testing.T) {
 // TestPromptProviderChoiceListsAndPicks: the prompt lists every declared
 // provider, asks for a selection, and a valid name boots off the pick.
 func TestPromptProviderChoiceListsAndPicks(t *testing.T) {
+	th, stdoutProfile, _ := testThemeAndProfiles(t)
 	names := []string{"alpha", "mid", "zen"}
 	var stdout bytes.Buffer
-	picked, err := promptProviderChoice(names, strings.NewReader("mid\n"), &stdout)
+	picked, err := promptProviderChoice(names, strings.NewReader("mid\n"), &stdout, th, stdoutProfile)
 	if err != nil {
 		t.Fatalf("promptProviderChoice: %v", err)
 	}
@@ -140,8 +157,9 @@ func TestPromptProviderChoiceListsAndPicks(t *testing.T) {
 // TestPromptProviderChoiceRetriesUnknown: an unknown name is flagged and the
 // list re-prompts until a declared name lands.
 func TestPromptProviderChoiceRetriesUnknown(t *testing.T) {
+	th, stdoutProfile, _ := testThemeAndProfiles(t)
 	var stdout bytes.Buffer
-	picked, err := promptProviderChoice([]string{"zen"}, strings.NewReader("nope\nzen\n"), &stdout)
+	picked, err := promptProviderChoice([]string{"zen"}, strings.NewReader("nope\nzen\n"), &stdout, th, stdoutProfile)
 	if err != nil {
 		t.Fatalf("promptProviderChoice: %v", err)
 	}
@@ -160,6 +178,7 @@ func TestPromptProviderChoiceRetriesUnknown(t *testing.T) {
 // TestPromptProviderChoiceAbortsAtEOF: when stdin is exhausted, re-prompting
 // is pointless — the prompt returns a clean error instead of spinning.
 func TestPromptProviderChoiceAbortsAtEOF(t *testing.T) {
+	th, stdoutProfile, _ := testThemeAndProfiles(t)
 	for _, tc := range []struct {
 		name       string
 		input      string
@@ -169,7 +188,7 @@ func TestPromptProviderChoiceAbortsAtEOF(t *testing.T) {
 		{name: "unknown at eof", input: "nope", wantStderr: "no such provider"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := promptProviderChoice([]string{"zen"}, strings.NewReader(tc.input), io.Discard)
+			_, err := promptProviderChoice([]string{"zen"}, strings.NewReader(tc.input), io.Discard, th, stdoutProfile)
 			if err == nil {
 				t.Fatal("promptProviderChoice should error at EOF")
 			}
