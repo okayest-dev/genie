@@ -4847,16 +4847,16 @@ func TestTaskSlashCommand(t *testing.T) {
 
 		chunks := []string{fake.TextDelta("done"), fake.Finish("stop"), fake.Done}
 		if reqCount == 1 {
-			// First request: model calls task.create
+			// First request: model calls task_create
 			chunks = []string{
-				fake.ToolCallDelta(0, "call_1", "task.create", `{"title":"Test Task","type":"task"}`),
+				fake.ToolCallDelta(0, "call_1", "task_create", `{"title":"Test Task","type":"task"}`),
 				fake.Finish("tool_calls"),
 				fake.Done,
 			}
 		} else if reqCount == 2 {
-			// Second request: model calls task.claim for the created task
+			// Second request: model calls task_claim for the created task
 			chunks = []string{
-				fake.ToolCallDelta(0, "call_2", "task.claim", `{"task_id":"og-new1"}`),
+				fake.ToolCallDelta(0, "call_2", "task_claim", `{"task_id":"og-new1"}`),
 				fake.Finish("tool_calls"),
 				fake.Done,
 			}
@@ -4899,22 +4899,22 @@ model = "test-model"
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
 
-	// Verify tool.create and task.claim were called
+	// Verify task_create and task_claim were called
 	foundCreate := false
 	foundClaim := false
 	for _, tc := range toolCalls {
-		if tc == "task.create" {
+		if tc == "task_create" {
 			foundCreate = true
 		}
-		if tc == "task.claim" {
+		if tc == "task_claim" {
 			foundClaim = true
 		}
 	}
 	if !foundCreate {
-		t.Errorf("tool calls missing task.create: %v", toolCalls)
+		t.Errorf("tool calls missing task_create: %v", toolCalls)
 	}
 	if !foundClaim {
-		t.Errorf("tool calls missing task.claim: %v", toolCalls)
+		t.Errorf("tool calls missing task_claim: %v", toolCalls)
 	}
 
 	// Verify /task output shows the active task (the fake tracker returns og-new1)
