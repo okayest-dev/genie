@@ -51,7 +51,7 @@ type RoleStyle struct {
 // SegmentEntry represents a prompt segment in the layout.
 type SegmentEntry struct {
 	Name    string                `toml:"name"`
-	Style   string                `toml:"style"`
+	Style   *RoleStyle            `toml:"style"`
 	Options map[string]string     `toml:"options"`
 	States  map[string]StateStyle `toml:"states"`
 }
@@ -225,9 +225,11 @@ func parseTheme(name, source string, data []byte) (*Theme, error) {
 		}
 		seenSegments[seg.Name] = true
 
-		if seg.Style != "" {
-			// Style reference validation would need the roles map
-			// For now, we accept any string; resolution happens later
+		// Validate base style (inline)
+		if seg.Style != nil {
+			if err := validateStyle(seg.Style.Attributes, seg.Style.Glyphs, name, "segment "+seg.Name+" base"); err != nil {
+				return nil, err
+			}
 		}
 
 		// Validate options

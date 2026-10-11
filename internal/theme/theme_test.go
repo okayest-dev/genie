@@ -71,12 +71,12 @@ plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { "dir.max_len" = "40" }
 
 [[segments]]
 name = "prompt_char"
-style = "prompt_char"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "true" }
   [segments.states]
   ok = { fg = "white", bg = "", attrs = [], glyphs = { nerd = ">", powerline = ">", ascii = ">" } }
@@ -270,7 +270,7 @@ model = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "unknown_segment"
-style = "unknown_segment"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 `
 	themeFile := filepath.Join(themesDir, "custom.toml")
 	if err := os.WriteFile(themeFile, []byte(themeContent), 0644); err != nil {
@@ -302,11 +302,11 @@ model = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 `
 	themeFile := filepath.Join(themesDir, "custom.toml")
 	if err := os.WriteFile(themeFile, []byte(themeContent), 0644); err != nil {
@@ -338,7 +338,7 @@ model = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { "unknown_option" = "value" }
 `
 	themeFile := filepath.Join(themesDir, "custom.toml")
@@ -371,7 +371,7 @@ model = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "prompt_char"
-style = "prompt_char"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "true" }
   [segments.states]
   unknown_state = { fg = "white", bg = "", attrs = [], glyphs = {} }
@@ -516,7 +516,7 @@ model = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [separators]
 default = { nerd = " ", powerline = " ", ascii = " " }
@@ -554,7 +554,7 @@ model = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [separators]
 default = { unknown_tier = " " }
@@ -589,7 +589,7 @@ model = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 [separators]
 default = { nerd = " ", powerline = " ", ascii = " " }

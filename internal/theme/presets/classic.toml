@@ -24,10 +24,10 @@ slash = { fg = "", bg = "", attrs = [], glyphs = {} }
 plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 # Prompt segment layout (ordered entries)
-# Each entry: name, style (role reference), options, states
+# Each entry: name, style (inline base style), options, states
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { "dir.max_len" = "40", always = "false" }
   [segments.states]
   anchored = { fg = "green", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
@@ -35,7 +35,7 @@ options = { "dir.max_len" = "40", always = "false" }
 
 [[segments]]
 name = "git"
-style = "git"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "false" }
   [segments.states]
   clean = { fg = "white", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
@@ -44,32 +44,32 @@ options = { always = "false" }
 
 [[segments]]
 name = "provider"
-style = "provider"
+style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "model"
-style = "model"
+style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "agent"
-style = "agent"
+style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "time"
-style = "time"
+style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
 options = { "time.format" = "15:04:05", always = "false" }
 
 [[segments]]
 name = "tokens"
-style = "tokens"
+style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "prompt_char"
-style = "prompt_char"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "true" }
   [segments.states]
   ok = { fg = "white", bg = "magenta", attrs = [], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }

@@ -23,7 +23,7 @@ plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
 # Prompt segment layout - minimal, gap-separated
 [[segments]]
 name = "dir"
-style = "dir"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { "dir.max_len" = "40", always = "false" }
   [segments.states]
   anchored = { fg = "green", bg = "", attrs = [], glyphs = {} }
@@ -31,7 +31,7 @@ options = { "dir.max_len" = "40", always = "false" }
 
 [[segments]]
 name = "git"
-style = "git"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "false" }
   [segments.states]
   clean = { fg = "white", bg = "", attrs = [], glyphs = {} }
@@ -40,12 +40,12 @@ options = { always = "false" }
 
 [[segments]]
 name = "agent"
-style = "agent"
+style = { fg = "white", bg = "", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "prompt_char"
-style = "prompt_char"
+style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "true" }
   [segments.states]
   ok = { fg = "white", bg = "", attrs = [], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }

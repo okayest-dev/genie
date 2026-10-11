@@ -59,7 +59,7 @@ func RenderBar(
 // segmentData holds the data we need from a theme segment entry.
 type segmentData struct {
 	Name    string
-	Style   string
+	Style   *theme.RoleStyle
 	Options map[string]string
 	States  map[string]theme.StateStyle
 }
@@ -88,12 +88,10 @@ func buildRenderedSegments(
 			}
 		}
 
-		// Get base style (role reference)
+		// Get base style (inline)
 		baseStyle := style.Style{}
-		if segEntry != nil && segEntry.Style != "" {
-			if roleStyle, ok := theme.Data.Roles[segEntry.Style]; ok {
-				baseStyle = roleStyleToStyle(roleStyle)
-			}
+		if segEntry != nil && segEntry.Style != nil {
+			baseStyle = roleStyleToStyle(*segEntry.Style)
 		}
 
 		// Get state style override
@@ -110,14 +108,8 @@ func buildRenderedSegments(
 		// Get glyph for prompt_char state
 		content := seg.Content
 		if seg.Name == "prompt_char" && segEntry != nil {
-			if ss, ok := segEntry.States[seg.State]; ok {
-				if glyph := renderer.Glyph(map[style.GlyphTier]string{
-					style.GlyphTierNerd:      ss.Glyphs["nerd"],
-					style.GlyphTierPowerline: ss.Glyphs["powerline"],
-					style.GlyphTierAscii:     ss.Glyphs["ascii"],
-				}); glyph != "" {
-					content = glyph
-				}
+			if glyph := renderer.Glyph(mergedStyle.Glyphs); glyph != "" {
+				content = glyph
 			}
 		}
 
@@ -165,7 +157,7 @@ func collapseSegments(segments []RenderedSegment) []RenderedSegment {
 		}
 	}
 
-	// Build result excluding collapsed segments, but keep their separator logic
+// Build result excluding collapsed segments, but keep their separator logic
 	var result []RenderedSegment
 	for i := range segments {
 		if !collapsed[i] {
@@ -177,15 +169,6 @@ func collapseSegments(segments []RenderedSegment) []RenderedSegment {
 	if len(result) > 0 {
 		// Remove trailing separator from last segment
 		result[len(result)-1].Separator = ""
-	}
-
-// Ensure no double separators (shouldn't happen with our model, but verify)
-	// Only collapse identical non-space separators (space is a gap, not a connector)
-	for i := 1; i < len(result); i++ {
-		if result[i-1].Separator != "" && result[i].Separator != "" && result[i-1].Separator == result[i].Separator && result[i-1].Separator != " " {
-			// This would be a double connector, clear the first one
-			result[i-1].Separator = ""
-		}
 	}
 
 	return result
@@ -233,16 +216,27 @@ func buildBarLines(
 	renderer := style.NewRenderer(profile)
 	var sb strings.Builder
 
-	for _, seg := range segments {
+	for i, seg := range segments {
 		// Render segment content with style
 		styled := renderer.Render(seg.Style, seg.Content)
 		sb.WriteString(styled)
 
-		// Render separator
-		if seg.Separator != "" {
-			// For Classic theme with connectors, the separator is a connector glyph
-			// that connects this segment's background to the next segment's background
-			sb.WriteString(seg.Separator)
+		// Render separator (connector) if not the last segment
+		if i < len(segments)-1 && seg.Separator != "" {
+			nextSeg := segments[i+1]
+			// For connectors: fg = current segment's background, bg = next segment's background
+			connectorStyle := style.Style{
+				Foreground: seg.Style.Background,
+				Background: nextSeg.Style.Background,
+			}
+			// At ascii tier, always render the separator (breadcrumb style).
+			// At powerline/nerd tiers, only render if backgrounds differ (welding effect).
+			shouldRender := profile.GlyphTier == style.GlyphTierAscii || seg.Style.Background != nextSeg.Style.Background
+			if shouldRender {
+				connector := renderer.Render(connectorStyle, seg.Separator)
+				sb.WriteString(connector)
+			}
+			// If backgrounds are equal at powerline/nerd tier, skip the connector (invisible weld)
 		}
 	}
 
@@ -278,8 +272,18 @@ func splitBar(
 		seg := segments[i]
 		styled := renderer.Render(seg.Style, seg.Content)
 		line1.WriteString(styled)
-		if seg.Separator != "" {
-			line1.WriteString(seg.Separator)
+		// Render connector to next segment if not the last before prompt_char
+		if i < promptCharIdx-1 && seg.Separator != "" {
+			nextSeg := segments[i+1]
+			connectorStyle := style.Style{
+				Foreground: seg.Style.Background,
+				Background: nextSeg.Style.Background,
+			}
+			shouldRender := profile.GlyphTier == style.GlyphTierAscii || seg.Style.Background != nextSeg.Style.Background
+			if shouldRender {
+				connector := renderer.Render(connectorStyle, seg.Separator)
+				line1.WriteString(connector)
+			}
 		}
 	}
 
