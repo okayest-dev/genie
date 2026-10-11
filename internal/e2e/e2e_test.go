@@ -2874,7 +2874,7 @@ api_key_env = "OTHER_KEY"
 model = "other-model"
 `, zen.URL, other.URL))
 
-	stdout, stderr, code := runInDirWithStdin(t, dir, "hello zen\n/provider openai\nhello other\n/quit\n", []string{
+	stdout, stderr, code := runInDirWithStdin(t, dir, "hello zen\n/provider:openai\nhello other\n/quit\n", []string{
 		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=zen-key",
 		"OTHER_KEY=other-key",
@@ -2946,7 +2946,7 @@ base_url = %q
 model = "zen-model"
 `, zen.URL))
 
-	stdout, stderr, code := runInDirWithStdin(t, dir, "/provider nosuch\nhi\n/quit\n", []string{
+	stdout, stderr, code := runInDirWithStdin(t, dir, "/provider:nosuch\nhi\n/quit\n", []string{
 		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=k",
 	})
@@ -2984,7 +2984,7 @@ model = "openai-default"
 models = ["openai-default", "openai-1"]
 `)
 
-	stdout, stderr, code := runInDirWithStdin(t, dir, "/provider\n/model\n/provider openai\n/model\n/quit\n", []string{
+	stdout, stderr, code := runInDirWithStdin(t, dir, "/provider\n/model\n/provider:openai\n/model\n/quit\n", []string{
 		"XDG_CONFIG_HOME=" + dir,
 		"OPENCODE_API_KEY=k",
 	})
@@ -2996,7 +2996,7 @@ models = ["openai-default", "openai-1"]
 	if !strings.Contains(out, "Available providers:") {
 		t.Errorf("stdout = %q, want providers listing", out)
 	}
-	if !strings.Contains(out, "* zen") || !strings.Contains(out, "  openai") {
+	if !strings.Contains(out, "* 7: zen") || !strings.Contains(out, "  5: openai") {
 		t.Errorf("stdout = %q, want zen marked current and openai unmarked", out)
 	}
 	if !strings.Contains(out, "Current: zen") {
@@ -3023,7 +3023,7 @@ models = ["openai-default", "openai-1"]
 	if !strings.Contains(after, "openai-1") {
 		t.Errorf("post-switch /model = %q, want openai's catalog", after)
 	}
-	if !strings.Contains(after, "* openai-default") {
+	if !strings.Contains(after, "* 1: openai-default") {
 		t.Errorf("post-switch /model = %q, want openai's default marked current", after)
 	}
 	if strings.Contains(after, "zen-") {
@@ -4131,7 +4131,7 @@ func TestPerAgentPermissionsReplaceGlobalBase(t *testing.T) {
 	// plain agent, which inherits it); b.txt under reader (write uncovered —
 	// one prompt, granted for the session); c.txt back on the global base.
 	stdout, stderr, code := runInDirWithStdin(t, workDir,
-		"write a.txt\n/agent reader\nwrite b.txt\ns\n/agent plain\nwrite c.txt\n/quit\n", env, "-a", "plain")
+		"write a.txt\n/agent:reader\nwrite b.txt\ns\n/agent:plain\nwrite c.txt\n/quit\n", env, "-a", "plain")
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}

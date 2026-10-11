@@ -27,11 +27,19 @@ type turnOptions struct {
 	agentName string
 	hooks     Hooks
 	gate      *permissions.Gate
+	toolFrame io.Writer
 }
 
 // WithAgentName attaches an agent name to the user message in the session log.
 func WithAgentName(name string) Option {
 	return func(o *turnOptions) { o.agentName = name }
+}
+
+// WithToolFrame routes the ── name args ── framing lines through w instead of
+// errOut. Callers pass a role-styled writer so the tool frame renders through
+// its theme role; nil (the default) keeps framing on errOut, unchanged.
+func WithToolFrame(w io.Writer) Option {
+	return func(o *turnOptions) { o.toolFrame = w }
 }
 
 // WithPermissions attaches the deny-point escalation gate. Nil disables it
@@ -328,9 +336,16 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		// Execute tool calls serially and feed results back.
 		slog.Info("tool calls received", "count", len(toolCalls))
 		for _, tc := range toolCalls {
-			// Frame the tool run on stderr.
-			if errOut != nil {
-				fmt.Fprintf(errOut, "── %s %s ──\n", tc.Name, truncateArgs(tc.Arguments, 120))
+			// Frame the tool run on stderr. The frame goes through the
+			// tool-frame writer when one is wired (a role-styled writer); the
+			// tool's result bytes below always go to errOut untouched — they
+			// feed the model and are never themed (og-2s0).
+			frame := errOut
+			if to.toolFrame != nil {
+				frame = to.toolFrame
+			}
+			if frame != nil {
+				fmt.Fprintf(frame, "── %s %s ──\n", tc.Name, truncateArgs(tc.Arguments, 120))
 			}
 
 			args := tc.Arguments

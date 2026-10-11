@@ -3,11 +3,14 @@ package theme
 import (
 	"embed"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/okayest-dev/genie/internal/style"
 )
 
 const (
@@ -305,4 +308,49 @@ func ResolveGlyphTier(tier string) (string, error) {
 // GetBuiltinNames returns the list of builtin theme names.
 func GetBuiltinNames() []string {
 	return []string{"classic", "lean"}
+}
+
+// RoleStyle returns the style.Style for an output role, or the zero style
+// (render plain) when the theme leaves the role unmapped. A partial theme that
+// restyles only the prompt is therefore safe by construction: unmentioned
+// roles never error and render as today's plain bytes (ADR-0009).
+func (t *Theme) RoleStyle(role string) style.Style {
+	if t == nil || t.Data.Roles == nil {
+		return style.Style{}
+	}
+	rs, ok := t.Data.Roles[role]
+	if !ok {
+		return style.Style{}
+	}
+	return roleStyleToStyle(rs)
+}
+
+// RoleWriter returns a role-styled writer (style.RoleWriter) over w for the
+// given render profile and role. Bytes written render through the role's style
+// wherever the profile can display them, and stay byte-identical plain under a
+// profile that cannot (pipes, NO_COLOR, TERM=dumb, CI).
+func (t *Theme) RoleWriter(w io.Writer, profile *style.RenderProfile, role string) *style.RoleWriter {
+	return style.NewRoleWriter(w, style.NewRenderer(profile), t.RoleStyle(role))
+}
+
+// roleStyleToStyle converts a theme role style into a style.Style, mapping the
+// per-glyph-tier string keys onto style.GlyphTier.
+func roleStyleToStyle(rs RoleStyle) style.Style {
+	glyphs := make(map[style.GlyphTier]string)
+	for tier, glyph := range rs.Glyphs {
+		switch tier {
+		case glyphTierNerd:
+			glyphs[style.GlyphTierNerd] = glyph
+		case glyphTierPowerline:
+			glyphs[style.GlyphTierPowerline] = glyph
+		case glyphTierAscii:
+			glyphs[style.GlyphTierAscii] = glyph
+		}
+	}
+	return style.Style{
+		Foreground: rs.Foreground,
+		Background: rs.Background,
+		Attributes: rs.Attributes,
+		Glyphs:     glyphs,
+	}
 }

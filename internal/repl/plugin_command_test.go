@@ -94,7 +94,7 @@ func TestSlashPluginDispatchText(t *testing.T) {
 	src := &fakeCommandSource{plugins: map[string][]plugin.CommandInfo{
 		"copilot": {{Name: "greet", Description: "say hi"}},
 	}}
-	out := runPluginSlash(t, src, "/copilot greet World")
+	out := runPluginSlash(t, src, "/copilot:greet World")
 	if !strings.Contains(out, "ran greet with World") {
 		t.Errorf("stdout = %q, want dispatched text", out)
 	}
@@ -107,7 +107,7 @@ func TestSlashPluginDispatchRawArgs(t *testing.T) {
 	src := &fakeCommandSource{plugins: map[string][]plugin.CommandInfo{
 		"copilot": {{Name: "eval", Description: "evaluate"}},
 	}}
-	_ = runPluginSlash(t, src, "/copilot eval  x  +  y  ")
+	_ = runPluginSlash(t, src, "/copilot:eval  x  +  y  ")
 	if len(src.runs) != 1 || src.runs[0].args != "x  +  y" {
 		t.Errorf("runs = %+v, want raw args preserved", src.runs)
 	}
@@ -116,7 +116,7 @@ func TestSlashPluginDispatchRawArgs(t *testing.T) {
 func TestSlashPluginDispatchDataRendersCompactJSON(t *testing.T) {
 	bs := &bytes.Buffer{}
 	cfg := &Config{Stdout: bs, Stderr: &bytes.Buffer{}}
-	if !handlePluginCommand("/copilot status", &dataSource{}, cfg) {
+	if !handlePluginCommand("/copilot:status", &dataSource{}, cfg) {
 		t.Fatal("command was not handled as a plugin command")
 	}
 	out := bs.String()
@@ -139,7 +139,7 @@ func (d *dataSource) TrippedHooks(string) []string                    { return n
 
 func TestSlashPluginUnknownPlugin(t *testing.T) {
 	src := &fakeCommandSource{plugins: map[string][]plugin.CommandInfo{}}
-	out := runPluginSlash(t, src, "/foo bar")
+	out := runPluginSlash(t, src, "/foo:bar")
 	if !strings.Contains(out, "unknown command: /foo (try /help)") {
 		t.Errorf("stdout = %q, want unknown plugin message", out)
 	}
@@ -149,7 +149,7 @@ func TestSlashPluginUnknownCommand(t *testing.T) {
 	src := &fakeCommandSource{plugins: map[string][]plugin.CommandInfo{
 		"copilot": {{Name: "greet", Description: "say hi"}},
 	}}
-	out := runPluginSlash(t, src, "/copilot nope")
+	out := runPluginSlash(t, src, "/copilot:nope")
 	if !strings.Contains(out, "copilot: no such command: nope") {
 		t.Errorf("stdout = %q, want unknown command message", out)
 	}
@@ -160,7 +160,7 @@ func TestSlashPluginInactive(t *testing.T) {
 		plugins:  map[string][]plugin.CommandInfo{"copilot": {{Name: "greet", Description: "say hi"}}},
 		inactive: map[string]bool{"copilot": true},
 	}
-	out := runPluginSlash(t, src, "/copilot greet")
+	out := runPluginSlash(t, src, "/copilot:greet")
 	if !strings.Contains(out, "plugin copilot is not active") {
 		t.Errorf("stdout = %q, want inactive message", out)
 	}
@@ -171,7 +171,7 @@ func TestSlashPluginGenericError(t *testing.T) {
 		plugins: map[string][]plugin.CommandInfo{"copilot": {{Name: "greet", Description: "say hi"}}},
 		runErr:  func(plugin, command, args string) error { return errBoom },
 	}
-	out := runPluginSlash(t, src, "/copilot greet")
+	out := runPluginSlash(t, src, "/copilot:greet")
 	if !strings.Contains(out, "copilot: boom") {
 		t.Errorf("stdout = %q, want plugin error message", out)
 	}
@@ -242,7 +242,7 @@ func TestSlashHelpIncludesPluginSection(t *testing.T) {
 	if !strings.Contains(out, "Plugin commands:") {
 		t.Errorf("stdout = %q, want plugin-commands section", out)
 	}
-	if !strings.Contains(out, "/copilot greet  say hi") {
+	if !strings.Contains(out, "/copilot:greet  say hi") {
 		t.Errorf("stdout = %q, want enumerated plugin command with description", out)
 	}
 }
@@ -262,7 +262,7 @@ func TestSlashHelpLabelsTrippedHooks(t *testing.T) {
 
 	// A tripped plugin is still Active, so it is still listed — unlabelled it
 	// would be silently degraded with nowhere for the user to go looking.
-	if !strings.Contains(out, "/copilot greet  say hi") {
+	if !strings.Contains(out, "/copilot:greet  say hi") {
 		t.Errorf("stdout = %q, want a tripped plugin still listed", out)
 	}
 	if !strings.Contains(out, "response_ready") || !strings.Contains(out, "tool_after") {

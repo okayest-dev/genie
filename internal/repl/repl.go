@@ -53,6 +53,9 @@ type Config struct {
 	Theme *theme.Theme
 	// Profile is the render profile for prompt rendering.
 	Profile *style.RenderProfile
+	// StderrProfile is the render profile for stderr, probed independently of
+	// stdout so error and notice roles colour only where stderr is a display.
+	StderrProfile *style.RenderProfile
 }
 
 // Run starts the interactive REPL loop. It reads user input, runs agent
@@ -192,109 +195,159 @@ func runTurn(ctx context.Context, cfg *Config, prompt string, router *interruptR
 	select {
 	case <-router.turnCh:
 		cancel()
-		fmt.Fprintln(cfg.Stderr, "\n[turn cancelled]")
+		cfg.printTurnCancelled()
 	case err := <-errCh:
 		cancel()
 		if err != nil {
-			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+			cfg.printTurnError(err)
 		}
 	}
 	router.set(modeIdle)
 }
 
+// roleWriter returns a writer that renders bytes through the given role on w.
+// With no theme or profile wired it returns w unchanged, so themed output is
+// purely additive: pipes and headerless callers keep today's plain bytes.
+func (c *Config) roleWriter(w io.Writer, profile *style.RenderProfile, role string) io.Writer {
+	if c.Theme == nil || profile == nil {
+		return w
+	}
+	return c.Theme.RoleWriter(w, profile, role)
+}
+
+// printTurnError reports a turn's failure through the error role.
+func (c *Config) printTurnError(err error) {
+	fmt.Fprintf(c.roleWriter(c.Stderr, c.StderrProfile, "error"), "Error: %v\n", err)
+}
+
+// printTurnCancelled prints the [turn cancelled] notice through the
+// turn_cancelled role.
+func (c *Config) printTurnCancelled() {
+	fmt.Fprintln(c.roleWriter(c.Stderr, c.StderrProfile, "turn_cancelled"), "\n[turn cancelled]")
+}
+
 // handleSlashCommand processes a slash command and returns true if the REPL
 // should exit.
 func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
-	parts := strings.SplitN(line, " ", 2)
-	cmd := strings.ToLower(parts[0])
+	// Parse colon-separated command hierarchy: /cmd:subcmd:subsubcmd [args...]
+	// Everything after the first space is treated as arguments to the final subcommand.
+	cmdParts := strings.SplitN(line, " ", 2)
+	cmdPath := strings.ToLower(cmdParts[0])
+	args := ""
+	if len(cmdParts) > 1 {
+		args = strings.TrimSpace(cmdParts[1])
+	}
+
+	// Split command path on colon
+	pathParts := strings.Split(cmdPath, ":")
+	cmd := pathParts[0]
 
 	switch cmd {
 	case "/quit", "/exit":
 		return true
 
 	case "/help":
-		fmt.Fprintln(cfg.Stdout, "Commands:")
-		fmt.Fprintln(cfg.Stdout, "  /help             show this help")
-		fmt.Fprintln(cfg.Stdout, "  /quit             exit the REPL")
-		fmt.Fprintln(cfg.Stdout, "  /new              start a new session")
-		fmt.Fprintln(cfg.Stdout, "  /changes          list change batches")
-		fmt.Fprintln(cfg.Stdout, "  /changes <id>     show change details")
-		fmt.Fprintln(cfg.Stdout, "  /task             show the active task and its lifecycle")
-		fmt.Fprintln(cfg.Stdout, "  /provider         list available providers")
-		fmt.Fprintln(cfg.Stdout, "  /provider <name>  switch to a named provider")
-		fmt.Fprintln(cfg.Stdout, "  /model            list available models")
-		fmt.Fprintln(cfg.Stdout, "  /model <id>       switch to a different model")
-		fmt.Fprintln(cfg.Stdout, "  /agent            list available agents")
-		fmt.Fprintln(cfg.Stdout, "  /agent <name>     switch to a named agent")
-		fmt.Fprintln(cfg.Stdout, "  /copilot          manage Copilot credentials")
-		fmt.Fprintln(cfg.Stdout, "  /copilot auth login [--host <domain>]  start device-flow login")
-		fmt.Fprintln(cfg.Stdout, "  /copilot auth status [--host <domain>] show credential status")
-		fmt.Fprintln(cfg.Stdout, "")
-		fmt.Fprintln(cfg.Stdout, "  @<name> <prompt>  one-shot agent switch")
-		if cmds := cfg.Run.Commands(); cmds != nil {
-			printPluginCommandsHelp(cmds, cfg.Stdout)
-		}
-		fmt.Fprintln(cfg.Stdout, "")
-		fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
+		printHelp(cfg)
+		return false
 
 	case "/new":
 		if _, err := cfg.Run.NewSession(); err != nil {
 			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
 		}
+		return false
 
 	case "/changes":
-		args := ""
-		if len(parts) > 1 {
-			args = parts[1]
+		changeID := ""
+		if len(pathParts) > 1 {
+			changeID = pathParts[1]
 		}
-		handleChanges(args, cfg, cfg.Run.Session().ID, cfg.Stdout)
+		handleChanges(changeID, cfg, cfg.Run.Session().ID, cfg.Stdout)
+		return false
 
 	case "/task":
 		handleTask(cfg)
+		return false
 
 	case "/provider":
-		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+		if len(pathParts) < 2 || pathParts[1] == "" {
 			listProviders(cfg)
 		} else {
-			switchProvider(strings.TrimSpace(parts[1]), cfg)
+			switchProvider(pathParts[1], cfg)
 		}
+		return false
 
 	case "/model":
-		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+		if len(pathParts) < 2 || pathParts[1] == "" {
 			listModels(ctx, cfg)
 		} else {
-			setModel(ctx, strings.TrimSpace(parts[1]), cfg)
+			setModel(ctx, pathParts[1], cfg)
 		}
+		return false
 
 	case "/agent":
-		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+		if len(pathParts) < 2 || pathParts[1] == "" {
 			listAgents(cfg)
 		} else {
-			switchAgent(strings.TrimSpace(parts[1]), cfg)
+			switchAgent(pathParts[1], cfg)
 		}
+		return false
 
 	case "/copilot":
-		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-			fmt.Fprintln(cfg.Stdout, "Usage: /copilot auth <login|status> [--host <domain>]")
-			fmt.Fprintln(cfg.Stdout, "  /copilot auth login [--host github.com]  Start device-flow login")
-			fmt.Fprintln(cfg.Stdout, "  /copilot auth status [--host github.com] Show credential status")
+		if len(pathParts) < 2 || pathParts[1] == "" {
+			printCopilotHelp(cfg)
 		} else {
-			handleCopilotCommand(ctx, strings.TrimSpace(parts[1]), cfg)
+			handleCopilotCommand(ctx, pathParts[1], args, cfg)
 		}
+		return false
 
 	default:
 		if cmds := cfg.Run.Commands(); cmds != nil && handlePluginCommand(line, cmds, cfg) {
-			break
+			return false
 		}
 		fmt.Fprintf(cfg.Stdout, "unknown command: %s (try /help)\n", cmd)
+		return false
 	}
+}
 
-	// Notify git gatherer that a slash command completed (triggers degraded recovery per ADR-0011).
+// Notify git gatherer that a slash command completed (triggers degraded recovery per ADR-0011).
+func notifySlashCommandCompleted(cmd string, cfg *Config) {
 	if cmd != "/quit" && cmd != "/exit" {
 		cfg.Run.NotifyGitTurnCompleted()
 	}
+}
 
-	return false
+// printHelp prints the main help text.
+func printHelp(cfg *Config) {
+	fmt.Fprintln(cfg.Stdout, "Commands:")
+	fmt.Fprintln(cfg.Stdout, "  /help                    show this help")
+	fmt.Fprintln(cfg.Stdout, "  /quit, /exit             exit the REPL")
+	fmt.Fprintln(cfg.Stdout, "  /new                     start a new session")
+	fmt.Fprintln(cfg.Stdout, "  /changes                 list change batches")
+	fmt.Fprintln(cfg.Stdout, "  /changes:<id>            show change details")
+	fmt.Fprintln(cfg.Stdout, "  /task                    show the active task and its lifecycle")
+	fmt.Fprintln(cfg.Stdout, "  /provider                list available providers (numbered)")
+	fmt.Fprintln(cfg.Stdout, "  /provider:<name|num>     switch to a provider by name or number")
+	fmt.Fprintln(cfg.Stdout, "  /model                   list available models (numbered)")
+	fmt.Fprintln(cfg.Stdout, "  /model:<id|num>          switch to a model by ID or number")
+	fmt.Fprintln(cfg.Stdout, "  /agent                   list available agents (numbered)")
+	fmt.Fprintln(cfg.Stdout, "  /agent:<name|num>        switch to an agent by name or number")
+	fmt.Fprintln(cfg.Stdout, "  /copilot                 manage Copilot credentials")
+	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:login      start device-flow login")
+	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:status     show credential status")
+	fmt.Fprintln(cfg.Stdout, "")
+	fmt.Fprintln(cfg.Stdout, "  @<name> <prompt>         one-shot agent switch")
+	if cmds := cfg.Run.Commands(); cmds != nil {
+		printPluginCommandsHelp(cmds, cfg.Stdout)
+	}
+	fmt.Fprintln(cfg.Stdout, "")
+	fmt.Fprintln(cfg.Stdout, "Ctrl+C: quit at idle, cancel mid-turn")
+}
+
+// printCopilotHelp prints the copilot command help.
+func printCopilotHelp(cfg *Config) {
+	fmt.Fprintln(cfg.Stdout, "Usage: /copilot:auth:login|status [--host <domain>]")
+	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:login [--host github.com]  Start device-flow login")
+	fmt.Fprintln(cfg.Stdout, "  /copilot:auth:status [--host github.com] Show credential status")
 }
 
 // listProviders prints the declared providers and marks the session's current
@@ -307,12 +360,12 @@ func listProviders(cfg *Config) {
 	}
 	cur := cfg.Run.Provider()
 	fmt.Fprintln(cfg.Stdout, "Available providers:")
-	for _, name := range names {
+	for i, name := range names {
 		marker := "  "
 		if name == cur {
 			marker = "* "
 		}
-		fmt.Fprintf(cfg.Stdout, "%s%s\n", marker, name)
+		fmt.Fprintf(cfg.Stdout, "%s%d: %s\n", marker, i+1, name)
 	}
 	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cur)
 }
@@ -322,7 +375,13 @@ func listProviders(cfg *Config) {
 // the new provider's default. An unknown name prints the available set and
 // leaves the session untouched.
 func switchProvider(target string, cfg *Config) {
-	if err := cfg.Run.SwitchProvider(target); err != nil {
+	names := cfg.Run.ProviderNames()
+	resolved := resolveByNameOrIndex(target, names)
+	if resolved == "" {
+		fmt.Fprintf(cfg.Stdout, "genie: no such provider: %s (available: %s)\n", target, strings.Join(names, ", "))
+		return
+	}
+	if err := cfg.Run.SwitchProvider(resolved); err != nil {
 		fmt.Fprintf(cfg.Stdout, "%s\n", err)
 		return
 	}
@@ -337,17 +396,19 @@ func listModels(ctx context.Context, cfg *Config) {
 		// Degrade: show the active model. Streaming still runs on it.
 		fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
 		fmt.Fprintln(cfg.Stdout, "Available models:")
-		fmt.Fprintf(cfg.Stdout, "* %s\n", cfg.Run.Model())
+		fmt.Fprintf(cfg.Stdout, "  1: * %s\n", cfg.Run.Model())
 		fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Run.Model())
 		return
 	}
 	fmt.Fprintln(cfg.Stdout, "Available models:")
-	for _, m := range models {
+	modelIDs := make([]string, len(models))
+	for i, m := range models {
 		marker := "  "
 		if m.ID == cfg.Run.Model() {
 			marker = "* "
 		}
-		fmt.Fprintf(cfg.Stdout, "%s%s\n", marker, m.ID)
+		modelIDs[i] = m.ID
+		fmt.Fprintf(cfg.Stdout, "%s%d: %s\n", marker, i+1, m.ID)
 	}
 	fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cfg.Run.Model())
 }
@@ -360,14 +421,17 @@ func setModel(ctx context.Context, target string, cfg *Config) {
 		fmt.Fprintf(cfg.Stderr, "Error: fetching model catalog: %v\n", err)
 		return
 	}
-	for _, m := range models {
-		if m.ID == target {
-			cfg.Run.SetModel(target)
-			fmt.Fprintf(cfg.Stdout, "model: %s\n", target)
-			return
-		}
+	modelIDs := make([]string, len(models))
+	for i, m := range models {
+		modelIDs[i] = m.ID
 	}
-	fmt.Fprintf(cfg.Stdout, "genie: no such model: %s\n", target)
+	resolved := resolveByNameOrIndex(target, modelIDs)
+	if resolved == "" {
+		fmt.Fprintf(cfg.Stdout, "genie: no such model: %s\n", target)
+		return
+	}
+	cfg.Run.SetModel(resolved)
+	fmt.Fprintf(cfg.Stdout, "model: %s\n", resolved)
 }
 
 // activeCatalog returns the active provider's model catalog from the run's
@@ -390,7 +454,7 @@ func listAgents(cfg *Config) {
 	}
 	cur := cfg.Run.CurrentAgent()
 	fmt.Fprintln(cfg.Stdout, "Available agents:")
-	for _, name := range names {
+	for i, name := range names {
 		marker := "  "
 		if cur != nil && cur.Name == name {
 			marker = "* "
@@ -404,7 +468,7 @@ func listAgents(cfg *Config) {
 		if def != nil && def.Tools != nil {
 			toolsStr = fmt.Sprintf("  tools: %s", strings.Join(def.Tools, ", "))
 		}
-		fmt.Fprintf(cfg.Stdout, "%s%s%s%s\n", marker, name, modelStr, toolsStr)
+		fmt.Fprintf(cfg.Stdout, "%s%d: %s%s%s\n", marker, i+1, name, modelStr, toolsStr)
 	}
 	if cur != nil {
 		fmt.Fprintf(cfg.Stdout, "\nCurrent: %s\n", cur.Name)
@@ -417,39 +481,54 @@ func listAgents(cfg *Config) {
 // the active registry and its [permissions] base replaces the global base
 // wholly.
 func switchAgent(target string, cfg *Config) {
-	if _, err := cfg.Run.SwitchAgent(target); err != nil {
+	reg := cfg.Run.AgentReg()
+	if reg == nil {
+		fmt.Fprintln(cfg.Stderr, "no agents configured")
+		return
+	}
+	names := reg.List()
+	resolved := resolveByNameOrIndex(target, names)
+	if resolved == "" {
+		fmt.Fprintf(cfg.Stderr, "genie: no such agent: %s\n", target)
+		return
+	}
+	if _, err := cfg.Run.SwitchAgent(resolved); err != nil {
 		fmt.Fprintf(cfg.Stderr, "genie: %v\n", err)
 		return
 	}
-	resolved := cfg.Run.CurrentAgent()
+	resolvedAgent := cfg.Run.CurrentAgent()
 	toolsStr := ""
-	if resolved.Tools != nil {
-		toolsStr = fmt.Sprintf(", tools: %s", strings.Join(resolved.Tools, ", "))
+	if resolvedAgent.Tools != nil {
+		toolsStr = fmt.Sprintf(", tools: %s", strings.Join(resolvedAgent.Tools, ", "))
 	}
 	modelStr := ""
-	if resolved.Model != "" {
-		modelStr = fmt.Sprintf(" (model: %s)", resolved.Model)
+	if resolvedAgent.Model != "" {
+		modelStr = fmt.Sprintf(" (model: %s)", resolvedAgent.Model)
 	}
-	fmt.Fprintf(cfg.Stdout, "switched to %s%s%s\n", resolved.Name, modelStr, toolsStr)
+	fmt.Fprintf(cfg.Stdout, "switched to %s%s%s\n", resolvedAgent.Name, modelStr, toolsStr)
 }
 
-// handlePluginCommand routes /<plugin> ... to the plugin command source. It
-// returns true when the command was handled (hit or miss).
+// handlePluginCommand routes /<plugin>[:<command>] [args...] to the plugin command source.
+// It returns true when the command was handled (hit or miss).
 func handlePluginCommand(line string, cmds plugin.CommandSource, cfg *Config) bool {
+	// Parse colon-separated plugin command: /plugin[:command] [args...]
 	rest := strings.TrimPrefix(line, "/")
-	pluginName, rest, _ := strings.Cut(rest, " ")
-	pluginName = strings.ToLower(pluginName)
-	rest = strings.TrimLeft(rest, " \t")
+	// Split on first space to separate command path from args
+	cmdPath, args, _ := strings.Cut(rest, " ")
+	args = strings.TrimSpace(args)
 
-	if rest == "" {
-		return handlePluginBare(pluginName, cmds, cfg)
+	// Split command path on colon
+	pathParts := strings.Split(cmdPath, ":")
+
+	// Handle bare plugin command (just /plugin or /plugin:)
+	pluginName := strings.ToLower(pathParts[0])
+	var command string
+	if len(pathParts) >= 2 {
+		command = pathParts[1]
 	}
 
-	command := rest
-	var args string
-	if idx := strings.IndexAny(command, " \t"); idx >= 0 {
-		args = strings.TrimSpace(command[idx:])
-		command = command[:idx]
+	if command == "" {
+		return handlePluginBare(pluginName, cmds, cfg)
 	}
 
 	result, err := cmds.RunCommand(pluginName, command, args)
@@ -526,7 +605,7 @@ func printPluginCommandsHelp(cmds plugin.CommandSource, out io.Writer) {
 		}
 		fmt.Fprintf(out, "  %s%s\n", name, trippedLabel(cmds.TrippedHooks(name)))
 		for _, c := range list {
-			fmt.Fprintf(out, "  /%s %s  %s\n", name, c.Name, c.Description)
+			fmt.Fprintf(out, "  /%s:%s  %s\n", name, c.Name, c.Description)
 		}
 	}
 }
@@ -538,6 +617,29 @@ func trippedLabel(events []string) string {
 		return ""
 	}
 	return "  [hooks disabled: " + strings.Join(events, ", ") + "]"
+}
+
+// resolveByNameOrIndex takes a target string and a list of names, and returns the
+// matching name. Target can be a 1-based index (e.g., "1") or a name. Returns
+// empty string if not found.
+func resolveByNameOrIndex(target string, names []string) string {
+	if target == "" {
+		return ""
+	}
+	// Try as 1-based index first
+	if idx, err := strconv.Atoi(target); err == nil {
+		if idx >= 1 && idx <= len(names) {
+			return names[idx-1]
+		}
+		return ""
+	}
+	// Try as name
+	for _, name := range names {
+		if name == target {
+			return name
+		}
+	}
+	return ""
 }
 
 // fileNames returns a comma-separated list of file paths from a batch's files.
@@ -641,29 +743,22 @@ func handleTask(cfg *Config) {
 	}
 }
 
-// handleCopilotCommand handles /copilot auth <login|status> [--host <domain>].
-func handleCopilotCommand(ctx context.Context, args string, cfg *Config) {
-	parts := strings.Fields(args)
-	if len(parts) == 0 {
-		fmt.Fprintln(cfg.Stdout, "Usage: /copilot auth <login|status> [--host <domain>]")
+// handleCopilotCommand handles /copilot:auth:login|status [--host <domain>].
+func handleCopilotCommand(ctx context.Context, subPath, args string, cfg *Config) {
+	// Parse subcommand path: auth:login or auth:status
+	subParts := strings.Split(subPath, ":")
+	if len(subParts) < 2 || subParts[0] != "auth" {
+		fmt.Fprintln(cfg.Stdout, "Usage: /copilot:auth:login|status [--host <domain>]")
 		return
 	}
 
-	if parts[0] != "auth" {
-		fmt.Fprintf(cfg.Stdout, "unknown copilot command: %s (try /copilot auth login|status)\n", parts[0])
-		return
-	}
-
-	if len(parts) < 2 {
-		fmt.Fprintln(cfg.Stdout, "Usage: /copilot auth <login|status> [--host <domain>]")
-		return
-	}
-
-	subcmd := parts[1]
+	subcmd := subParts[1]
 	host := "github.com"
-	for i := 2; i < len(parts); i++ {
-		if parts[i] == "--host" && i+1 < len(parts) {
-			host = parts[i+1]
+	// Parse --host from args
+	argParts := strings.Fields(args)
+	for i := 0; i < len(argParts); i++ {
+		if argParts[i] == "--host" && i+1 < len(argParts) {
+			host = argParts[i+1]
 			i++
 		}
 	}

@@ -229,6 +229,30 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// every derivable component (store, tools, skills, plugins, seams, tokens,
 	// modelinfo, session, ledger, boot provider) and applies the agent's
 	// permissions base and model precedence.
+	//
+	// The render surface (loaded theme + per-writer profiles) feeds both the
+	// prompt bar and the live role styling of the turn surface (model stream,
+	// tool frames, turn errors, the cancelled notice). It is assembled before
+	// the handle so the run can style its own turn output; a failure here
+	// fails startup fast — a bad theme is a config error, not a runtime one
+	// (og-2ep).
+	th, err := cfg.LoadTheme()
+	if err != nil {
+		fmt.Fprintf(stderr, "Error loading theme: %v\n", err)
+		return 1
+	}
+	env := buildEnv()
+	stdoutProfile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
+		return 1
+	}
+	stderrProfile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
+		return 1
+	}
+
 	h, err := runpkg.New(runpkg.Options{
 		Config:         cfg,
 		Cwd:            cwd,
@@ -244,6 +268,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		OnUsageDegrade: func(msg string) { fmt.Fprintf(stderr, "%s\n", msg) },
 		WithLedger:     true,
 		SkillPool:      skillPool,
+		Theme:          th,
+		StdoutProfile:  stdoutProfile,
+		StderrProfile:  stderrProfile,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -262,41 +289,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 
-		// Load theme and create render profile for prompt bar
-		th, err := cfg.LoadTheme()
-		if err != nil {
-			fmt.Fprintf(stderr, "Error loading theme: %v\n", err)
-			return 1
-		}
-
-		// Create render profile for stdout
-		env := make(map[string]string)
-		for _, kv := range os.Environ() {
-			if i := strings.IndexByte(kv, '='); i >= 0 {
-				env[kv[:i]] = kv[i+1:]
-			}
-		}
-		profile, err := style.ProbeRenderProfile(env, cfg.GlyphTier, os.Stdout)
-		if err != nil {
-			fmt.Fprintf(stderr, "Error creating render profile: %v\n", err)
-			return 1
-		}
-
 		// Create prompt bar
-		termWidth := profile.Width
-		promptBar := prompt.NewPromptBar(th, profile, termWidth)
+		termWidth := stdoutProfile.Width
+		promptBar := prompt.NewPromptBar(th, stdoutProfile, termWidth)
 
 		replCfg := &repl.Config{
-			Run:         h,
-			Cfg:         cfg,
-			SessionDir:  cfg.SessionDir,
-			Cwd:         cwd,
-			Stdin:       os.Stdin,
-			Stdout:      stdout,
-			Stderr:      stderr,
-			PromptBar:   promptBar,
-			Theme:       th,
-			Profile:     profile,
+			Run:           h,
+			Cfg:           cfg,
+			SessionDir:    cfg.SessionDir,
+			Cwd:           cwd,
+			Stdin:         os.Stdin,
+			Stdout:        stdout,
+			Stderr:        stderr,
+			PromptBar:     promptBar,
+			Theme:         th,
+			Profile:       stdoutProfile,
+			StderrProfile: stderrProfile,
 		}
 		err = repl.Run(context.Background(), replCfg)
 		if cerr := h.Close(); cerr != nil {
@@ -350,6 +358,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// buildEnv snapshots the process environment as a map for the render profile
+// probe.
+func buildEnv() map[string]string {
+	env := make(map[string]string)
+	for _, kv := range os.Environ() {
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			env[kv[:i]] = kv[i+1:]
+		}
+	}
+	return env
 }
 
 // resolveAgentReg creates an AgentReg from the standard directories.

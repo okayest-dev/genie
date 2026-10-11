@@ -37,22 +37,42 @@ Exit codes:
 
 ## REPL slash commands
 
-At the `genie>` prompt, lines starting with `/` are slash commands.
+At the `genie>` prompt, lines starting with `/` are slash commands. Commands use **colon-separated** hierarchy (e.g., `/model:claude-sonnet-5`, `/copilot:auth:login`). Arguments to the final subcommand follow a space.
+
+Commands that list selectable items (`/model`, `/provider`, `/agent`, `/changes`) display a **numbered list**. You can select an item by its **number** (e.g., `/model:1`) or by its **name** (e.g., `/model:claude-sonnet-5`) — both forms are equivalent.
 
 | Command | What it does |
 |---------|--------------|
 | `/help` | Show the command surface, including the flat *Plugin commands* section |
 | `/quit`, `/exit` | Leave the REPL |
 | `/new` | Start a fresh session (with its own transcript and ledger) |
-| `/changes` | List the current session's change batches (id, time, line delta, touched files) |
-| `/changes <id>` | Show a batch's stored unified diffs |
-| `/model` | List the current provider's model catalog (`*` marks the current model) |
-| `/model <id>` | Switch the session's model within the current provider's catalog; unknown ids leave the model untouched |
-| `/provider` | List declared providers (`*` marks the current one) |
-| `/provider <id>` | Switch providers mid-session: the client is rebuilt against that provider, the model resets to its default, and the next turn continues on the same session and transcript. Unknown ids print an error naming the available set |
-| `/agent` | List available agent definitions with their model and tool set |
-| `/agent <name>` | Switch to a named agent |
+| `/changes` | List the current session's change batches (numbered, with id, time, line delta, touched files) |
+| `/changes:<id|num>` | Show a batch's stored unified diffs by batch ID or list number |
+| `/model` | List the current provider's model catalog (numbered, `*` marks the current model) |
+| `/model:<id|num>` | Switch the session's model by ID or list number; unknown values leave the model untouched |
+| `/provider` | List declared providers (numbered, `*` marks the current one) |
+| `/provider:<id|num>` | Switch providers by name or list number: the client is rebuilt, the model resets to its default, and the next turn continues on the same session and transcript |
+| `/agent` | List available agent definitions with their model and tool set (numbered) |
+| `/agent:<name|num>` | Switch to a named agent by name or list number |
 | `@<name> <prompt>` | Run one turn with a named agent, then revert (one-shot switch) |
+
+### Numbered selection examples
+
+```
+genie> /model
+Available models:
+* 1: claude-sonnet-5
+  2: claude-haiku-3
+  3: gpt-4o
+
+Current: claude-sonnet-5
+
+genie> /model:2          # Switch by number
+model: claude-haiku-3
+
+genie> /model:gpt-4o     # Switch by name
+model: gpt-4o
+```
 
 ### One-shot agents: `@name`
 
@@ -67,30 +87,30 @@ Runs that prompt through the `orchestrator` agent definition for a single turn, 
 The copilot provider exposes credential-management commands directly:
 
 ```
-genie> /copilot auth login
+genie> /copilot:auth:login
 Open https://github.com/login/device and enter code ABCD-1234
 ```
 
 ```
-genie> /copilot auth login --host tenant.ghe.com
+genie> /copilot:auth:login --host tenant.ghe.com
 ```
 
 ```
-genie> /copilot auth status
+genie> /copilot:auth:status
 ```
 
 A bare `/copilot` shows usage.
 
 ### Plugin commands
 
-Plugins can register commands, addressed as `/<plugin> <command>` with the plugin's name as the namespace:
+Plugins can register commands, addressed as `/<plugin>:<command>` with the plugin's name as the namespace:
 
 ```
-genie> /copilot auth login
+genie> /copilot:auth:login
 Open https://github.com/login/device and enter code ABCD-1234
 ```
 
-Everything after the command token is passed to the plugin verbatim as a raw argument string — the plugin owns sub-command parsing (`/copilot auth login --host tenant.ghe.com`). A bare `/<plugin>` shows the plugin's curated help (or its flat command list). `/help` lists all plugin commands. See [installing and using plugins](plugins/using.md#using-plugin-commands-in-the-repl).
+Everything after the command token is passed to the plugin verbatim as a raw argument string — the plugin owns sub-command parsing (`/copilot:auth:login --host tenant.ghe.com`). A bare `/<plugin>` shows the plugin's curated help (or its flat command list). `/help` lists all plugin commands. See [installing and using plugins](plugins/using.md#using-plugin-commands-in-the-repl).
 
 ### Keyboard
 

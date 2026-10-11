@@ -24,7 +24,9 @@ import (
 	"github.com/okayest-dev/genie/internal/plugin"
 	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/skill"
+	"github.com/okayest-dev/genie/internal/style"
 	"github.com/okayest-dev/genie/internal/tasktools"
+	"github.com/okayest-dev/genie/internal/theme"
 	"github.com/okayest-dev/genie/internal/tokens"
 	"github.com/okayest-dev/genie/internal/tools"
 	"github.com/okayest-dev/genie/internal/tools/bashtool"
@@ -91,6 +93,14 @@ type Options struct {
 	// SkillPool is the pre-discovered, config-filtered skill pool. When nil,
 	// New will discover it. Pass a pre-computed pool to avoid redundant discovery.
 	SkillPool []skill.ParsedSkill
+	// Theme and render profiles power live role styling of the turn surface
+	// (og-2s0): the model stream and the tool-frame lines render through their
+	// roles wherever the profile can display them. All nil leaves the turn
+	// output byte-identical plain, so callers that never wired styling get
+	// today's bytes.
+	Theme          *theme.Theme
+	StdoutProfile  *style.RenderProfile
+	StderrProfile  *style.RenderProfile
 }
 
 // env is the mutable slice of handle state a turn reads, snapshotted under the
@@ -796,6 +806,18 @@ func (h *Handle) Turn(ctx context.Context, prompt string, out, errOut io.Writer)
 		opts = append(opts, agent.WithAgentName(cur.agent.Name))
 	}
 	opts = append(opts, agent.WithPermissions(cur.gate))
+
+	// Live role styling (og-2s0): wrap the model stream in its role and route
+	// the tool-frame lines through the tool role. A theme that leaves a role
+	// unmapped renders plain; a profile that cannot display colour drops the
+	// bytes through verbatim. With no styling wired (nil theme/profiles), the
+	// turn output is exactly today's plain text.
+	if h.opts.Theme != nil && h.opts.StdoutProfile != nil {
+		out = h.opts.Theme.RoleWriter(out, h.opts.StdoutProfile, "model")
+	}
+	if h.opts.Theme != nil && h.opts.StderrProfile != nil {
+		opts = append(opts, agent.WithToolFrame(h.opts.Theme.RoleWriter(errOut, h.opts.StderrProfile, "tool")))
+	}
 
 	instruction, ierr := h.resolveInstruction(cur.agent)
 	if ierr != nil {

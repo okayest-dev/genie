@@ -168,7 +168,7 @@ func TestSlashChangesIDNotFound(t *testing.T) {
 	cfg := &Config{
 		Run:        h,
 		SessionDir: dir,
-		Stdin:      strings.NewReader("/changes 99\n/quit\n"),
+		Stdin:      strings.NewReader("/changes:99\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
 	}
@@ -187,7 +187,7 @@ func TestSlashChangesInvalidID(t *testing.T) {
 	cfg := &Config{
 		Run:        h,
 		SessionDir: dir,
-		Stdin:      strings.NewReader("/changes abc\n/quit\n"),
+		Stdin:      strings.NewReader("/changes:abc\n/quit\n"),
 		Stdout:     &stdout,
 		Stderr:     &stderr,
 	}
@@ -417,7 +417,7 @@ func TestProviderListMarksCurrent(t *testing.T) {
 	if !strings.Contains(out, "Available providers:") {
 		t.Errorf("stdout = %q, want providers listing", out)
 	}
-	if !strings.Contains(out, "* alpha") || !strings.Contains(out, "  beta") {
+	if !strings.Contains(out, "* 1: alpha") || !strings.Contains(out, "  2: beta") {
 		t.Errorf("stdout = %q, want alpha marked current and beta unmarked", out)
 	}
 	if !strings.Contains(out, "Current: alpha") {
@@ -429,7 +429,7 @@ func TestProviderSwitchRebuildsClientAndResetsModel(t *testing.T) {
 	cfg, stdout, stderr := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
 	oldClient := cfg.Run.Client()
 
-	runSlash(t, cfg, "/provider beta")
+	runSlash(t, cfg, "/provider:beta")
 
 	if cfg.Run.Provider() != "beta" {
 		t.Errorf("provider = %q, want beta", cfg.Run.Provider())
@@ -452,7 +452,7 @@ func TestProviderSwitchRebuildsClientAndResetsModel(t *testing.T) {
 	stdout.Reset()
 	runSlash(t, cfg, "/model")
 	out := stdout.String()
-	if !strings.Contains(out, "* beta-model") {
+	if !strings.Contains(out, "* 1: beta-model") {
 		t.Errorf("/model = %q, want asterisk on the beta default", out)
 	}
 	if strings.Contains(out, "alpha-") {
@@ -462,7 +462,7 @@ func TestProviderSwitchRebuildsClientAndResetsModel(t *testing.T) {
 
 func TestProviderUnknownNamesTheAvailableSet(t *testing.T) {
 	cfg, stdout, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
-	runSlash(t, cfg, "/provider gamma")
+	runSlash(t, cfg, "/provider:gamma")
 
 	out := stdout.String()
 	if !strings.Contains(out, "no such provider: gamma") || !strings.Contains(out, "(available: alpha, beta)") {
@@ -475,8 +475,8 @@ func TestProviderUnknownNamesTheAvailableSet(t *testing.T) {
 
 func TestBareProviderListsWithoutSwitching(t *testing.T) {
 	cfg, _, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
-	runSlash(t, cfg, "/provider beta")
-	runSlash(t, cfg, "/provider  ")
+	runSlash(t, cfg, "/provider:beta")
+	runSlash(t, cfg, "/provider")
 
 	// A bare /provider with only spaces lists; it must not switch.
 	if cfg.Run.Provider() != "beta" {
@@ -487,7 +487,7 @@ func TestBareProviderListsWithoutSwitching(t *testing.T) {
 func TestModelListingUsesActiveProviderCatalog(t *testing.T) {
 	cfg, stdout, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
 
-	runSlash(t, cfg, "/provider beta")
+	runSlash(t, cfg, "/provider:beta")
 	stdout.Reset()
 	runSlash(t, cfg, "/model")
 
@@ -501,7 +501,7 @@ func TestModelSwitchValidatedWithinActiveProvider(t *testing.T) {
 	cfg, stdout, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
 
 	// alpha's catalog does not contain beta-2: switching to it must fail.
-	runSlash(t, cfg, "/model beta-2")
+	runSlash(t, cfg, "/model:beta-2")
 	if cfg.Run.Model() != "alpha-model" {
 		t.Errorf("model = %q, want untouched after unknown model", cfg.Run.Model())
 	}
@@ -510,8 +510,8 @@ func TestModelSwitchValidatedWithinActiveProvider(t *testing.T) {
 	}
 
 	stdout.Reset()
-	runSlash(t, cfg, "/provider beta")
-	runSlash(t, cfg, "/model beta-2")
+	runSlash(t, cfg, "/provider:beta")
+	runSlash(t, cfg, "/model:beta-2")
 	if cfg.Run.Model() != "beta-2" {
 		t.Errorf("model = %q, want beta-2 after valid switch within beta", cfg.Run.Model())
 	}
@@ -519,7 +519,7 @@ func TestModelSwitchValidatedWithinActiveProvider(t *testing.T) {
 
 func TestProviderSurvivesNewAfterSwitch(t *testing.T) {
 	cfg, _, _ := newSlashCfg(t, twoProviderReg(), "alpha", t.TempDir())
-	runSlash(t, cfg, "/provider beta")
+	runSlash(t, cfg, "/provider:beta")
 	if cfg.Run.Provider() != "beta" {
 		t.Fatalf("provider = %q, want beta after switch", cfg.Run.Provider())
 	}
@@ -579,7 +579,7 @@ func TestAgentSwitchReflectedOnRun(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	cfg := &Config{Run: h, Stdout: &stdout, Stderr: &stderr}
 
-	runSlash(t, cfg, "/agent reader")
+	runSlash(t, cfg, "/agent:reader")
 	if cmd := h.CurrentAgent(); cmd == nil || cmd.Name != "reader" {
 		t.Errorf("current agent = %+v, want reader", cmd)
 	}
@@ -606,7 +606,7 @@ func TestAgentUnknownPrintsErr(t *testing.T) {
 	cfg := &Config{Run: h, Stdout: &stdout, Stderr: &stderr}
 
 	// The handle boots without an AgentReg, so /agent switch reports none.
-	runSlash(t, cfg, "/agent nosuch")
+	runSlash(t, cfg, "/agent:nosuch")
 	if !strings.Contains(stderr.String(), "no agents configured") {
 		t.Errorf("stderr = %q, want 'no agents configured'", stderr.String())
 	}
