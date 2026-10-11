@@ -89,6 +89,11 @@ type Store struct {
 	session   []Grant
 	// once is keyed by call ID (once-tier lifecycle is call-bound).
 	once map[string][]Grant
+	// extraReadRoots are read-only roots granted on top of the base surface
+	// while the session is rebound into a task worktree (og-wm7.3): the main
+	// checkout stays reachable for reads — tracker state, domain docs — even
+	// though writes are confined to the worktree. Cleared on restore.
+	extraReadRoots []string
 }
 
 // New creates a Store rooted at cwd with the restrictive no-config default.
@@ -98,6 +103,38 @@ func New(cwd string) *Store {
 		base: map[Axis][]string{AxisRead: {"."}},
 		once: map[string][]Grant{},
 	}
+}
+
+// SetCwd re-roots the store at a new working directory, so relative base
+// scopes like "." track a session whose working root moved (og-wm7.3 worktree
+// rebinding). Persisted grants are unaffected.
+func (s *Store) SetCwd(cwd string) {
+	s.cwd = cwd
+}
+
+// AddReadRoot grants read-only coverage of root on top of the base surface.
+// It is the worktree seam (og-wm7.3): when the session's cwd moves into a task
+// worktree, the original checkout is added as a read root so tracker state and
+// domain docs stay readable while writes remain confined to the worktree.
+// Unlike the base surface it survives SetBase, so a per-agent replacement does
+// not silently revoke read access. Duplicate roots are ignored.
+func (s *Store) AddReadRoot(root string) {
+	if root == "" {
+		return
+	}
+	n := s.Normalize(AxisRead, root)
+	for _, r := range s.extraReadRoots {
+		if r == n {
+			return
+		}
+	}
+	s.extraReadRoots = append(s.extraReadRoots, n)
+}
+
+// ClearReadRoots drops every extra read root (the resolve-time counterpart to
+// AddReadRoot, when the session's cwd returns to the original checkout).
+func (s *Store) ClearReadRoots() {
+	s.extraReadRoots = nil
 }
 
 // Covered reports whether (axis, scope) is within the effective policy. The
@@ -133,6 +170,13 @@ func (s *Store) CoveredScopes(axis Axis) []string {
 	for _, sc := range s.base[axis] {
 		if add(sc) {
 			return []string{""}
+		}
+	}
+	if axis == AxisRead {
+		for _, root := range s.extraReadRoots {
+			if add(root) {
+				return []string{""}
+			}
 		}
 	}
 	for _, tier := range [][]Grant{s.permanent, s.session} {
@@ -298,6 +342,13 @@ func (s *Store) baseCovered(axis Axis, want string) bool {
 		n := s.Normalize(axis, sc)
 		if scopeCovers(axis, n, want) {
 			return true
+		}
+	}
+	if axis == AxisRead {
+		for _, root := range s.extraReadRoots {
+			if scopeCovers(axis, root, want) {
+				return true
+			}
 		}
 	}
 	return false

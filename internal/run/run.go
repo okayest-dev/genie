@@ -32,6 +32,7 @@ import (
 	"github.com/okayest-dev/genie/internal/tools/requesttool"
 	"github.com/okayest-dev/genie/internal/tools/skilltool"
 	"github.com/okayest-dev/genie/internal/tools/writetool"
+	"github.com/okayest-dev/genie/internal/worktree"
 )
 
 // ProviderSource is the port through which the run resolves providers: the
@@ -144,6 +145,9 @@ type Handle struct {
 
 	taskState *tasktools.TaskState
 	tracker   tasktools.Tracker
+	// baseCwd is the run's original working root, restored after a task's
+	// worktree is torn down. Guarded by mu.
+	baseCwd string
 	gateRunner *gates.GateRunnerImpl
 	evidenceLedger gates.EvidenceLedger
 
@@ -201,29 +205,18 @@ func New(opts Options) (*Handle, error) {
 
 	// Full tool registry; request_permission is always-on (a negotiation
 	// channel, not a capability) and seeded with the run's negotiator.
+	// The active-task state is created before the tools so the guarded bash
+	// tool can share it.
+	h.baseCwd = opts.Cwd
+	h.taskState = tasktools.NewTaskState()
 	full := tools.NewRegistry()
-	full.Register(readtool.New(opts.Cwd))
-	full.Register(writetool.New(opts.Cwd))
-	full.Register(edittool.New(opts.Cwd))
-
-	// Bash tool: wrap with tracker guard if task tools are enabled
-	baseBash := bashtool.New(opts.Cwd, opts.Config.BashTimeout)
-	if opts.Config.TaskTools.Enable {
-		guardedBash := bashtool.NewGuardedBashTool(baseBash, h.taskState, opts.Config.TaskTools.TrackerGuardPolicy)
-		full.Register(guardedBash)
-	} else {
-		full.Register(baseBash)
-	}
-
-	codeT := codetool.New(h.store, opts.Cwd, opts.Config.Tools.CodeTimeout)
-	full.Register(codeT)
+	h.installCwdTools(full, opts.Cwd)
 	reqT := requesttool.New(store, h.sink)
 	reqT.SetNegotiator(opts.Negotiator)
 	full.Register(reqT)
 	full.Register(skilltool.New(h))
 
 	// Task tools: register if enabled in config
-	h.taskState = tasktools.NewTaskState()
 	if opts.Config.TaskTools.Enable {
 		// Get tracker from plugin manager
 		var tracker tasktools.Tracker
@@ -274,10 +267,16 @@ func New(opts Options) (*Handle, error) {
 		h.claimTool = claimTool
 		full.Register(claimTool)
 
+		// Worktree isolation (og-wm7.3): when policy asks for it and the run is
+		// in a git repo, claim allocates a task worktree and rebinds the session
+		// cwd. Non-git repos are exempt (allocation is skipped).
+		h.configureWorktree(claimTool, opts.Config.Worktree.Policy)
+
 		// Task resolve tool with gate runner
 		resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, gateRunner, true, opts.Config.TaskTools.CommandTimeout)
 		h.resolveTool = resolveTool
 		full.Register(resolveTool)
+		resolveTool.SetRestoreCwd(h.RestoreCwd)
 
 		// Task create tool with follow-up engine
 		createTool := tasktools.NewTaskCreateToolWithFollowup(tracker, followupEngine, true, opts.Config.TaskTools.CommandTimeout)
@@ -481,6 +480,83 @@ func New(opts Options) (*Handle, error) {
 		gate:       permissions.NewGate(store, opts.Negotiator, opts.PermanentSink),
 	}
 	return h, nil
+}
+
+// installCwdTools (re)registers the working-directory-bound tools — read,
+// write, edit, bash (guarded when task tools are enabled), and code — rooted at
+// cwd. It is called at assembly and again on every cwd rebind so the tools that
+// resolve relative paths track the session's working root.
+func (h *Handle) installCwdTools(reg *tools.Registry, cwd string) {
+	reg.Register(readtool.New(cwd))
+	reg.Register(writetool.New(cwd))
+	reg.Register(edittool.New(cwd))
+	baseBash := bashtool.New(cwd, h.opts.Config.BashTimeout)
+	if h.opts.Config.TaskTools.Enable {
+		reg.Register(bashtool.NewGuardedBashTool(baseBash, h.taskState, h.opts.Config.TaskTools.TrackerGuardPolicy))
+	} else {
+		reg.Register(baseBash)
+	}
+	reg.Register(codetool.New(h.store, cwd, h.opts.Config.Tools.CodeTimeout))
+}
+
+// configureWorktree wires claim-time worktree allocation when the policy asks
+// for it and opts.Cwd is inside a git repository. A non-git working directory
+// leaves the claim tool with no allocator (the policy is exempt), matching the
+// epic's "non-git repos are exempt" rule.
+func (h *Handle) configureWorktree(claim *tasktools.TaskClaimTool, policy string) {
+	if policy != worktree.PolicyRequired && policy != worktree.PolicyOptional {
+		return
+	}
+	root, ok, err := worktree.DetectRoot(context.Background(), h.opts.Cwd)
+	if err != nil {
+		slog.Error("worktree: detect repo root failed", "error", err)
+		return
+	}
+	if !ok {
+		slog.Info("worktree.policy set but working directory is not a git repo; worktrees disabled", "cwd", h.opts.Cwd)
+		return
+	}
+	manager := worktree.New(root, h.opts.Config.Worktree)
+	claim.ConfigureWorktree(policy, manager, h.RebindCwd)
+	slog.Info("worktree policy active", "policy", policy, "repo", root, "path", h.opts.Config.Worktree.Path)
+}
+
+// RebindCwd moves the session's working root to root: the cwd-bound tools are
+// re-registered against it, the agent-scoped registry is rebuilt, and the
+// permission store re-roots so relative base scopes follow. It is the
+// claim-time worktree hook (og-wm7.3).
+func (h *Handle) RebindCwd(root string) error {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("resolve worktree path %s: %w", root, err)
+	}
+	h.mu.Lock()
+	h.opts.Cwd = abs
+	h.installCwdTools(h.full, abs)
+	if cur := h.cur; cur.agent != nil && cur.agent.Tools != nil {
+		h.cur.registry = h.full.Subset(cur.agent.Tools)
+	} else {
+		h.cur.registry = h.full
+	}
+	h.mu.Unlock()
+	h.store.SetCwd(abs)
+	// While the session lives in a task worktree, keep the original checkout
+	// reachable for reads — tracker state, domain docs — even though writes
+	// stay confined to the worktree (og-wm7.3). Restoring to the original
+	// checkout drops the extra root again.
+	if h.baseCwd != "" && abs != h.baseCwd {
+		h.store.AddReadRoot(h.baseCwd)
+	} else {
+		h.store.ClearReadRoots()
+	}
+	slog.Info("session cwd rebound", "cwd", abs)
+	return nil
+}
+
+// RestoreCwd moves the session's working root back to the run's original
+// checkout. It is the resolve-time counterpart to RebindCwd.
+func (h *Handle) RestoreCwd() error {
+	return h.RebindCwd(h.baseCwd)
 }
 
 // wrap builds the context-wrapped client for a base client and session,

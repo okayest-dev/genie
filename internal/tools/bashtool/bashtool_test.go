@@ -476,3 +476,90 @@ func TestGuardedBashToolDescriptionAndParameters(t *testing.T) {
 		t.Error("Parameters() should not be nil")
 	}
 }
+
+func TestGuardedBashToolBlocksGitWorktreeWhenActive(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	cmds := []string{
+		"git worktree add /tmp/wt -b task/og-1",
+		"git worktree",
+		"cd /tmp && git worktree remove /tmp/wt",
+		"git -C /repo worktree add /tmp/wt",
+		"git worktree prune",
+		"git worktree lock /tmp/wt",
+		"git worktree move /tmp/wt /tmp/wt2",
+	}
+	for _, cmd := range cmds {
+		_, err := guarded.Execute(argsJSON(cmd))
+		if err == nil {
+			t.Errorf("%q: expected guard error", cmd)
+			continue
+		}
+		if !strings.Contains(err.Error(), "git worktree is blocked") {
+			t.Errorf("%q: error = %v, want worktree guard message", cmd, err)
+		}
+	}
+}
+
+func TestGuardedBashToolAllowsReadOnlyGitWorktreeList(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	// Read-only inspection passes while a task is active, mirroring how
+	// tracker reads pass the guard.
+	cmds := []string{
+		"git worktree list",
+		"git worktree list --porcelain",
+		"git --no-pager worktree list",
+		"cd /repo && git worktree list",
+		"git worktree list --porcelain -z",
+	}
+	for _, cmd := range cmds {
+		_, err := guarded.Execute(argsJSON(cmd))
+		if err != nil && strings.Contains(err.Error(), "Guard:") {
+			t.Errorf("%q: read-only worktree list must not be blocked, got: %v", cmd, err)
+		}
+	}
+}
+
+func TestGuardedBashToolAllowsGitNonWorktree(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	// A read that merely mentions the word "worktree" must not be blocked.
+	_, err := guarded.Execute(argsJSON("git log --grep worktree"))
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("git log should not be blocked, got: %v", err)
+	}
+}
+
+func TestGuardedBashToolWorktreeAllowedWithoutActiveTask(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "strict")
+
+	// No active task: the guard is inert.
+	_, err := guarded.Execute(argsJSON("git worktree list --porcelain"))
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("guard must be inert without an active task, got: %v", err)
+	}
+}
+
+func TestGuardedBashToolWorktreeAllowedWhenPolicyOff(t *testing.T) {
+	state := tasktools.NewTaskState()
+	base := New(t.TempDir(), 0)
+	guarded := NewGuardedBashTool(base, state, "off")
+	state.Set(&tasktools.Task{ID: "og-1", Title: "Test", Status: "open"})
+
+	_, err := guarded.Execute(argsJSON("git worktree list"))
+	if err != nil && strings.Contains(err.Error(), "Guard:") {
+		t.Errorf("policy off must not block, got: %v", err)
+	}
+}

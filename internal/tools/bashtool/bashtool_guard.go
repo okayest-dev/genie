@@ -76,6 +76,14 @@ func (g *GuardedBashTool) Execute(raw json.RawMessage) (string, error) {
 		return "", fmt.Errorf("missing required argument: command")
 	}
 
+	// Block raw git worktree commands while a task is active: the same way the
+	// governed task tools are the only sanctioned tracker write path, they are
+	// the only sanctioned worktree-allocation path (og-wm7.3). Read-only
+	// inspection (`git worktree list`) passes, like tracker reads do.
+	if isWorktreeCommand(args.Command) {
+		return "", fmt.Errorf("Guard: raw git worktree is blocked while a task is active; the task worktree is managed by task.claim and task.resolve, not by running git directly")
+	}
+
 	// Check if the command is a tracker write
 	if g.isTrackerWrite(args.Command) {
 		active := g.state.Get()
@@ -103,6 +111,39 @@ func (g *GuardedBashTool) Execute(raw json.RawMessage) (string, error) {
 
 	// Allow tracker reads and all other commands
 	return g.inner.Execute(raw)
+}
+
+// worktreeCommand matches a raw `git worktree` invocation, optionally with a
+// leading `-C <dir>` and optionally after a shell separator, so
+// `cd x && git worktree list` is caught alongside a bare `git worktree add`.
+var worktreeCommand = regexp.MustCompile(`(^|[;&|]\s*)git(\s+(--?\S+)(\s+\S+)?)*\s+worktree\b`)
+
+// worktreeSubcommandRE captures the subcommand token following `git worktree`.
+var worktreeSubcommandRE = regexp.MustCompile(`\bworktree\s+([a-z]+)`)
+
+// readOnlyWorktreeSubcommands are the git worktree subcommands that only
+// inspect state. Like tracker reads, they pass the guard while a task is
+// active; every subcommand that allocates or mutates worktrees is blocked.
+var readOnlyWorktreeSubcommands = map[string]bool{"list": true}
+
+// worktreeSubcommand returns the git worktree subcommand in cmd ("" when the
+// token after `worktree` is not a plain word, e.g. a bare `git worktree`).
+func worktreeSubcommand(cmd string) string {
+	m := worktreeSubcommandRE.FindStringSubmatch(cmd)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// isWorktreeCommand reports whether the command mutates raw `git worktree`
+// state. Read-only inspection (`git worktree list`) is allowed while a task is
+// active, mirroring how tracker reads pass the guard.
+func isWorktreeCommand(cmd string) bool {
+	if !worktreeCommand.MatchString(strings.TrimSpace(cmd)) {
+		return false
+	}
+	return !readOnlyWorktreeSubcommands[worktreeSubcommand(cmd)]
 }
 
 // isTrackerWrite checks if the command is a bd tracker write command.

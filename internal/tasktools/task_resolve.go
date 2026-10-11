@@ -44,12 +44,13 @@ type ResolutionRecord struct {
 
 // TaskResolveTool implements the task_resolve tool.
 type TaskResolveTool struct {
-	tracker     Tracker
-	state       *TaskState
-	gateRunner  GateRunner
-	enabled     bool
-	timeout     time.Duration
-	sess        *session.Session
+	tracker    Tracker
+	state      *TaskState
+	gateRunner GateRunner
+	enabled    bool
+	timeout    time.Duration
+	sess       *session.Session
+	restoreCwd func() error
 }
 
 // NewTaskResolveTool creates a new task_resolve tool.
@@ -69,6 +70,12 @@ func NewTaskResolveTool(tracker Tracker, state *TaskState, gateRunner GateRunner
 // SetSession sets the session for boundary compaction.
 func (t *TaskResolveTool) SetSession(sess *session.Session) {
 	t.sess = sess
+}
+
+// SetRestoreCwd registers the callback that returns the session's working root
+// to the main checkout once the task (and its worktree) is resolved (og-wm7.3).
+func (t *TaskResolveTool) SetRestoreCwd(fn func() error) {
+	t.restoreCwd = fn
 }
 
 // Name returns the tool name.
@@ -210,8 +217,15 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 		}
 	}
 
-	// Clear active task state (emits task boundary signal via onChange callback)
+	// Restore the session's working root to the main checkout once the task
+	// state has been cleared, so the tools stop resolving inside the worktree.
+	hadWorktree := t.state.WorktreePath() != ""
 	t.state.Clear()
+	if hadWorktree && t.restoreCwd != nil {
+		if err := t.restoreCwd(); err != nil {
+			return "", fmt.Errorf("task resolved but failed to restore session cwd: %w", err)
+		}
+	}
 
 	// Build resolution record
 	record := ResolutionRecord{
