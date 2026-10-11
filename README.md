@@ -302,6 +302,14 @@ provider = "zen"
 # Theme: "classic" (default, connected p10k-style chips), "lean" (gap-separated),
 # or a custom theme file name from ~/.config/genie/themes/<name>.toml
 # theme = "classic"
+#
+# The theme also styles live turn output through its `roles` table: `tool`
+# frames (the ── name args ── lines) render in cyan, `error` reports in red,
+# and `turn_cancelled` notices dimmed, all via the Classic/Lean defaults.
+# The `model` stream and tool result bytes are never themed. Other roles
+# ("warning", "banner", "log", ...) are reserved for future surfaces. Styling
+# applies only on a colour-capable TTY: pipes, redirects, NO_COLOR, TERM=dumb,
+# and CI keep today's plain bytes verbatim.
 # Glyph tier for prompt connectors: "nerd", "powerline", or "ascii" (default)
 # glyph_tier = "ascii"
 

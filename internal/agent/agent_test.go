@@ -527,3 +527,67 @@ func TestRunTurnFinishLengthMaxRetries(t *testing.T) {
 		t.Errorf("stderr missing truncation warning: %q", errOut.String())
 	}
 }
+
+func TestRunTurnToolFrameRoutedThroughWithToolFrame(t *testing.T) {
+	var calls int
+	mock := &mockStreamClient{
+		streamFunc: func(_ context.Context, _ llm.Request) (iter.Seq[llm.Event], error) {
+			calls++
+			if calls == 1 {
+				return func(yield func(llm.Event) bool) {
+					yield(llm.Event{Kind: llm.EventToolCall, ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "echo", Arguments: `{}`},
+					}})
+					yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishToolCalls})
+				}, nil
+			}
+			return func(yield func(llm.Event) bool) {
+				yield(llm.Event{Kind: llm.EventText, Text: "result"})
+				yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+			}, nil
+		},
+	}
+	reg := newTestRegistry(t)
+	var out, errOut, frame bytes.Buffer
+	if _, err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, reg, nil, "", WithToolFrame(&frame)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !strings.Contains(frame.String(), "── echo ") {
+		t.Errorf("tool frame missing from WithToolFrame writer: %q", frame.String())
+	}
+	if strings.Contains(errOut.String(), "── echo ") {
+		t.Errorf("tool frame should not appear on stderr when routed: %q", errOut.String())
+	}
+	if out.String() != "result\n" {
+		t.Errorf("stdout = %q, want %q", out.String(), "result\n")
+	}
+}
+
+func TestRunTurnToolFrameDefaultsToErrOut(t *testing.T) {
+	var calls int
+	mock := &mockStreamClient{
+		streamFunc: func(_ context.Context, _ llm.Request) (iter.Seq[llm.Event], error) {
+			calls++
+			if calls == 1 {
+				return func(yield func(llm.Event) bool) {
+					yield(llm.Event{Kind: llm.EventToolCall, ToolCalls: []llm.ToolCall{
+						{ID: "call_1", Name: "echo", Arguments: `{}`},
+					}})
+					yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishToolCalls})
+				}, nil
+			}
+			return func(yield func(llm.Event) bool) {
+				yield(llm.Event{Kind: llm.EventText, Text: "result"})
+				yield(llm.Event{Kind: llm.EventFinish, End: llm.FinishStop})
+			}, nil
+		},
+	}
+	reg := newTestRegistry(t)
+	var out, errOut bytes.Buffer
+	if _, err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, reg, nil, ""); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "── echo ") {
+		t.Errorf("tool frame missing from stderr: %q", errOut.String())
+	}
+}
