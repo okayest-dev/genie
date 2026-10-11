@@ -9,6 +9,7 @@ import (
 	"github.com/okayest-dev/genie/internal/gates"
 	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/tools"
+	"github.com/okayest-dev/genie/internal/worktree"
 )
 
 // ActiveTask holds the currently claimed task state for the session.
@@ -45,7 +46,8 @@ type TaskState struct {
 	progressLog          []ProgressRecord
 	deferredFindings     []DeferredFindingRecord
 	evidenceTracker      *gates.ObservedEvidenceTracker
-	taskStartLine        int // transcript line index when task was claimed
+	taskStartLine        int    // transcript line index when task was claimed
+	worktreePath         string // worktree allocated for the active task, if any
 }
 
 // NewTaskState creates a new task state manager.
@@ -98,11 +100,26 @@ func (s *TaskState) TaskStartLine() int {
 	return s.taskStartLine
 }
 
+// SetWorktree records the worktree allocated for the active task.
+func (s *TaskState) SetWorktree(path string) {
+	s.worktreePath = path
+	if s.onChange != nil {
+		data, _ := json.Marshal(s)
+		_ = s.onChange(data)
+	}
+}
+
+// WorktreePath returns the worktree path for the active task, or empty.
+func (s *TaskState) WorktreePath() string {
+	return s.worktreePath
+}
+
 // Clear clears the active task.
 func (s *TaskState) Clear() {
 	s.active = nil
 	s.progressLog = nil
 	s.taskStartLine = 0
+	s.worktreePath = ""
 	if s.onChange != nil {
 		data, _ := json.Marshal(s)
 		_ = s.onChange(data)
@@ -159,11 +176,12 @@ func (s *TaskState) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(map[string]any{
 		"active_task": map[string]any{
-			"id":          s.active.Task.ID,
-			"title":       s.active.Task.Title,
-			"type":        s.active.Task.Type,
-			"labels":      s.active.Task.Labels,
-			"claimed_at":  s.active.ClaimedAt.Format(time.RFC3339),
+			"id":           s.active.Task.ID,
+			"title":        s.active.Task.Title,
+			"type":         s.active.Task.Type,
+			"labels":       s.active.Task.Labels,
+			"claimed_at":   s.active.ClaimedAt.Format(time.RFC3339),
+			"worktree_path": s.worktreePath,
 		},
 		"progress_log":     s.progressLog,
 		"deferred_findings": s.deferredFindings,
@@ -176,13 +194,22 @@ type TaskClaimArgs struct {
 	TaskID string `json:"task_id"`
 }
 
+// WorktreeAllocator allocates (or resumes) the isolated worktree for a claimed
+// task. The worktree Manager (internal/worktree) satisfies it.
+type WorktreeAllocator interface {
+	Allocate(ctx context.Context, taskID, trackerID string) (*worktree.Allocation, error)
+}
+
 // TaskClaimTool implements the task_claim tool.
 type TaskClaimTool struct {
-	tracker  Tracker
-	state    *TaskState
-	enabled  bool
-	timeout  time.Duration
-	sess     *session.Session
+	tracker        Tracker
+	state          *TaskState
+	enabled        bool
+	timeout        time.Duration
+	sess           *session.Session
+	worktreePolicy string
+	allocator      WorktreeAllocator
+	rebind         func(root string) error
 }
 
 // NewTaskClaimTool creates a new task_claim tool.
@@ -199,6 +226,22 @@ func NewTaskClaimTool(tracker Tracker, state *TaskState, enabled bool, timeout t
 func (t *TaskClaimTool) SetSession(sess *session.Session) {
 	t.sess = sess
 }
+
+// ConfigureWorktree enables claim-time worktree allocation (og-wm7.3). policy
+// is the resolved worktree.policy; allocator performs the git work; rebind
+// points the session's working root at the allocated worktree. A nil rebind
+// leaves the session cwd untouched.
+func (t *TaskClaimTool) ConfigureWorktree(policy string, allocator WorktreeAllocator, rebind func(root string) error) {
+	t.worktreePolicy = policy
+	t.allocator = allocator
+	t.rebind = rebind
+}
+
+// WorktreePolicy returns the configured worktree policy (empty when unset).
+func (t *TaskClaimTool) WorktreePolicy() string { return t.worktreePolicy }
+
+// HasWorktreeAllocator reports whether an allocator is wired.
+func (t *TaskClaimTool) HasWorktreeAllocator() bool { return t.allocator != nil }
 
 // Name returns the tool name.
 func (t *TaskClaimTool) Name() string {
@@ -244,22 +287,32 @@ func (t *TaskClaimTool) Execute(raw json.RawMessage) (string, error) {
 
 	ctx := context.Background()
 
+	// Resolve the task first so worktree allocation and claim share one target.
 	var task *Task
 	var err error
-
 	if args.TaskID != "" {
-		// Claim specific task
-		task, err = t.tracker.Claim(ctx, args.TaskID)
+		task, err = t.tracker.Read(ctx, args.TaskID)
+		if err != nil {
+			return "", fmt.Errorf("read task %s: %w", args.TaskID, err)
+		}
 	} else {
-		// Claim frontier task
 		task, err = t.tracker.Frontier(ctx)
 		if err != nil {
 			return "", fmt.Errorf("no ready tasks available: %w", err)
 		}
-		// Now claim it
-		task, err = t.tracker.Claim(ctx, task.ID)
 	}
 
+	// Allocate the isolated worktree before claiming, so a failure leaves no
+	// claimed task. policy=required is the only policy that allocates.
+	var alloc *worktree.Allocation
+	if t.worktreePolicy == worktree.PolicyRequired {
+		alloc, err = t.allocateWorktree(ctx, task.ID)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	task, err = t.tracker.Claim(ctx, task.ID)
 	if err != nil {
 		return "", fmt.Errorf("claim failed: %w", err)
 	}
@@ -275,8 +328,42 @@ func (t *TaskClaimTool) Execute(raw json.RawMessage) (string, error) {
 		}
 	}
 
-	return fmt.Sprintf("Claimed task %s: %s\nType: %s\nLabels: %v\nClaimed at: %s",
-		task.ID, task.Title, task.Type, task.Labels, time.Now().Format(time.RFC3339)), nil
+	// Rebind the session's working root to the worktree for the task lifetime.
+	if alloc != nil {
+		t.state.SetWorktree(alloc.Path)
+		if t.rebind != nil {
+			if err := t.rebind(alloc.Path); err != nil {
+				return "", fmt.Errorf("claimed task %s but failed to rebind session to worktree %s: %w", task.ID, alloc.Path, err)
+			}
+		}
+	}
+
+	msg := fmt.Sprintf("Claimed task %s: %s\nType: %s\nLabels: %v\nClaimed at: %s",
+		task.ID, task.Title, task.Type, task.Labels, time.Now().Format(time.RFC3339))
+	if alloc != nil {
+		state := "created"
+		if alloc.Resumed {
+			state = "resumed"
+		}
+		msg += fmt.Sprintf("\nWorktree: %s (branch %s, %s)", alloc.Path, alloc.Branch, state)
+	}
+	return msg, nil
+}
+
+// allocateWorktree allocates the task's isolation worktree, refusing when the
+// active tracker is not worktree-safe or no allocator is configured.
+func (t *TaskClaimTool) allocateWorktree(ctx context.Context, taskID string) (*worktree.Allocation, error) {
+	if t.allocator == nil {
+		return nil, fmt.Errorf("worktree.policy=required but no worktree allocator is configured")
+	}
+	if !t.tracker.Isolation().WorktreeSafe() {
+		return nil, fmt.Errorf("worktree.policy=required but active tracker isolation is %q (not worktree-safe); parallel worktrees would diverge", t.tracker.Isolation().String())
+	}
+	alloc, err := t.allocator.Allocate(ctx, taskID, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("worktree allocation failed for task %s: %w", taskID, err)
+	}
+	return alloc, nil
 }
 
 // TaskClaimDef returns the tool definition for the registry.

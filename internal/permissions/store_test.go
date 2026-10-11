@@ -385,3 +385,48 @@ func TestBlanketGrantCoversAxis(t *testing.T) {
 		t.Errorf("blanket grant should cover blanket request")
 	}
 }
+
+func TestAddReadRootCoversOriginalCheckout(t *testing.T) {
+	s := New("/repo/.genie/worktrees/og-1")
+	s.AddReadRoot("/repo")
+	if !s.Covered(AxisRead, "/repo/.beads/state") {
+		t.Errorf("read of original checkout should be covered after AddReadRoot")
+	}
+	if !s.Covered(AxisRead, "/repo/docs/adr/0001.md") {
+		t.Errorf("read of original checkout subtree should be covered")
+	}
+	if s.Covered(AxisWrite, "/repo/.beads/state") {
+		t.Errorf("writes to the original checkout must stay uncovered (writes confined to worktree)")
+	}
+	if s.Covered(AxisRead, "/etc/passwd") {
+		t.Errorf("read outside original checkout should be uncovered")
+	}
+}
+
+func TestAddReadRootSurvivesSetBase(t *testing.T) {
+	s := New("/repo/.genie/worktrees/og-1")
+	s.AddReadRoot("/repo")
+	s.SetBase(map[Axis][]string{AxisRead: {"/custom"}})
+	if !s.Covered(AxisRead, "/repo/.beads/state") {
+		t.Errorf("AddReadRoot must survive a per-agent SetBase replacement")
+	}
+	if !s.Covered(AxisRead, "/custom/notes") {
+		t.Errorf("per-agent base must still apply")
+	}
+}
+
+func TestClearReadRootsDropsCoverage(t *testing.T) {
+	s := New("/repo/.genie/worktrees/og-1")
+	s.AddReadRoot("/repo")
+	s.AddReadRoot("/repo")
+	if n := len(s.CoveredScopes(AxisRead)); n != 2 {
+		t.Errorf("CoveredScopes(read) after dedupe = %v; want the worktree cwd + original checkout", s.CoveredScopes(AxisRead))
+	}
+	if s.Covered(AxisRead, "/elsewhere") {
+		t.Fatal("precondition")
+	}
+	s.ClearReadRoots()
+	if s.Covered(AxisRead, "/repo/.beads/state") {
+		t.Errorf("read of original checkout should be uncovered after ClearReadRoots")
+	}
+}

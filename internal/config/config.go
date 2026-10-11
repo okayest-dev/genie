@@ -27,6 +27,7 @@ import (
 	"github.com/okayest-dev/genie/internal/modelinfo"
 	"github.com/okayest-dev/genie/internal/tasktools"
 	"github.com/okayest-dev/genie/internal/theme"
+	"github.com/okayest-dev/genie/internal/worktree"
 )
 
 // Defaults for every configurable scalar.
@@ -196,6 +197,9 @@ type TaskToolsConfig = tasktools.TaskToolsConfig
 // GatesConfig holds configuration for quality gates (og-wm7.2).
 type GatesConfig = gates.GateConfig
 
+// WorktreeConfig holds configuration for git-worktree task isolation (og-wm7.3).
+type WorktreeConfig = worktree.Config
+
 // Config is the resolved harness configuration.
 type Config struct {
 	// Providers is the set of declared providers keyed by name, seeded with
@@ -243,6 +247,8 @@ type Config struct {
 	AgentReg  *AgentReg
 	TaskTools TaskToolsConfig
 	Gates     GatesConfig
+	// Worktree is the git-worktree task-isolation surface (og-wm7.3).
+	Worktree WorktreeConfig
 }
 
 // Permissions is the resolved permission policy. Base maps each axis name
@@ -284,6 +290,17 @@ type fileConfig struct {
 	Permissions     permissionsFile `toml:"permissions"`
 	TaskTools       taskToolsFile   `toml:"task_tools"`
 	Gates           gatesFile       `toml:"gates"`
+	Worktree        worktreeFile    `toml:"worktree"`
+}
+
+// worktreeFile is the TOML schema for [worktree] (og-wm7.3).
+type worktreeFile struct {
+	Policy       *string `toml:"policy"`
+	Path         *string `toml:"path"`
+	BranchPrefix *string `toml:"branch_prefix"`
+	Merge        *string `toml:"merge"`
+	BaseBranch   *string `toml:"base_branch"`
+	DriftCheck   *string `toml:"drift_check"`
 }
 
 // providerFiles is the TOML schema for [providers.*]: nested tables keyed by
@@ -446,6 +463,10 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 			return nil, err
 		}
 		applyGates(&cfg.Gates, fc.Gates)
+		applyWorktree(&cfg.Worktree, fc.Worktree)
+		if err := cfg.Worktree.Validate(); err != nil {
+			return nil, fmt.Errorf("config: %w", err)
+		}
 		applyPluginsErr := applyPlugins(&cfg, fc.Plugins, userConfigDir)
 		if applyPluginsErr != nil {
 			return nil, applyPluginsErr
@@ -593,6 +614,7 @@ func defaults(userConfigDir string) Config {
 		Permissions: Permissions{Base: map[string][]string{"read": {"."}}},
 		TaskTools:   tasktools.DefaultTaskToolsConfig(),
 		Gates:       defaultGateConfig(),
+		Worktree:    worktree.DefaultConfig(),
 		Theme:       "classic",
 		GlyphTier:   "ascii",
 	}
@@ -720,6 +742,29 @@ func applyGates(dst *GatesConfig, src gatesFile) {
 	}
 	if src.CoverageCommand != nil {
 		dst.CoverageCommand = *src.CoverageCommand
+	}
+}
+
+// applyWorktree overlays the [worktree] table on the defaults. A set key wins;
+// an omitted key keeps the default (off, .genie/worktrees, task/, park).
+func applyWorktree(dst *worktree.Config, src worktreeFile) {
+	if src.Policy != nil {
+		dst.Policy = *src.Policy
+	}
+	if src.Path != nil {
+		dst.Path = *src.Path
+	}
+	if src.BranchPrefix != nil {
+		dst.BranchPrefix = *src.BranchPrefix
+	}
+	if src.Merge != nil {
+		dst.Merge = *src.Merge
+	}
+	if src.BaseBranch != nil {
+		dst.BaseBranch = *src.BaseBranch
+	}
+	if src.DriftCheck != nil {
+		dst.DriftCheck = *src.DriftCheck
 	}
 }
 

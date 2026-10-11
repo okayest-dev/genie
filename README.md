@@ -62,6 +62,15 @@ reporting_gates = []            # gates that report but don't block (e.g., ["lin
 test_command = "make test"      # override test command (default: make test)
 build_command = "make build"    # override build command (default: make build)
 coverage_command = "make coverage"  # override coverage command (default: make coverage)
+
+# Parallel task isolation in git worktrees (og-wm7.3) - requires a worktree-safe tracker
+[worktree]
+policy = "off"                  # off (default), optional, or required
+path = ".genie/worktrees"       # worktree root, relative to the repo top level
+branch_prefix = "task/"         # prepended to the tracker id to form the task branch
+merge = "park"                  # resolve-time check-in: auto, park, or pr
+base_branch = ""                # branch merge=auto merges into (default: repo default)
+drift_check = "warn"            # warn or block when the base branch has moved
 ```
 
 Once enabled, use the `task_claim` tool to claim tasks, `task_create` to create new tasks, `task_progress` to record checkpoints, `task_resolve` to close them, and `session_reset` to start a fresh context:
@@ -105,6 +114,16 @@ By default, Genie uses a markdown-based tracker (files in `~/.config/genie/tasks
 Every tracker declares where its state lives relative to a git worktree. The plugin handshake carries `tracker_isolation` in its capabilities — `"shared"` when every checkout resolves the identical task state (a remote store, or a local store outside the checkout), or `"per_checkout"` when the store lives inside the checkout and diverges across parallel worktrees. An absent declaration is treated as the conservative `unknown` and is *not* worktree-safe. The built-in markdown tracker stores tasks in `~/.config/genie/tasks/` (outside the checkout) and declares `"shared"`.
 
 The worktree-allocation machinery refuses to rebind a session into a parallel checkout unless the active tracker reports `"shared"`. A tracker plugin must therefore declare `tracker_isolation = "shared"` (when that claim holds) for its users to get parallel worktrees.
+
+#### Task worktrees
+
+When `worktree.policy = "required"`, claiming a task allocates a dedicated git worktree at `<repo>/<path>/<task-id>` on branch `<branch_prefix><tracker-id>` and rebinds the session's working directory into it. The allocation happens *before* the task is claimed, so a failure (no repo, tracker not worktree-safe, path conflict) leaves no active task. One task maps to one branch and one worktree, so parallel sessions cannot collide — git itself forbids a branch being checked out by two worktrees at once.
+
+Allocation *resumes* rather than fails when the worktree or the branch already exists from a crashed run, and the worktree root is added to `.git/info/exclude` so it never shows up as an untracked change. Non-git repositories are exempt: with no repository to allocate in, the claim proceeds normally. The default `policy = "off"` means allocation never happens and behavior is unchanged.
+
+While the session is rebound into a task worktree, the original checkout stays reachable for *reads* (tracker state, domain docs) even though writes remain confined to the worktree: the read scope gains an extra root at the original checkout, and it is dropped again on resolve. The worktree itself has no extra scope; a read outside both the worktree and the original checkout still escalates.
+
+On `task_resolve`, after the active task state is cleared, the session's working directory is restored to where it started. The remaining `merge`, `base_branch`, and `drift_check` keys configure the resolve-time check-in step (og-wm7.3.3). While a task is active, the bash tool refuses raw `git worktree` mutations (`add`, `remove`, `prune`, ...) so the model cannot bypass the governed allocation; read-only `git worktree list` is allowed, mirroring how tracker reads pass the guard.
 
 ### Tracker write guard
 
