@@ -300,3 +300,131 @@ func TestGenerateSegments_AlwaysOption(t *testing.T) {
 		t.Error("agent should have always=true")
 	}
 }
+
+func TestGenerateGit_Clean(t *testing.T) {
+	ctx := &Context{
+		GitBranch: "main",
+		GitState:  "clean",
+	}
+
+	th := &theme.Theme{}
+	th.Data.Segments = []theme.SegmentEntry{
+		{Name: "git"},
+	}
+
+	segments := GenerateSegments(ctx, []string{"git"}, th)
+	if len(segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segments))
+	}
+
+	seg := segments[0]
+	if seg.Name != "git" {
+		t.Errorf("segment name = %q, want git", seg.Name)
+	}
+	if seg.Content != "main" {
+		t.Errorf("content = %q, want main", seg.Content)
+	}
+	if seg.State != "clean" {
+		t.Errorf("state = %q, want clean", seg.State)
+	}
+}
+
+func TestGenerateGit_Dirty(t *testing.T) {
+	ctx := &Context{
+		GitBranch: "feature-branch",
+		GitState:  "dirty",
+	}
+
+	th := &theme.Theme{}
+	th.Data.Segments = []theme.SegmentEntry{
+		{Name: "git"},
+	}
+
+	segments := GenerateSegments(ctx, []string{"git"}, th)
+	if len(segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segments))
+	}
+
+	seg := segments[0]
+	if seg.Content != "feature-branch" {
+		t.Errorf("content = %q, want feature-branch", seg.Content)
+	}
+	if seg.State != "dirty" {
+		t.Errorf("state = %q, want dirty", seg.State)
+	}
+}
+
+func TestGenerateGit_Unknown(t *testing.T) {
+	ctx := &Context{
+		GitBranch: "main",
+		GitState:  "unknown",
+	}
+
+	th := &theme.Theme{}
+	th.Data.Segments = []theme.SegmentEntry{
+		{Name: "git"},
+	}
+
+	segments := GenerateSegments(ctx, []string{"git"}, th)
+	if len(segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segments))
+	}
+
+	seg := segments[0]
+	if seg.Content != "main" {
+		t.Errorf("content = %q, want main", seg.Content)
+	}
+	if seg.State != "unknown" {
+		t.Errorf("state = %q, want unknown", seg.State)
+	}
+}
+
+func TestGenerateGit_Collapsed(t *testing.T) {
+	ctx := &Context{
+		GitBranch: "",
+		GitState:  "",
+	}
+
+	th := &theme.Theme{}
+	th.Data.Segments = []theme.SegmentEntry{
+		{Name: "git"},
+	}
+
+	segments := GenerateSegments(ctx, []string{"git"}, th)
+	if len(segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segments))
+	}
+
+	seg := segments[0]
+	if seg.Content != "" {
+		t.Errorf("content = %q, want empty (collapsed)", seg.Content)
+	}
+	if seg.State != "" {
+		t.Errorf("state = %q, want empty", seg.State)
+	}
+}
+
+func TestGenerateGit_DetachedHead(t *testing.T) {
+	ctx := &Context{
+		GitBranch: "HEAD",
+		GitState:  "clean",
+	}
+
+	th := &theme.Theme{}
+	th.Data.Segments = []theme.SegmentEntry{
+		{Name: "git"},
+	}
+
+	segments := GenerateSegments(ctx, []string{"git"}, th)
+	if len(segments) != 1 {
+		t.Fatalf("expected 1 segment, got %d", len(segments))
+	}
+
+	seg := segments[0]
+	if seg.Content != "HEAD" {
+		t.Errorf("content = %q, want HEAD", seg.Content)
+	}
+	if seg.State != "clean" {
+		t.Errorf("state = %q, want clean", seg.State)
+	}
+}

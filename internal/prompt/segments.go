@@ -34,12 +34,16 @@ type Context struct {
 	TimeFormat       string
 	DirMaxLen        int
 	SessionLen       int
+
+	GitBranch string
+	GitState  string
 }
 
 // GenerateSegments generates content for all segments in the given order.
 func GenerateSegments(ctx *Context, segmentNames []string, theme *theme.Theme) []SegmentContent {
 	generators := map[string]Generator{
 		"dir":         generateDir,
+		"git":         generateGit,
 		"provider":    generateProvider,
 		"model":       generateModel,
 		"agent":       generateAgent,
@@ -220,5 +224,25 @@ func generatePromptChar(ctx *Context) SegmentContent {
 		Name:    "prompt_char",
 		Content: "", // Glyph comes from theme state
 		State:   state,
+	}
+}
+
+// generateGit generates the git segment.
+// Branch from git status --porcelain=v1 -b --untracked-files=all first line.
+// State: clean (no entries after branch line), dirty (any entry), unknown (degraded).
+// Collapses if not in a git repo or git unavailable.
+func generateGit(ctx *Context) SegmentContent {
+	if ctx.GitBranch == "" {
+		return SegmentContent{
+			Name:    "git",
+			Content: "",
+			State:   "",
+		}
+	}
+
+	return SegmentContent{
+		Name:    "git",
+		Content: ctx.GitBranch,
+		State:   ctx.GitState,
 	}
 }

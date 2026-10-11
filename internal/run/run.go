@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/okayest-dev/genie/internal/agent"
 	"github.com/okayest-dev/genie/internal/config"
@@ -164,6 +166,9 @@ type Handle struct {
 	// Guarded by mu.
 	totalTokens    int
 	lastPromptStatus PromptStatus
+
+	// Git gatherer for the prompt git segment.
+	gitGatherer *gitGatherer
 
 	mu  sync.RWMutex
 	cur env
@@ -434,6 +439,9 @@ func New(opts Options) (*Handle, error) {
 	if opts.Stderr != nil {
 		fmt.Fprintf(opts.Stderr, "session: %s\n", sess.ID)
 	}
+
+	// Initialize git gatherer for the prompt git segment.
+	h.gitGatherer = newGitGatherer(opts.Cwd)
 
 	// Provide session to task tools for boundary compaction tracking.
 	if h.claimTool != nil {
@@ -812,6 +820,11 @@ func (h *Handle) Turn(ctx context.Context, prompt string, out, errOut io.Writer)
 	}
 	h.mu.Unlock()
 
+	// Notify git gatherer that a turn completed (triggers degraded recovery).
+	if h.gitGatherer != nil {
+		h.gitGatherer.NotifyTurnCompleted()
+	}
+
 	return err
 }
 
@@ -827,6 +840,22 @@ func (h *Handle) LastPromptStatus() PromptStatus {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.lastPromptStatus
+}
+
+// GitInfo returns the current git branch and state for the prompt segment.
+func (h *Handle) GitInfo() GitInfo {
+	if h.gitGatherer == nil {
+		return GitInfo{Valid: false}
+	}
+	return h.gitGatherer.Gather()
+}
+
+// NotifyGitTurnCompleted notifies the git gatherer that a turn or slash command
+// has completed, triggering recovery from degraded mode.
+func (h *Handle) NotifyGitTurnCompleted() {
+	if h.gitGatherer != nil {
+		h.gitGatherer.NotifyTurnCompleted()
+	}
 }
 
 // SetModel switches the requested/run model. An agent-declared model continues
@@ -960,4 +989,203 @@ func runModel(cur env) string {
 		return cur.agent.Model
 	}
 	return cur.model
+}
+
+// gitGatherer handles gathering git branch and dirty state for the prompt segment.
+// It implements the degraded path with timeout and recovery as per ADR-0011.
+type gitGatherer struct {
+	cwd          string
+	mu           sync.Mutex
+	degraded     bool
+	lastTurnCount int
+}
+
+// GitInfo holds the result of a git gather operation.
+type GitInfo struct {
+	Branch string
+	State  string // "clean", "dirty", "unknown"
+	Valid  bool   // false means collapse the segment
+}
+
+// newGitGatherer creates a new git gatherer for the given working directory.
+func newGitGatherer(cwd string) *gitGatherer {
+	return &gitGatherer{
+		cwd: cwd,
+	}
+}
+
+// gatherTimeout is the fixed internal deadline for the full git scan.
+// Per ADR-0011, this is not configurable; initial value ~150ms.
+const gatherTimeout = 150 * time.Millisecond
+
+// Gather returns the current git branch and state for the prompt.
+// It implements the healthy path, degraded path, and recovery logic.
+func (g *gitGatherer) Gather() GitInfo {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	// If degraded, try the cheap path (symbolic-ref)
+	if g.degraded {
+		branch, ok := g.gatherCheap()
+		if !ok {
+			// Cheap path failed - collapse segment
+			return GitInfo{Valid: false}
+		}
+		// Cheap path succeeded - return branch with unknown state
+		return GitInfo{
+			Branch: branch,
+			State:  "unknown",
+			Valid:  true,
+		}
+	}
+
+	// Healthy path: try full scan with timeout
+	done := make(chan GitInfo, 1)
+	go func() {
+		done <- g.gatherFull()
+	}()
+
+	select {
+	case info := <-done:
+		return info
+	case <-time.After(gatherTimeout):
+		// Deadline exceeded - enter degraded mode
+		g.degraded = true
+		g.lastTurnCount = 0 // Will be incremented on next turn
+		// Try cheap path immediately for this draw
+		branch, ok := g.gatherCheap()
+		if !ok {
+			return GitInfo{Valid: false}
+		}
+		return GitInfo{
+			Branch: branch,
+			State:  "unknown",
+			Valid:  true,
+		}
+	}
+}
+
+// gatherFull runs the full git status scan.
+// Returns branch name and clean/dirty state.
+func (g *gitGatherer) gatherFull() GitInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), gatherTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain=v1", "-b", "--untracked-files=all")
+	cmd.Dir = g.cwd
+	output, err := cmd.Output()
+	if err != nil {
+		// Git command failed - not a repo, git missing, permission error, etc.
+		return GitInfo{Valid: false}
+	}
+
+	return g.parseGitStatus(string(output))
+}
+
+// gatherCheap runs the cheap git symbolic-ref --short HEAD path.
+// Returns branch name (or "HEAD" for detached) and success flag.
+func (g *gitGatherer) gatherCheap() (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), gatherTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--short", "HEAD")
+	cmd.Dir = g.cwd
+	output, err := cmd.Output()
+	if err != nil {
+		// symbolic-ref fails on detached HEAD (exit 128), non-repo, git absent, permission error
+		return "", false
+	}
+	branch := strings.TrimSpace(string(output))
+	if branch == "" {
+		return "", false
+	}
+	return branch, true
+}
+
+// parseGitStatus parses the output of git status --porcelain=v1 -b --untracked-files=all.
+// First line is ## <branch>...<remote> [ahead N] [behind N]
+// Subsequent lines are entries (staged, unstaged, conflict, untracked).
+func (g *gitGatherer) parseGitStatus(output string) GitInfo {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) == 0 {
+		return GitInfo{Valid: false}
+	}
+
+	// Parse branch from first line
+	firstLine := lines[0]
+	if !strings.HasPrefix(firstLine, "## ") {
+		return GitInfo{Valid: false}
+	}
+
+	branch := strings.TrimPrefix(firstLine, "## ")
+	// Strip remote tracking info: <branch>...<remote> [ahead N] [behind N]
+	if idx := strings.Index(branch, "..."); idx >= 0 {
+		branch = branch[:idx]
+	}
+	// Strip [ahead N] [behind N] suffixes
+	branch = stripAheadBehind(branch)
+	branch = strings.TrimSpace(branch)
+
+	// Detached HEAD shows as "HEAD (no branch)" or similar
+	if branch == "HEAD (no branch)" || branch == "HEAD" {
+		branch = "HEAD"
+	}
+
+	// Check for dirtiness: any line after the first is an entry
+	dirty := len(lines) > 1
+
+	state := "clean"
+	if dirty {
+		state = "dirty"
+	}
+
+	return GitInfo{
+		Branch: branch,
+		State:  state,
+		Valid:  true,
+	}
+}
+
+// stripAheadBehind removes [ahead N] and [behind N] suffixes from branch string.
+func stripAheadBehind(s string) string {
+	// Remove [ahead N]
+	for {
+		idx := strings.Index(s, "[ahead ")
+		if idx < 0 {
+			break
+		}
+		end := strings.Index(s[idx:], "]")
+		if end < 0 {
+			break
+		}
+		s = s[:idx] + s[idx+end+1:]
+	}
+	// Remove [behind N]
+	for {
+		idx := strings.Index(s, "[behind ")
+		if idx < 0 {
+			break
+		}
+		end := strings.Index(s[idx:], "]")
+		if end < 0 {
+			break
+		}
+		s = s[:idx] + s[idx+end+1:]
+	}
+	return strings.TrimSpace(s)
+}
+
+// NotifyTurnCompleted notifies the git gatherer that a turn has completed.
+// This triggers recovery from degraded mode on the next Gather call.
+func (g *gitGatherer) NotifyTurnCompleted() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.degraded {
+		g.lastTurnCount++
+		if g.lastTurnCount >= 1 {
+			// First draw after a turn - exit degraded mode
+			g.degraded = false
+			g.lastTurnCount = 0
+		}
+	}
 }
