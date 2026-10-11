@@ -357,7 +357,10 @@ func New(opts Options) (*Handle, error) {
 			return nil, err
 		}
 		for _, w := range warns {
-			if opts.Stderr != nil {
+			if opts.Stderr != nil && opts.Theme != nil && opts.StderrProfile != nil {
+				warnOut := opts.Theme.RoleWriter(opts.Stderr, opts.StderrProfile, "warning")
+				fmt.Fprintf(warnOut, "warning: %s\n", w.Message)
+			} else if opts.Stderr != nil {
 				fmt.Fprintf(opts.Stderr, "warning: %s\n", w.Message)
 			}
 		}
@@ -396,6 +399,10 @@ func New(opts Options) (*Handle, error) {
 
 	if opts.OnUsageDegrade != nil {
 		h.degrade = opts.OnUsageDegrade
+	} else if opts.Theme != nil && opts.Stderr != nil && opts.StderrProfile != nil {
+		// Default degradation sink uses the warning role
+		warnOut := opts.Theme.RoleWriter(opts.Stderr, opts.StderrProfile, "warning")
+		h.degrade = func(msg string) { fmt.Fprintln(warnOut, msg) }
 	}
 	ctxDegrade := func(msg string) { h.degrade("context degraded: " + msg) }
 	ctxSeam, err := plugin.NewContextSeam(plug.PluginsInOrder(), plugin.ContextConfig{
@@ -447,7 +454,12 @@ func New(opts Options) (*Handle, error) {
 		h.ledger = ledger.New(opts.Config.SessionDir, sess.ID)
 	}
 	if opts.Stderr != nil {
-		fmt.Fprintf(opts.Stderr, "session: %s\n", sess.ID)
+		if opts.Theme != nil && opts.StderrProfile != nil {
+			bannerOut := opts.Theme.RoleWriter(opts.Stderr, opts.StderrProfile, "banner")
+			fmt.Fprintf(bannerOut, "session: %s\n", sess.ID)
+		} else {
+			fmt.Fprintf(opts.Stderr, "session: %s\n", sess.ID)
+		}
 	}
 
 	// Initialize git gatherer for the prompt git segment.
@@ -906,7 +918,12 @@ func (h *Handle) NewSession() (*session.Session, error) {
 	h.cur.client = h.wrap(h.cur.baseClient, sess)
 	h.mu.Unlock()
 	if h.opts.Stderr != nil {
-		fmt.Fprintf(h.opts.Stderr, "session: %s\n", sess.ID)
+		if h.opts.Theme != nil && h.opts.StderrProfile != nil {
+			bannerOut := h.opts.Theme.RoleWriter(h.opts.Stderr, h.opts.StderrProfile, "banner")
+			fmt.Fprintf(bannerOut, "session: %s\n", sess.ID)
+		} else {
+			fmt.Fprintf(h.opts.Stderr, "session: %s\n", sess.ID)
+		}
 	}
 	return sess, nil
 }
@@ -1020,6 +1037,16 @@ type gitGatherer struct {
 	mu           sync.Mutex
 	degraded     bool
 	lastTurnCount int
+}
+
+// MuLock locks the gatherer's mutex for testing.
+func (g *gitGatherer) MuLock() {
+	g.mu.Lock()
+}
+
+// MuUnlock unlocks the gatherer's mutex for testing.
+func (g *gitGatherer) MuUnlock() {
+	g.mu.Unlock()
 }
 
 // GitInfo holds the result of a git gather operation.

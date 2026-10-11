@@ -510,6 +510,173 @@ func TestGitGatherer_TimeoutIsFixed(t *testing.T) {
 	}
 }
 
+// Test that the timeout path is triggered when git status takes too long
+func TestGitGatherer_TimeoutPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a slow git wrapper script
+	wrapperPath := filepath.Join(tmpDir, "git")
+	wrapperContent := `#!/bin/sh
+if [ "$1" = "status" ]; then
+    sleep 1
+    exec /usr/bin/git "$@"
+else
+    exec /usr/bin/git "$@"
+fi
+`
+	if err := os.WriteFile(wrapperPath, []byte(wrapperContent), 0755); err != nil {
+		t.Fatalf("failed to write wrapper: %v", err)
+	}
+
+	// Initialize a git repo
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@test.com")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "config", "user.name", "Test")
+	cmd.Dir = tmpDir
+	cmd.Run()
+
+	cmd = exec.Command("sh", "-c", "echo hello > file.txt")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "add", "file.txt")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "commit", "-m", "initial")
+	cmd.Dir = tmpDir
+	cmd.Run()
+
+	// Use the slow wrapper by prepending its directory to PATH
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+":"+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	g := newGitGatherer(tmpDir)
+	info := g.Gather()
+
+	// Should enter degraded mode and return unknown state via cheap path
+	if !info.Valid {
+		t.Errorf("expected valid (cheap path should succeed), got invalid")
+	}
+	if info.State != "unknown" {
+		t.Errorf("expected unknown state (degraded mode), got %q", info.State)
+	}
+	if info.Branch != "main" && info.Branch != "master" {
+		t.Errorf("expected main or master from cheap path, got %q", info.Branch)
+	}
+}
+
+// Test that degraded mode cheap path failure collapses the segment
+func TestGitGatherer_DegradedCheapPathFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Initialize a git repo
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@test.com")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "config", "user.name", "Test")
+	cmd.Dir = tmpDir
+	cmd.Run()
+
+	cmd = exec.Command("sh", "-c", "echo hello > file.txt")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "add", "file.txt")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "commit", "-m", "initial")
+	cmd.Dir = tmpDir
+	cmd.Run()
+
+	// Detach HEAD to make symbolic-ref fail
+	cmd = exec.Command("git", "checkout", "--detach")
+	cmd.Dir = tmpDir
+	cmd.Run()
+
+	g := newGitGatherer(tmpDir)
+
+	// Force degraded mode
+	g.MuLock()
+	g.degraded = true
+	g.MuUnlock()
+
+	// Gather should fail because cheap path fails on detached HEAD
+	info := g.Gather()
+	if info.Valid {
+		t.Errorf("expected invalid (cheap path fails on detached HEAD), got valid")
+	}
+}
+
+// Test that timeout followed by cheap path failure collapses the segment
+func TestGitGatherer_TimeoutThenCheapPathFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a slow git wrapper script that also fails symbolic-ref
+	wrapperPath := filepath.Join(tmpDir, "git")
+	wrapperContent := `#!/bin/sh
+if [ "$1" = "status" ]; then
+    sleep 1
+    exec /usr/bin/git "$@"
+elif [ "$1" = "symbolic-ref" ]; then
+    exit 128
+else
+    exec /usr/bin/git "$@"
+fi
+`
+	if err := os.WriteFile(wrapperPath, []byte(wrapperContent), 0755); err != nil {
+		t.Fatalf("failed to write wrapper: %v", err)
+	}
+
+	// Initialize a git repo
+	cmd := exec.Command("git", "init")
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+
+	cmd = exec.Command("git", "config", "user.email", "test@test.com")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "config", "user.name", "Test")
+	cmd.Dir = tmpDir
+	cmd.Run()
+
+	cmd = exec.Command("sh", "-c", "echo hello > file.txt")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "add", "file.txt")
+	cmd.Dir = tmpDir
+	cmd.Run()
+	cmd = exec.Command("git", "commit", "-m", "initial")
+	cmd.Dir = tmpDir
+	cmd.Run()
+
+	// Use the slow wrapper by prepending its directory to PATH
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", tmpDir+":"+oldPath)
+	defer os.Setenv("PATH", oldPath)
+
+	g := newGitGatherer(tmpDir)
+	info := g.Gather()
+
+	// Should enter degraded mode, then cheap path fails, segment collapses
+	if info.Valid {
+		t.Errorf("expected invalid (timeout then cheap path fails), got valid")
+	}
+}
+
 // Test that we can create a git repo in a subdirectory
 func TestGitGatherer_Subdirectory(t *testing.T) {
 	tmpDir := t.TempDir()
