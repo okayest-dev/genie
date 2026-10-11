@@ -296,7 +296,7 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		if len(pathParts) < 2 || pathParts[1] == "" {
 			printCopilotHelp(cfg)
 		} else {
-			handleCopilotCommand(ctx, pathParts[1], args, cfg)
+			handleCopilotCommand(ctx, strings.Join(pathParts[1:], ":"), args, cfg)
 		}
 		return false
 
