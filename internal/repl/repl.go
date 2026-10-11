@@ -289,6 +289,11 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		fmt.Fprintf(cfg.Stdout, "unknown command: %s (try /help)\n", cmd)
 	}
 
+	// Notify git gatherer that a slash command completed (triggers degraded recovery per ADR-0011).
+	if cmd != "/quit" && cmd != "/exit" {
+		cfg.Run.NotifyGitTurnCompleted()
+	}
+
 	return false
 }
 

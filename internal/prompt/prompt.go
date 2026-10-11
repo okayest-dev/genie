@@ -77,6 +77,11 @@ func BuildContext(h *run.Handle, cfg *config.Config, th *theme.Theme) *Context {
 		}
 	}
 
+	// Get git info
+	gitInfo := h.GitInfo()
+	gitBranch := gitInfo.Branch
+	gitState := gitInfo.State
+
 	return &Context{
 		Cwd:              cwd,
 		Provider:         h.Provider(),
@@ -88,5 +93,7 @@ func BuildContext(h *run.Handle, cfg *config.Config, th *theme.Theme) *Context {
 		TimeFormat:       timeFormat,
 		DirMaxLen:        dirMaxLen,
 		SessionLen:       sessionLen,
+		GitBranch:        gitBranch,
+		GitState:         gitState,
 	}
 }
