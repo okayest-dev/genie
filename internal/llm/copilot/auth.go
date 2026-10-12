@@ -215,6 +215,8 @@ func (r *requestBody) Read(p []byte) (n int, err error) {
 }
 
 // OpenBrowser attempts to open the verification URI in the user's default browser.
+// It runs with a timeout to avoid hanging on systems where the browser launcher
+// blocks (e.g., headless Linux, WSL, Wayland issues).
 func OpenBrowser(url string) error {
 	var cmd string
 	var args []string
@@ -231,5 +233,28 @@ func OpenBrowser(url string) error {
 	}
 
 	args = []string{url}
-	return exec.Command(cmd, args...).Start()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmdObj := exec.CommandContext(ctx, cmd, args...)
+	err := cmdObj.Start()
+	if err != nil {
+		return fmt.Errorf("start browser: %w", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmdObj.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("browser exited with error: %w", err)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("browser launch timed out after 5s")
+	}
 }
