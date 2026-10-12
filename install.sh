@@ -1013,12 +1013,18 @@ run_config_wizard() {
 
 construct_release_asset_name() {
     local version="$1"
-    local version_no_v="${version#v}"
-    local asset_name="genie_${version_no_v}_${GOOS}_${GOARCH}"
+    local asset_name="genie_${version}_${GOOS}_${GOARCH}"
     if [ -n "${GOARM:-}" ]; then
         asset_name="${asset_name}v${GOARM}"
     fi
-    asset_name="${asset_name}.tar.gz"
+    case "${GOOS}" in
+        windows)
+            asset_name="${asset_name}.zip"
+            ;;
+        *)
+            asset_name="${asset_name}.tar.gz"
+            ;;
+    esac
     echo "$asset_name"
 }
 
@@ -1138,11 +1144,34 @@ extract_and_install() {
 
     log_info "Extracting archive..."
 
-    if ! tar -xzf "$asset_file" -C "$TMP_DIR" 2>/dev/null; then
-        log_error "Failed to extract archive"
-        return 1
-    fi
+    case "$asset_file" in
+        *.tar.gz)
+            if ! tar -xzf "$asset_file" -C "$TMP_DIR" 2>/dev/null; then
+                log_error "Failed to extract tar.gz archive"
+                return 1
+            fi
+            ;;
+        *.zip)
+            if ! command -v unzip >/dev/null 2>&1; then
+                log_error "unzip command not found, cannot extract zip archive"
+                return 1
+            fi
+            if ! unzip -q "$asset_file" -d "$TMP_DIR" 2>/dev/null; then
+                log_error "Failed to extract zip archive"
+                return 1
+            fi
+            ;;
+        *)
+            log_error "Unknown archive format: $asset_file"
+            return 1
+            ;;
+    esac
     record_step "extract"
+
+    # On Windows, binary name includes .exe
+    if [ "${GOOS}" = "windows" ]; then
+        binary_name="${binary_name}.exe"
+    fi
 
     extracted_binary="${TMP_DIR}/${binary_name}"
     if [ ! -f "$extracted_binary" ]; then
