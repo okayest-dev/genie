@@ -793,7 +793,11 @@ func handleCopilotCommand(ctx context.Context, subPath, args string, cfg *Config
 func handleCopilotLogin(ctx context.Context, host string, cfg *Config, slashOut io.Writer) {
 	fmt.Fprintf(slashOut, "Starting device-flow login for %s...\n", host)
 
-	dcr, err := copilot.StartDeviceFlow(ctx, host)
+	// Use a timeout context for the device flow initiation
+	deviceFlowCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	dcr, err := copilot.StartDeviceFlow(deviceFlowCtx, host)
 	if err != nil {
 		fmt.Fprintf(cfg.Stderr, "Error: failed to start device flow: %v\n", err)
 		return
