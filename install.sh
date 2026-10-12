@@ -55,6 +55,36 @@ log_step() {
     echo -e "\033[1;32m[STEP]\033[0m $*" >&2
 }
 
+# Read a line from the terminal (for interactive prompts when stdin is piped)
+read_from_tty() {
+    local var_name="$1"
+    local prompt="${2:-}"
+    # Try to read from /dev/tty if stdin is not a terminal
+    if [ -t 0 ]; then
+        if [ -n "$prompt" ]; then
+            read -rp "$prompt" "$var_name"
+        else
+            read -r "$var_name"
+        fi
+    else
+        # Use a subshell to test if /dev/tty is actually accessible
+        if (exec 3< /dev/tty) 2>/dev/null; then
+            exec 3<&-
+            if [ -n "$prompt" ]; then
+                read -rp "$prompt" "$var_name" < /dev/tty
+            else
+                read -r "$var_name" < /dev/tty
+            fi
+        else
+            if [ -n "$prompt" ]; then
+                read -rp "$prompt" "$var_name"
+            else
+                read -r "$var_name"
+            fi
+        fi
+    fi
+}
+
 die() {
     local exit_code="${1:-$EXIT_GENERAL}"
     shift
@@ -377,7 +407,7 @@ Update to ${new_version}? (y/N)
 EOF
 
     local response=""
-    read -r response
+    read_from_tty response
     response=$(echo "$response" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
 
     case "$response" in
@@ -634,7 +664,7 @@ Install Deno using the official installer? (y/N)
 EOF
 
     local response=""
-    read -r response
+    read_from_tty response
     response=$(echo "$response" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
 
     case "$response" in
@@ -831,7 +861,8 @@ prompt_provider() {
     list_providers
     echo
     while true; do
-        read -rp "Select provider [1-${#PROVIDERS[@]} or name]: " selection
+        local selection
+        read_from_tty selection "Select provider [1-${#PROVIDERS[@]} or name]: "
         local name
         name=$(parse_provider_selection "$selection")
         if [ -n "$name" ]; then
@@ -860,10 +891,12 @@ prompt_api_key() {
     echo "  3) Skip (set manually later)"
 
     while true; do
-        read -rp "Choice [1-3]: " choice
+        local choice
+        read_from_tty choice "Choice [1-3]: "
         case "$choice" in
             1)
-                read -rp "Enter $api_key_env value: " api_key
+                local api_key
+                read_from_tty api_key "Enter $api_key_env value: "
                 if [ -n "$api_key" ]; then
                     echo "$api_key"
                     return 0
@@ -874,7 +907,8 @@ prompt_api_key() {
                 local shell rc_file
                 shell=$(detect_user_shell)
                 rc_file=$(get_rc_file "$shell")
-                read -rp "Enter $api_key_env value: " api_key
+                local api_key
+                read_from_tty api_key "Enter $api_key_env value: "
                 if [ -n "$api_key" ]; then
                     # Append to rc file
                     echo "" >> "$rc_file"
@@ -961,7 +995,8 @@ prompt_config_overwrite() {
     echo
 
     while true; do
-        read -rp "Overwrite existing config? [y/N]: " choice
+        local choice
+        read_from_tty choice "Overwrite existing config? [y/N]: "
         choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
         case "$choice" in
             y|yes) return 0 ;;
