@@ -84,10 +84,8 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          for f in *; do
-            if [ -f "$f" ]; then
-              sha256sum "$f" >> checksums.txt
-            fi
+          find . -type f -name "*.tar.gz" -o -name "*.zip" -o -name "install.sh" -o -name "genie" -o -name "genie.exe" | while read f; do
+            sha256sum "$f" >> checksums.txt
           done
 
       - name: Create release
