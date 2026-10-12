@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -56,7 +57,20 @@ func StartDeviceFlow(ctx context.Context, domain string) (*DeviceCodeResponse, e
 	req.Header.Set("Accept", "application/json")
 	req.Body = io.NopCloser(&requestBody{values: data})
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Use a custom transport with dial timeouts to prevent hangs on macOS/other systems
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 10 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("device code request: %w", err)
@@ -215,8 +229,8 @@ func (r *requestBody) Read(p []byte) (n int, err error) {
 }
 
 // OpenBrowser attempts to open the verification URI in the user's default browser.
-// It runs with a timeout to avoid hanging on systems where the browser launcher
-// blocks (e.g., headless Linux, WSL, Wayland issues).
+// On macOS, 'open' launches the browser asynchronously and returns immediately.
+// We fire-and-forget since waiting for the browser process to exit would hang indefinitely.
 func OpenBrowser(url string) error {
 	var cmd string
 	var args []string
@@ -234,27 +248,14 @@ func OpenBrowser(url string) error {
 
 	args = []string{url}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	cmdObj := exec.CommandContext(ctx, cmd, args...)
+	// Fire and forget - don't wait for browser to exit (it won't on macOS)
+	cmdObj := exec.Command(cmd, args...)
 	err := cmdObj.Start()
 	if err != nil {
 		return fmt.Errorf("start browser: %w", err)
 	}
 
-	done := make(chan error, 1)
-	go func() {
-		done <- cmdObj.Wait()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			return fmt.Errorf("browser exited with error: %w", err)
-		}
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("browser launch timed out after 5s")
-	}
+	// Release resources without waiting
+	_ = cmdObj.Process.Release()
+	return nil
 }
