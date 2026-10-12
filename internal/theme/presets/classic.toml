@@ -80,7 +80,7 @@ options = { always = "true" }
 # Whitespace gap is a separator type (ADR-0007)
 [separators]
 default = { nerd = "", powerline = "", ascii = ">" }
-overrides = {}
+overrides = { model = "" }
 
 # Prompt config
 [prompt]
