@@ -84,7 +84,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "install.sh" -o -name "genie" -o -name "genie.exe" \) -exec sha256sum {} + | sed 's| \./[^/]*/| |' >> checksums.txt
+          find . -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "install.sh" \) -exec sha256sum {} + | sed 's| \./||' >> checksums.txt
 
       - name: Create release
         uses: softprops/action-gh-release@v2
