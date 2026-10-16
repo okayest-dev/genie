@@ -5,17 +5,47 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
-	"os/exec"
 	"time"
+
+	"github.com/cli/browser"
+	"github.com/cli/oauth"
+	"github.com/cli/oauth/device"
 )
 
 // VSCodeClientID is the Visual Studio Code Copilot client ID.
 // Using this ID is necessary for the Copilot backend to grant model entitlements.
 // See docs/research/copilot-device-flow-oauth.md §2 for details.
 const VSCodeClientID = "Iv1.b507a08c87ecfe98"
+
+// deviceCodeDefaultExpiresIn is the fallback lifetime (seconds) of a device
+// code when the caller cannot supply the server-provided expiry. GitHub's
+// device codes expire after 900 seconds; this bounds the poll loop.
+const deviceCodeDefaultExpiresIn = 900
+
+// oauthHTTPTimeout bounds every device-flow HTTP call so a stalled endpoint
+// cannot hang an interactive login.
+const oauthHTTPTimeout = 30 * time.Second
+
+// oauthHostBaseURL maps a Copilot host domain to the GitHub web base used for
+// OAuth device-flow endpoints. It is a variable so tests can point the flow at
+// a local server; production uses github.com for the default host and the
+// tenant domain (e.g. octocorp.ghe.com) for GitHub Enterprise.
+var oauthHostBaseURL = func(domain string) string {
+	if domain == "" || domain == "github.com" {
+		return "https://github.com"
+	}
+	return "https://" + domain
+}
+
+// restAPIBaseURL maps a Copilot host domain to its REST API root. It is a
+// variable so tests can point requests at a local server.
+var restAPIBaseURL = func(domain string) string {
+	if domain == "" || domain == "github.com" {
+		return "https://api.github.com"
+	}
+	return "https://api." + domain
+}
 
 // DeviceCodeResponse is the response from the device code endpoint.
 type DeviceCodeResponse struct {
@@ -40,133 +70,76 @@ type UserInfo struct {
 	Login string `json:"login"`
 }
 
-// StartDeviceFlow initiates the GitHub device flow and returns the device code response.
+// StartDeviceFlow initiates the GitHub device flow and returns the device code
+// response. The flow uses the official cli/oauth device strategy, which drives
+// the same endpoints for github.com and GitHub Enterprise hosts.
 func StartDeviceFlow(ctx context.Context, domain string) (*DeviceCodeResponse, error) {
-	baseURL := deviceFlowBaseURL(domain)
-	endpoint := baseURL + "/login/device/code"
-
-	data := url.Values{}
-	data.Set("client_id", VSCodeClientID)
-	data.Set("scope", "read:user")
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	host, err := oauth.NewGitHubHost(oauthHostBaseURL(domain))
 	if err != nil {
-		return nil, fmt.Errorf("build device code request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	req.Body = io.NopCloser(&requestBody{values: data})
-
-	// Use a custom transport with dial timeouts to prevent hangs on macOS/other systems
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 10 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   30 * time.Second,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("device code request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return nil, fmt.Errorf("device code failed: %s: %s", resp.Status, string(body))
+		return nil, fmt.Errorf("device flow host: %w", err)
 	}
 
-	var dcr DeviceCodeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&dcr); err != nil {
-		return nil, fmt.Errorf("parse device code response: %w", err)
+	// device.RequestCode takes no context, so run it alongside one and stop
+	// waiting as soon as the caller's context is done. The request itself stays
+	// bounded by oauthHTTPTimeout.
+	type result struct {
+		code *device.CodeResponse
+		err  error
 	}
-	return &dcr, nil
+	ch := make(chan result, 1)
+	go func() {
+		code, err := device.RequestCode(oauthClient(), host.DeviceCodeURL, VSCodeClientID, []string{"read:user"})
+		ch <- result{code: code, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-ch:
+		if r.err != nil {
+			return nil, fmt.Errorf("device code request: %w", r.err)
+		}
+		return &DeviceCodeResponse{
+			DeviceCode:      r.code.DeviceCode,
+			UserCode:        r.code.UserCode,
+			VerificationURI: r.code.VerificationURI,
+			ExpiresIn:       r.code.ExpiresIn,
+			Interval:        r.code.Interval,
+		}, nil
+	}
 }
 
-// PollForToken polls the token endpoint until the user authorizes or the code expires.
+// PollForToken polls the token endpoint until the user authorizes or the code
+// expires, honouring the server-supplied interval and the library's slow_down
+// backoff. The interval is taken as-is from the device code response.
 func PollForToken(ctx context.Context, domain string, deviceCode string, interval int) (*TokenResponse, error) {
-	baseURL := deviceFlowBaseURL(domain)
-	endpoint := baseURL + "/login/oauth/access_token"
-
-	data := url.Values{}
-	data.Set("client_id", VSCodeClientID)
-	data.Set("device_code", deviceCode)
-	data.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	ticker := time.NewTicker(time.Duration(interval) * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-ticker.C:
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
-			if err != nil {
-				return nil, fmt.Errorf("build token request: %w", err)
-			}
-			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Set("Accept", "application/json")
-			req.Body = io.NopCloser(&requestBody{values: data})
-
-			resp, err := client.Do(req)
-			if err != nil {
-				return nil, fmt.Errorf("token request: %w", err)
-			}
-
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-			resp.Body.Close()
-
-			if resp.StatusCode == 400 || resp.StatusCode == 401 || resp.StatusCode == 403 {
-				var errResp struct {
-					Error            string `json:"error"`
-					ErrorDescription string `json:"error_description"`
-				}
-				if json.Unmarshal(body, &errResp) == nil {
-					switch errResp.Error {
-					case "authorization_pending":
-						continue
-					case "slow_down":
-						interval += 5
-						ticker.Reset(time.Duration(interval) * time.Second)
-						continue
-					case "expired_token", "token_expired":
-						return nil, fmt.Errorf("device code expired")
-					case "access_denied":
-						return nil, fmt.Errorf("user denied authorization")
-					}
-				}
-				return nil, fmt.Errorf("token request failed: %s: %s", resp.Status, string(body))
-			}
-
-			if resp.StatusCode < 200 || resp.StatusCode > 299 {
-				return nil, fmt.Errorf("token request failed: %s: %s", resp.Status, string(body))
-			}
-
-			var tr TokenResponse
-			if err := json.Unmarshal(body, &tr); err != nil {
-				return nil, fmt.Errorf("parse token response: %w", err)
-			}
-			if tr.AccessToken == "" {
-				return nil, fmt.Errorf("empty access token in response")
-			}
-			return &tr, nil
-		}
+	host, err := oauth.NewGitHubHost(oauthHostBaseURL(domain))
+	if err != nil {
+		return nil, fmt.Errorf("device flow host: %w", err)
 	}
+
+	tr, err := device.Wait(ctx, oauthClient(), host.TokenURL, device.WaitOptions{
+		ClientID: VSCodeClientID,
+		DeviceCode: &device.CodeResponse{
+			DeviceCode: deviceCode,
+			Interval:   interval,
+			ExpiresIn:  deviceCodeDefaultExpiresIn,
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("token request: %w", err)
+	}
+	return &TokenResponse{
+		AccessToken:  tr.Token,
+		TokenType:    tr.Type,
+		Scope:        tr.Scope,
+		RefreshToken: tr.RefreshToken,
+	}, nil
 }
 
 // FetchUserInfo fetches the GitHub user info using the OAuth token.
 func FetchUserInfo(ctx context.Context, domain, token string) (*UserInfo, error) {
-	baseURL := apiBaseURL(domain)
-	endpoint := baseURL + "/user"
+	endpoint := restAPIBaseURL(domain) + "/user"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -175,8 +148,7 @@ func FetchUserInfo(ctx context.Context, domain, token string) (*UserInfo, error)
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := oauthClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("user request: %w", err)
 	}
@@ -194,68 +166,17 @@ func FetchUserInfo(ctx context.Context, domain, token string) (*UserInfo, error)
 	return &ui, nil
 }
 
-// deviceFlowBaseURL returns the base URL for device flow endpoints.
-func deviceFlowBaseURL(domain string) string {
-	if domain == "" || domain == "github.com" {
-		return "https://github.com"
-	}
-	return "https://" + domain
+// oauthClient returns the HTTP client used for device-flow and user requests.
+func oauthClient() *http.Client {
+	return &http.Client{Timeout: oauthHTTPTimeout}
 }
 
-// apiBaseURL returns the base URL for API endpoints.
-func apiBaseURL(domain string) string {
-	if domain == "" || domain == "github.com" {
-		return "https://api.github.com"
+// OpenBrowser opens the verification URI in the user's default browser using
+// the cli/browser helper, which knows the platform launchers (xdg-open, open,
+// rundll32, ...) and does not block on the browser process.
+func OpenBrowser(authURL string) error {
+	if err := browser.OpenURL(authURL); err != nil {
+		return fmt.Errorf("open browser: %w", err)
 	}
-	return "https://api." + domain
-}
-
-// requestBody implements io.Reader for url.Values.
-type requestBody struct {
-	values url.Values
-	encoded string
-}
-
-func (r *requestBody) Read(p []byte) (n int, err error) {
-	if r.encoded == "" {
-		r.encoded = r.values.Encode()
-	}
-	if len(r.encoded) == 0 {
-		return 0, io.EOF
-	}
-	n = copy(p, r.encoded)
-	r.encoded = r.encoded[n:]
-	return n, nil
-}
-
-// OpenBrowser attempts to open the verification URI in the user's default browser.
-// On macOS, 'open' launches the browser asynchronously and returns immediately.
-// We fire-and-forget since waiting for the browser process to exit would hang indefinitely.
-func OpenBrowser(url string) error {
-	var cmd string
-	var args []string
-
-	// Try common browser open commands
-	for _, c := range []string{"xdg-open", "open", "start"} {
-		if _, err := exec.LookPath(c); err == nil {
-			cmd = c
-			break
-		}
-	}
-	if cmd == "" {
-		return fmt.Errorf("no browser launcher found (tried xdg-open, open, start)")
-	}
-
-	args = []string{url}
-
-	// Fire and forget - don't wait for browser to exit (it won't on macOS)
-	cmdObj := exec.Command(cmd, args...)
-	err := cmdObj.Start()
-	if err != nil {
-		return fmt.Errorf("start browser: %w", err)
-	}
-
-	// Release resources without waiting
-	_ = cmdObj.Process.Release()
 	return nil
 }

@@ -8,6 +8,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.4
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.62.0
 	github.com/aws/smithy-go v1.28.1
+	github.com/cli/browser v1.3.0
+	github.com/cli/oauth v1.2.2
 	github.com/creativeprojects/go-selfupdate v1.6.0
 	github.com/ron2111/omnitoken v0.1.7
 	golang.org/x/term v0.46.0

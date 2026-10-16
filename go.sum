@@ -38,6 +38,12 @@ github.com/aws/aws-sdk-go-v2/service/sts v1.50.0 h1:khXV3+K5D3f4e8xtplaRdSFn1bEg
 github.com/aws/aws-sdk-go-v2/service/sts v1.50.0/go.mod h1:/8JRcdTt//hG0Q4BTmGbuOplT7ABe+5rdtqUHqXvYIM=
 github.com/aws/smithy-go v1.28.1 h1:R/nXH00c8qcfCzQVELtRw+eLQWtzv+VAIEFJ1/xxXlQ=
 github.com/aws/smithy-go v1.28.1/go.mod h1:YE2RhdIuDbA5E5bTdciG9KrW3+TiEONeUWCqxX9i1Fc=
+github.com/cli/browser v1.0.0/go.mod h1:IEWkHYbLjkhtjwwWlwTHW2lGxeS5gezEQBMLTwDHf5Q=
+github.com/cli/browser v1.3.0 h1:LejqCrpWr+1pRqmEPDGnTZOjsMe7sehifLynZJuqJpo=
+github.com/cli/browser v1.3.0/go.mod h1:HH8s+fOAxjhQoBUAsKuPCbqUuxZDhQ2/aD+SzsEfBTk=
+github.com/cli/oauth v1.2.2 h1:/qG/wok8jzu66tx7q+duGOIp4DT5P/ACXrdc33UoNUQ=
+github.com/cli/oauth v1.2.2/go.mod h1:qd/FX8ZBD6n1sVNQO3aIdRxeu5LGw9WhKnYhIIoC2A4=
+github.com/cli/safeexec v1.0.0/go.mod h1:Z/D4tTN8Vs5gXYHDCbaM1S/anmEDnJb1iW0+EJ5zx3Q=
 github.com/creativeprojects/go-selfupdate v1.6.0 h1:Bu3cIgdyfI1Pg8XsL8nbaT2uMjfZ8HIoxnBmPJbN0sw=
 github.com/creativeprojects/go-selfupdate v1.6.0/go.mod h1:Ids8O474XGQG0jZ5vpBIhWffcGYjUP6ccOI0mMcvQbI=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
