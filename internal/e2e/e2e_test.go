@@ -3542,13 +3542,12 @@ func TestInteractiveWriteOnceSpentPromptsAgain(t *testing.T) {
 	}
 }
 
-// runSIGINTAtPrompt starts the binary, sends initial on stdin, waits until
-// marker appears on stdout, sends SIGINT, waits for followup, then quits and
-// returns stdout, stderr and the exit code. Stdin is deliberately left open
-// until followup so the signal alone resolves the escalation prompt; closing
-// it in the same instant as the signal lets the negotiator reject on EOF first
-// and misroutes the in-flight SIGINT to the turn.
-func runSIGINTAtPrompt(t *testing.T, dir string, env []string, initial, marker, followup string) (string, string, int) {
+// runCtrlCAtPrompt starts the binary, sends initial on stdin, waits until
+// marker appears on stdout, injects a Ctrl+C keystroke, waits for followup,
+// then quits and returns stdout, stderr and the exit code. The line editor
+// consumes Ctrl+C as an input byte (reported as an interrupt), so the keystroke
+// — not a SIGINT — is what resolves the live escalation prompt.
+func runCtrlCAtPrompt(t *testing.T, dir string, env []string, initial, marker, followup string) (string, string, int) {
 	t.Helper()
 	cmd := exec.Command(binPath)
 	if dir != "" {
@@ -3587,7 +3586,7 @@ func runSIGINTAtPrompt(t *testing.T, dir string, env []string, initial, marker, 
 			outBuf.WriteByte(b)
 			if !signaled && strings.Contains(outBuf.String(), marker) {
 				signaled = true
-				cmd.Process.Signal(os.Interrupt)
+				io.WriteString(in, "\x03")
 			}
 			if signaled && !quit && strings.Contains(outBuf.String(), followup) {
 				quit = true
@@ -3623,7 +3622,7 @@ func TestInteractiveCtrlCRejectsAxis(t *testing.T) {
 	srv, bodies := writeToolThenText(t, "output.txt", "hello world", "no file written")
 	workDir := t.TempDir()
 
-	stdout, stderr, code := runSIGINTAtPrompt(t, workDir, []string{
+	stdout, stderr, code := runCtrlCAtPrompt(t, workDir, []string{
 		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
 		"OPENCODE_API_KEY=test-key",
 		"GENIE_SESSION_DIR=" + t.TempDir(),

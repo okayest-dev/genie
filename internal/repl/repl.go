@@ -1,13 +1,13 @@
 // Package repl implements the interactive REPL (Read-Eval-Print Loop) for genie.
-// It provides a canonical-mode line reader with live streaming, Ctrl+C handling
-// across three zones, slash commands, and interactive confirm prompts. All
+// It provides a line-editing reader (history, cursor keys) with live streaming,
+// Ctrl+C handling across three zones, slash commands, and interactive confirm
+// prompts. All
 // turn assembly — session, tools, skills, plugins, permission gate, providers,
 // agents — lives in run.Handle; the REPL is a thin reader that routes lines,
 // signals, and prompts through it.
 package repl
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,11 +15,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/chzyer/readline"
 	"github.com/okayest-dev/genie/internal/config"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
@@ -65,21 +67,27 @@ func Run(ctx context.Context, cfg *Config) error {
 		return errors.New("repl: no run handle")
 	}
 
-	// One goroutine owns stdin and fans lines out over a channel. Sharing the
-	// buffered reader with the escalation prompt is what lets ^C interrupt a
-	// prompt without racing a blocked Scan.
-	lines := make(chan string)
-	go func() {
-		scanner := bufio.NewScanner(cfg.Stdin)
-		for scanner.Scan() {
-			lines <- scanner.Text()
-		}
-		close(lines)
-	}()
+	// A readline instance owns the interactive input: line editing, cursor
+	// keys, and cross-session history. While it is reading it consumes ^C
+	// itself (returning readline.ErrInterrupt), so the SIGINT router below only
+	// fires during a turn, when the terminal is back in canonical mode.
+	rl, err := readline.NewEx(&readline.Config{
+		Stdin:           stdinReader(cfg.Stdin),
+		Stdout:          cfg.Stdout,
+		Stderr:          cfg.Stderr,
+		HistoryFile:     cfg.historyFile(),
+		HistoryLimit:    1000,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+	})
+	if err != nil {
+		return fmt.Errorf("repl: failed to init readline: %w", err)
+	}
+	defer rl.Close()
 
 	// Set up SIGINT routing. A single consumer drains os.Interrupt and hands
-	// it to whichever of idle/turn/prompt is active, so the escalation prompt
-	// owns delivery while it is live.
+	// it to whichever of turn/prompt is active, so an in-flight turn is
+	// cancelled while an escalation prompt is left to readline.
 	router := newInterruptRouter()
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
@@ -94,55 +102,86 @@ func Run(ctx context.Context, cfg *Config) error {
 	// request_permission tool both follow, so inline escalation prompts are
 	// byte-identical to pre-negotiation prompts.
 	promptOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "prompt")
-	cfg.Run.SetNegotiator(&interactiveNegotiator{lines: lines, out: promptOut, router: router})
+	cfg.Run.SetNegotiator(&interactiveNegotiator{rl: rl, out: promptOut, router: router})
 
 	for {
-		// Render the idle prompt bar
-		if cfg.PromptBar != nil {
-			ctx := prompt.BuildContext(cfg.Run, cfg.Cfg, cfg.Theme)
-			barLines := cfg.PromptBar.Render(ctx)
-			for _, line := range barLines {
-				fmt.Fprint(cfg.Stdout, line)
-			}
-		} else {
-			fmt.Fprint(cfg.Stdout, defaultPrompt)
-		}
+		// Point readline at the idle prompt: the bar's final line (the prompt
+		// character) becomes readline's prompt so its cursor tracking stays
+		// correct; the preceding bar lines are printed above it.
+		rl.SetPrompt(cfg.promptText())
 
-		select {
-		case <-router.idleCh:
-			// Ctrl+C at idle: exit.
+		line, err := rl.Readline()
+		if err != nil {
+			// ^C at the idle prompt exits; EOF and read errors do the same.
 			fmt.Fprintln(cfg.Stderr)
 			return nil
-		case line, ok := <-lines:
-			if !ok {
-				// EOF or read error.
-				fmt.Fprintln(cfg.Stderr)
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// 1. Parse @name one-shot (before slash commands).
+		if agentName, rest, ok := parseInlineAgent(line); ok {
+			handleInlineAgent(ctx, agentName, rest, cfg, router)
+			continue
+		}
+
+		// 2. Handle slash commands.
+		if strings.HasPrefix(line, "/") {
+			if handleSlashCommand(ctx, line, cfg) {
 				return nil
 			}
-
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-
-			// 1. Parse @name one-shot (before slash commands).
-			if agentName, rest, ok := parseInlineAgent(line); ok {
-				handleInlineAgent(ctx, agentName, rest, cfg, router)
-				continue
-			}
-
-			// 2. Handle slash commands.
-			if strings.HasPrefix(line, "/") {
-				if handleSlashCommand(ctx, line, cfg) {
-					return nil
-				}
-				continue
-			}
-
-			// 3. Normal turn.
-			runTurn(ctx, cfg, line, router)
+			continue
 		}
+
+		// 3. Normal turn.
+		runTurn(ctx, cfg, line, router)
 	}
+}
+
+// stdinReader adapts the configured stdin to the io.ReadCloser readline needs.
+// A nil reader is returned as nil so readline falls back to os.Stdin.
+func stdinReader(r io.Reader) io.ReadCloser {
+	if r == nil {
+		return nil
+	}
+	if rc, ok := r.(io.ReadCloser); ok {
+		return rc
+	}
+	return io.NopCloser(r)
+}
+
+// historyFile returns the readline history path: a stable file beside the
+// session directories, so history survives across sessions. It returns "" (no
+// history) when no session directory is configured.
+func (c *Config) historyFile() string {
+	dir := c.SessionDir
+	if dir == "" && c.Cfg != nil {
+		dir = c.Cfg.SessionDir
+	}
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "history")
+}
+
+// promptText renders the idle prompt and returns the line readline should use
+// as its prompt. With a prompt bar the bar's lines are printed and its final
+// line (the prompt character) is returned; otherwise the default prompt is.
+func (c *Config) promptText() string {
+	if c.PromptBar == nil || c.Run == nil || c.Cfg == nil || c.Theme == nil {
+		return defaultPrompt
+	}
+	lines := c.PromptBar.Render(prompt.BuildContext(c.Run, c.Cfg, c.Theme))
+	if len(lines) == 0 {
+		return defaultPrompt
+	}
+	for _, line := range lines[:len(lines)-1] {
+		fmt.Fprintln(c.Stdout, line)
+	}
+	return lines[len(lines)-1]
 }
 
 // inlineAgentName matches a valid agent name at the start of a line.

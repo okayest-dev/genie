@@ -100,12 +100,20 @@ func (r *interruptRouter) drainTurn() {
 	}
 }
 
-// interactiveNegotiator implements permissions.Negotiator over the REPL's
-// shared line channel: it renders the terse prompt, reads one line per
-// attempt, loops on unknown input with the choice hint, and treats ^C as a
-// rejection of the current axis (never a turn cancel).
+// lineReader is the input surface the negotiator needs: read one line, and
+// take over the prompt (the negotiator renders its own, so readline's idle
+// prompt is blanked while a permission question is live).
+type lineReader interface {
+	Readline() (string, error)
+	SetPrompt(prompt string)
+}
+
+// interactiveNegotiator implements permissions.Negotiator over a lineReader:
+// it renders the terse prompt, reads one line per attempt, loops on unknown
+// input with the choice hint, and treats ^C as a rejection of the current axis
+// (never a turn cancel).
 type interactiveNegotiator struct {
-	lines  <-chan string
+	rl     lineReader
 	out    io.Writer
 	router *interruptRouter
 }
@@ -116,32 +124,31 @@ func (n *interactiveNegotiator) Negotiate(ctx context.Context, axis permissions.
 	n.router.enterPrompt()
 	defer n.router.leavePrompt()
 
+	// The negotiator renders its own prompt, so blank readline's idle prompt.
+	n.rl.SetPrompt("")
+
 	promptText := permissions.RenderPrompt(axis, scope)
 	for {
-		fmt.Fprint(n.out, promptText)
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
+			// The turn was cancelled; decline the axis.
 			fmt.Fprintln(n.out)
 			return permissions.ResponseReject, nil
-		case <-n.router.promptCh:
-			// ^C rejects the current axis; the chain continues.
-			fmt.Fprintln(n.out)
-			return permissions.ResponseReject, nil
-		case line, ok := <-n.lines:
-			if !ok {
-				// EOF denies (fail safe).
-				fmt.Fprintln(n.out)
-				return permissions.ResponseReject, nil
-			}
-			resp, known := parseChoice(line)
-			if !known {
-				fmt.Fprintln(n.out)
-				fmt.Fprintln(n.out, permissions.RenderUnknownHint())
-				continue
-			}
-			fmt.Fprintln(n.out)
-			return resp, nil
 		}
+		fmt.Fprint(n.out, promptText)
+		line, err := n.rl.Readline()
+		if err != nil {
+			// EOF, ^C (readline.ErrInterrupt), or read error denies (fail safe).
+			fmt.Fprintln(n.out)
+			return permissions.ResponseReject, nil
+		}
+		resp, known := parseChoice(line)
+		if !known {
+			fmt.Fprintln(n.out)
+			fmt.Fprintln(n.out, permissions.RenderUnknownHint())
+			continue
+		}
+		fmt.Fprintln(n.out)
+		return resp, nil
 	}
 }
 

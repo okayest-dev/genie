@@ -206,7 +206,7 @@ If no provider is configured, genie lists the declared providers on first start 
 genie
 ```
 
-Starts an interactive session at the `genie>` prompt. Each input runs a full agent loop — the model produces text and/or tool calls, the harness executes them, and results are fed back until the model stops calling tools.
+Starts an interactive session at the `genie>` prompt. The line editor supports cursor movement, in-line editing, and Up/Down history (persisted across sessions under the session directory). Each input runs a full agent loop — the model produces text and/or tool calls, the harness executes them, and results are fed back until the model stops calling tools.
 
 ### Non-interactive mode
 
@@ -231,7 +231,7 @@ With no provider selected, `-p` runs on the first declared provider and prints a
 | `/model` | List the current provider's model catalog (`*` marks the current model) |
 | `/model <id>` | Switch to a different model within the current provider's catalog |
 
-Ctrl+C cancels a running turn. Ctrl+C at the prompt exits.
+Ctrl+C cancels a running turn. Ctrl+C at the prompt exits. Up/Down recall earlier inputs.
 
 ## Tools
 
