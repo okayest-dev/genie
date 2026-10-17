@@ -103,7 +103,7 @@ The `task_resolve` tool:
 - For epic/feature task types, requires `human_confirmed=true`
 - Posts the resolution comment to the tracker before closing
 - Clears the active task state (emitting a task boundary signal)
-- Returns a resolution record with task ID, gates passed, commits, worktree, and follow-up tickets
+- Returns a resolution record with task ID, gates passed, commits, worktree, check-in result, and follow-up tickets
 
 By default, Genie uses a markdown-based tracker (files in `~/.config/genie/tasks/`). For teams using other systems, plugins are available:
 - **bd/beads** - install the `bd-tracker` plugin from the genie plugins repo
@@ -123,7 +123,13 @@ Allocation *resumes* rather than fails when the worktree or the branch already e
 
 While the session is rebound into a task worktree, the original checkout stays reachable for *reads* (tracker state, domain docs) even though writes remain confined to the worktree: the read scope gains an extra root at the original checkout, and it is dropped again on resolve. The worktree itself has no extra scope; a read outside both the worktree and the original checkout still escalates.
 
-On `task_resolve`, after the active task state is cleared, the session's working directory is restored to where it started. The remaining `merge`, `base_branch`, and `drift_check` keys configure the resolve-time check-in step (og-wm7.3.3). While a task is active, the bash tool refuses raw `git worktree` mutations (`add`, `remove`, `prune`, ...) so the model cannot bypass the governed allocation; read-only `git worktree list` is allowed, mirroring how tracker reads pass the guard.
+On `task_resolve`, a blocking **git gate** verifies the worktree before the task closes: the session's registered worktree is the one expected for the task, the task branch exists, the worktree is clean and checked out on the task branch, and no stray worktrees are registered. Only once those checks pass does the resolve-time check-in step run, driven by `merge` (og-wm7.3.3):
+
+- `merge = "park"` (default) leaves the branch for a human or CI to merge and records it in the resolution traceability.
+- `merge = "auto"` merges the task branch into `base_branch` (default: the repo default branch) in the main checkout, refusing when that checkout is dirty.
+- `merge = "pr"` pushes the task branch to `origin` (opening a review is future work).
+
+`drift_check` controls what happens when the base branch has moved since the task branch was cut: `"warn"` (default) records a warning in the check-in result, `"block"` fails the git gate with a rebase instruction. After check-in the session's working directory is restored to where it started and the worktree is removed with `git worktree remove`, leaving the branch in place. While a task is active, the bash tool refuses raw `git worktree` mutations (`add`, `remove`, `prune`, ...) so the model cannot bypass the governed allocation; read-only `git worktree list` is allowed, mirroring how tracker reads pass the guard.
 
 ### Tracker write guard
 

@@ -325,6 +325,16 @@ type fakeRunner struct {
 	branches  map[string]bool
 	addErr    bool
 	calls     [][]string
+
+	// Resolve-time state (og-wm7.3.3).
+	status      string // `status --porcelain` output
+	head        string // `symbolic-ref --short HEAD` output; empty => error
+	commit      string // `rev-parse HEAD` output
+	originHead  string // `symbolic-ref refs/remotes/origin/HEAD`; empty => error
+	drift       string // `rev-list --left-right --count` output; empty => "0\t0"
+	checkoutErr bool
+	mergeErr    bool
+	pushErr     bool
 }
 
 func (f *fakeRunner) Run(ctx context.Context, dir string, args ...string) (string, error) {
@@ -334,18 +344,55 @@ func (f *fakeRunner) Run(ctx context.Context, dir string, args ...string) (strin
 		return f.root + "\n", nil
 	case equalArgs(args, "rev-parse", "--git-common-dir"):
 		return ".git\n", nil
+	case equalArgs(args, "rev-parse", "HEAD"):
+		if f.commit == "" {
+			return "deadbeef\n", nil
+		}
+		return f.commit + "\n", nil
 	case equalArgs(args, "worktree", "list", "--porcelain"):
 		var b strings.Builder
 		for _, w := range f.worktrees {
 			b.WriteString("worktree " + w + "\n")
 		}
 		return b.String(), nil
+	case equalArgs(args, "status", "--porcelain"):
+		return f.status, nil
+	case equalArgs(args, "symbolic-ref", "--quiet", "--short", "HEAD"):
+		if f.head == "" {
+			return "", errNotFound
+		}
+		return f.head + "\n", nil
+	case equalArgs(args, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"):
+		if f.originHead == "" {
+			return "", errNotFound
+		}
+		return f.originHead + "\n", nil
+	case len(args) == 4 && equalArgs(args[:3], "rev-list", "--left-right", "--count"):
+		if f.drift == "" {
+			return "0\t0\n", nil
+		}
+		return f.drift, nil
 	case len(args) == 4 && equalArgs(args[:3], "rev-parse", "--verify", "--quiet"):
 		branch := strings.TrimPrefix(args[3], "refs/heads/")
 		if f.branches[branch] {
 			return "deadbeef\n", nil
 		}
 		return "", errNotFound
+	case len(args) >= 1 && args[0] == "checkout":
+		if f.checkoutErr {
+			return "", errGitFail
+		}
+		return "", nil
+	case len(args) >= 1 && args[0] == "merge":
+		if f.mergeErr {
+			return "", errGitFail
+		}
+		return "", nil
+	case len(args) >= 2 && args[0] == "push":
+		if f.pushErr {
+			return "", errGitFail
+		}
+		return "", nil
 	case len(args) >= 2 && args[0] == "worktree" && args[1] == "add":
 		if f.addErr {
 			return "", errGitFail

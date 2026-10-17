@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -123,6 +124,11 @@ func TestConfigureWorktreeWiresAllocatorInGitRepo(t *testing.T) {
 	if !h.claimTool.HasWorktreeAllocator() {
 		t.Error("allocator should be wired inside a git repo")
 	}
+	// og-wm7.3.3: the resolve-time git gate needs the manager, so it must be
+	// captured before the gate runner is built.
+	if h.worktreeManager == nil {
+		t.Error("worktree manager should be stored on the handle for the git gate")
+	}
 }
 
 func TestConfigureWorktreeExemptsNonGitDir(t *testing.T) {
@@ -139,5 +145,46 @@ func TestConfigureWorktreeExemptsNonGitDir(t *testing.T) {
 	}
 	if h.claimTool.WorktreePolicy() != "" {
 		t.Errorf("worktreePolicy = %q, want empty for exempt dir", h.claimTool.WorktreePolicy())
+	}
+	if h.worktreeManager != nil {
+		t.Error("non-git dir must not store a worktree manager")
+	}
+}
+
+type fakeWorktreeManager struct {
+	torn string
+	err  error
+}
+
+func (f *fakeWorktreeManager) CheckWorktreeState(context.Context, string, string) (worktree.WorktreeState, error) {
+	return worktree.WorktreeState{}, nil
+}
+
+func (f *fakeWorktreeManager) CheckIn(context.Context, string) (worktree.CheckInResult, error) {
+	return worktree.CheckInResult{}, nil
+}
+
+func (f *fakeWorktreeManager) Teardown(_ context.Context, taskID string) error {
+	f.torn = taskID
+	return f.err
+}
+
+func TestTeardownWorktree(t *testing.T) {
+	h := &Handle{}
+	fm := &fakeWorktreeManager{}
+	h.worktreeManager = fm
+	if err := h.TeardownWorktree("og-1"); err != nil {
+		t.Fatalf("TeardownWorktree: %v", err)
+	}
+	if fm.torn != "og-1" {
+		t.Errorf("torn = %q, want og-1", fm.torn)
+	}
+
+	// No manager and no task id are both no-ops.
+	if err := (&Handle{}).TeardownWorktree("og-1"); err != nil {
+		t.Errorf("nil manager TeardownWorktree: %v", err)
+	}
+	if err := h.TeardownWorktree(""); err != nil {
+		t.Errorf("empty id TeardownWorktree: %v", err)
 	}
 }

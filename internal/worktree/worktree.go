@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -118,6 +119,37 @@ func (execRunner) Run(ctx context.Context, dir string, args ...string) (string, 
 	return string(out), nil
 }
 
+// ManagerInterface is the resolve-time seam the git gate consumes. *Manager
+// implements it; the interface keeps the gate evaluator testable without git.
+type ManagerInterface interface {
+	CheckWorktreeState(ctx context.Context, taskID, registeredWorktree string) (WorktreeState, error)
+	CheckIn(ctx context.Context, taskID string) (CheckInResult, error)
+	Teardown(ctx context.Context, taskID string) error
+}
+
+// WorktreeState is the verified git state of a task's worktree at resolve time.
+type WorktreeState struct {
+	// IsTaskWorktree is true when the session's registered worktree matches the
+	// worktree the manager expects for the task and git agrees it is registered.
+	IsTaskWorktree bool
+	// TaskBranchExists is true when the task branch exists locally.
+	TaskBranchExists bool
+	// WorkCommitted is true when the task worktree has no uncommitted changes.
+	WorkCommitted bool
+	// NoStrayWorktrees is true when only the main checkout and the task worktree
+	// are registered with git.
+	NoStrayWorktrees bool
+	// DiffConfined is true when the task worktree has the task branch checked
+	// out, so its commits cannot land on another branch.
+	DiffConfined bool
+	// CurrentCommit is the commit the task worktree is on.
+	CurrentCommit string
+	// TaskBranch is the branch the manager expects for the task.
+	TaskBranch string
+	// WorktreePath is the path the manager expects for the task.
+	WorktreePath string
+}
+
 // Manager allocates and tears down task worktrees for one repository.
 type Manager struct {
 	repoRoot string
@@ -163,10 +195,15 @@ func (m *Manager) Config() Config { return m.cfg }
 
 // Path returns the worktree path for a task: <repo>/<path>/<task-id>.
 func (m *Manager) Path(taskID string) string {
+	return filepath.Join(m.worktreeRoot(), taskID)
+}
+
+// worktreeRoot returns the absolute directory holding the task worktrees.
+func (m *Manager) worktreeRoot() string {
 	if filepath.IsAbs(m.cfg.Path) {
-		return filepath.Join(m.cfg.Path, taskID)
+		return filepath.Clean(m.cfg.Path)
 	}
-	return filepath.Join(m.repoRoot, m.cfg.Path, taskID)
+	return filepath.Join(m.repoRoot, m.cfg.Path)
 }
 
 // Branch returns the task branch for a tracker id: <branch_prefix><tracker-id>.
@@ -239,6 +276,75 @@ func (m *Manager) Remove(ctx context.Context, taskID string) error {
 	return nil
 }
 
+// CheckWorktreeState verifies the worktree state at task resolve time.
+//
+// registeredWorktree is the worktree the session recorded at claim time (empty
+// when no worktree was allocated). The gate passes only when the session's
+// registered worktree is the one the manager expects for taskID, the task
+// branch exists, the worktree is clean and checked out on the task branch, and
+// no stray worktrees are registered.
+func (m *Manager) CheckWorktreeState(ctx context.Context, taskID, registeredWorktree string) (WorktreeState, error) {
+	path := m.Path(taskID)
+	branch := m.Branch(taskID)
+	state := WorktreeState{
+		WorktreePath: path,
+		TaskBranch:   branch,
+	}
+
+	// Current tree is the task's registered worktree: the session's recorded
+	// path matches the manager's expected path, and git lists it as a worktree.
+	if registeredWorktree != "" &&
+		filepath.Clean(registeredWorktree) == filepath.Clean(path) &&
+		m.isRegisteredWorktree(ctx, path) {
+		state.IsTaskWorktree = true
+	}
+
+	state.TaskBranchExists = m.branchExists(ctx, branch)
+
+	if state.IsTaskWorktree {
+		if status, err := m.runner.Run(ctx, path, "status", "--porcelain"); err == nil {
+			state.WorkCommitted = strings.TrimSpace(status) == ""
+		}
+		if head, err := m.runner.Run(ctx, path, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+			state.DiffConfined = strings.TrimSpace(head) == branch
+		}
+		if commit, err := m.runner.Run(ctx, path, "rev-parse", "HEAD"); err == nil {
+			state.CurrentCommit = strings.TrimSpace(commit)
+		}
+	}
+
+	state.NoStrayWorktrees = m.noStrayWorktrees(ctx, path)
+
+	return state, nil
+}
+
+// noStrayWorktrees reports whether git knows about any worktree outside the
+// main checkout and the manager's configured worktree root. Sibling task
+// worktrees from parallel sessions live under that root and are not stray; a
+// worktree created anywhere else is.
+func (m *Manager) noStrayWorktrees(ctx context.Context, taskPath string) bool {
+	out, err := m.runner.Run(ctx, m.repoRoot, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false
+	}
+	root := m.worktreeRoot()
+	for _, line := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "worktree ")
+		if !ok {
+			continue
+		}
+		clean := filepath.Clean(rest)
+		if clean == filepath.Clean(m.repoRoot) || clean == filepath.Clean(taskPath) {
+			continue
+		}
+		if rel, err := filepath.Rel(root, clean); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // isRegisteredWorktree reports whether path is listed by git as a worktree.
 func (m *Manager) isRegisteredWorktree(ctx context.Context, path string) bool {
 	out, err := m.runner.Run(ctx, m.repoRoot, "worktree", "list", "--porcelain")
@@ -297,4 +403,135 @@ func (m *Manager) ensureExcluded(ctx context.Context) error {
 		return fmt.Errorf("write %s: %w", excludePath, err)
 	}
 	return nil
+}
+
+// CheckIn performs the resolve-time check-in flow for a task's branch based on
+// the configured merge mode (auto | park | pr). It returns the merge result the
+// resolution traceability record cites.
+func (m *Manager) CheckIn(ctx context.Context, taskID string) (CheckInResult, error) {
+	cfg := m.Config()
+	result := CheckInResult{TaskID: taskID, MergeMode: cfg.Merge}
+
+	baseBranch, err := m.baseBranch(ctx, cfg.BaseBranch)
+	if err != nil {
+		return result, err
+	}
+	result.BaseBranch = baseBranch
+
+	taskBranch := m.Branch(taskID)
+
+	if baseBranch != "" {
+		drift, derr := m.checkDrift(ctx, baseBranch, taskBranch)
+		if derr == nil && drift {
+			switch cfg.DriftCheck {
+			case "block":
+				return result, fmt.Errorf("base branch %q has moved beyond task branch %q; rebase before merging or set worktree.drift_check=warn", baseBranch, taskBranch)
+			case "", "warn":
+				result.DriftWarning = fmt.Sprintf("base branch %q has moved; consider rebasing before merging", baseBranch)
+			}
+		}
+	}
+
+	switch cfg.Merge {
+	case MergeAuto:
+		if err := m.autoMerge(ctx, baseBranch, taskBranch); err != nil {
+			return result, err
+		}
+		result.Merged = true
+		result.MergedBranch = taskBranch
+
+	case MergePark:
+		// Parked (default): the branch is left for a human or CI to merge.
+		result.ParkedBranch = taskBranch
+
+	case MergePR:
+		if _, err := m.runner.Run(ctx, m.repoRoot, "push", "origin", taskBranch); err != nil {
+			return result, fmt.Errorf("push task branch %s: %w", taskBranch, err)
+		}
+		result.PushedBranch = taskBranch
+	}
+
+	return result, nil
+}
+
+// baseBranch resolves the branch merge=auto merges into: the configured branch
+// when set, else origin/HEAD, else main/master. An empty return means no base
+// branch could be resolved.
+func (m *Manager) baseBranch(ctx context.Context, configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	if out, err := m.runner.Run(ctx, m.repoRoot, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil {
+		if name := strings.TrimPrefix(strings.TrimSpace(out), "refs/remotes/origin/"); name != "" {
+			return name, nil
+		}
+	}
+	for _, candidate := range []string{"main", "master"} {
+		if m.branchExists(ctx, candidate) {
+			return candidate, nil
+		}
+	}
+	return "", nil
+}
+
+// autoMerge merges taskBranch into baseBranch in the main checkout. It refuses
+// to run when the main checkout is dirty, so a resolve never clobbers the
+// user's in-progress work.
+func (m *Manager) autoMerge(ctx context.Context, baseBranch, taskBranch string) error {
+	if baseBranch == "" {
+		return fmt.Errorf("cannot auto-merge: no base branch resolved (set worktree.base_branch)")
+	}
+	status, err := m.runner.Run(ctx, m.repoRoot, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("inspect main checkout before merge: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("cannot auto-merge into %q: main checkout has uncommitted changes; commit them or use worktree.merge=park", baseBranch)
+	}
+	if _, err := m.runner.Run(ctx, m.repoRoot, "checkout", baseBranch); err != nil {
+		return fmt.Errorf("checkout base branch %s: %w", baseBranch, err)
+	}
+	msg := fmt.Sprintf("Merge task branch %s", taskBranch)
+	if _, err := m.runner.Run(ctx, m.repoRoot, "merge", "--ff-only", taskBranch); err != nil {
+		if _, err2 := m.runner.Run(ctx, m.repoRoot, "merge", "--no-ff", "-m", msg, taskBranch); err2 != nil {
+			return fmt.Errorf("merge %s into %s: %w", taskBranch, baseBranch, err2)
+		}
+	}
+	return nil
+}
+
+// CheckInResult holds the result of the check-in operation.
+type CheckInResult struct {
+	TaskID       string `json:"task_id"`
+	MergeMode    string `json:"merge_mode"`
+	BaseBranch   string `json:"base_branch,omitempty"`
+	Merged       bool   `json:"merged"`
+	MergedBranch string `json:"merged_branch,omitempty"`
+	ParkedBranch string `json:"parked_branch,omitempty"`
+	PushedBranch string `json:"pushed_branch,omitempty"`
+	PRUrl        string `json:"pr_url,omitempty"`
+	DriftWarning string `json:"drift_warning,omitempty"`
+}
+
+// checkDrift reports whether baseBranch has commits the task branch is missing
+// (the base moved since the branch was cut).
+func (m *Manager) checkDrift(ctx context.Context, baseBranch, taskBranch string) (bool, error) {
+	out, err := m.runner.Run(ctx, m.repoRoot, "rev-list", "--left-right", "--count", baseBranch+"..."+taskBranch)
+	if err != nil {
+		return false, err
+	}
+	parts := strings.Fields(strings.TrimSpace(out))
+	if len(parts) != 2 {
+		return false, fmt.Errorf("unexpected rev-list output %q", strings.TrimSpace(out))
+	}
+	baseAhead, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false, err
+	}
+	return baseAhead > 0, nil
+}
+
+// Teardown removes the worktree after check-in, leaving the branch in place.
+func (m *Manager) Teardown(ctx context.Context, taskID string) error {
+	return m.Remove(ctx, taskID)
 }

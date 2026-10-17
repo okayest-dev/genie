@@ -6,33 +6,37 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/okayest-dev/genie/internal/worktree"
 )
 
 // GateEvaluator evaluates gates against observed evidence.
 type GateEvaluator struct {
-	registry           GateRegistry
-	ledger             EvidenceLedger
-	config             GateConfig
-	observedEv         *ObservedEvidenceTracker
-	ticketCreator      TicketCreator
+	registry             GateRegistry
+	ledger               EvidenceLedger
+	config               GateConfig
+	observedEv           *ObservedEvidenceTracker
+	ticketCreator        TicketCreator
 	deferredFindingStore DeferredFindingStore
+	worktreeManager      worktree.ManagerInterface
+	lastCheckInResult    *worktree.CheckInResult
 }
 
 // ObservedEvidenceTracker tracks tool executions observed during the session.
 type ObservedEvidenceTracker struct {
-	mu          sync.Mutex
-	executions  []ToolExecution
-	claimedAt   time.Time
+	mu         sync.Mutex
+	executions []ToolExecution
+	claimedAt  time.Time
 }
 
 type ToolExecution struct {
-	Timestamp   time.Time
-	ToolName    string
-	Args        map[string]any
-	ExitCode    int
-	Stdout      string
-	Stderr      string
-	Duration    time.Duration
+	Timestamp time.Time
+	ToolName  string
+	Args      map[string]any
+	ExitCode  int
+	Stdout    string
+	Stderr    string
+	Duration  time.Duration
 }
 
 func NewObservedEvidenceTracker() *ObservedEvidenceTracker {
@@ -81,18 +85,18 @@ func (o *ObservedEvidenceTracker) Observed() *ObservedEvidenceTracker {
 // This is a convenience method for lifecycle hooks.
 func (o *ObservedEvidenceTracker) RecordToolExecution(toolName string, args map[string]any, exitCode int, stdout, stderr string, duration time.Duration) {
 	o.RecordExecution(ToolExecution{
-		Timestamp:  time.Now(),
-		ToolName:   toolName,
-		Args:       args,
-		ExitCode:   exitCode,
-		Stdout:     stdout,
-		Stderr:     stderr,
-		Duration:   duration,
+		Timestamp: time.Now(),
+		ToolName:  toolName,
+		Args:      args,
+		ExitCode:  exitCode,
+		Stdout:    stdout,
+		Stderr:    stderr,
+		Duration:  duration,
 	})
 }
 
 // NewGateEvaluator creates a new gate evaluator.
-func NewGateEvaluator(registry GateRegistry, ledger EvidenceLedger, config GateConfig, observed *ObservedEvidenceTracker, ticketCreator TicketCreator, deferredFindingStore DeferredFindingStore) *GateEvaluator {
+func NewGateEvaluator(registry GateRegistry, ledger EvidenceLedger, config GateConfig, observed *ObservedEvidenceTracker, ticketCreator TicketCreator, deferredFindingStore DeferredFindingStore, worktreeManager worktree.ManagerInterface) *GateEvaluator {
 	return &GateEvaluator{
 		registry:             registry,
 		ledger:               ledger,
@@ -100,6 +104,7 @@ func NewGateEvaluator(registry GateRegistry, ledger EvidenceLedger, config GateC
 		observedEv:           observed,
 		ticketCreator:        ticketCreator,
 		deferredFindingStore: deferredFindingStore,
+		worktreeManager:      worktreeManager,
 	}
 }
 
@@ -108,12 +113,22 @@ func (e *GateEvaluator) Run(ctx context.Context, task *Task) (GateResult, error)
 	gateSet := e.registry.GetGateSet(task.Type)
 	result := GateResult{}
 
+	// Reset last check-in result
+	e.lastCheckInResult = nil
+
 	claimedAt := e.observedEv.ClaimedAt()
 	executions := e.observedEv.GetExecutionsSince(claimedAt)
 
 	for _, gate := range gateSet.Gates {
 		// Check if gate is enabled
 		if !e.isGateEnabled(gate.Name) {
+			result.Skipped = append(result.Skipped, gate.Name)
+			continue
+		}
+
+		// The git gate only applies when worktree isolation is in play. Without
+		// a manager or an allocated worktree there is nothing to verify.
+		if gate.Verification == VerificationGit && (e.worktreeManager == nil || task.Worktree == "") {
 			result.Skipped = append(result.Skipped, gate.Name)
 			continue
 		}
@@ -189,6 +204,9 @@ func (e *GateEvaluator) Run(ctx context.Context, task *Task) (GateResult, error)
 		}
 	}
 
+	// Attach check-in result from git gate if present
+	result.CheckInInfo = e.lastCheckInResult
+
 	return result, nil
 }
 
@@ -222,6 +240,8 @@ func (e *GateEvaluator) evaluateGate(ctx context.Context, gate Gate, task *Task,
 		return e.evalHumanConfirm(gate, task)
 	case VerificationCitation:
 		return e.evalCitation(gate, task)
+	case VerificationGit:
+		return e.evalGit(ctx, gate, task, executions)
 	default:
 		return false, fmt.Sprintf("unknown verification type: %s", gate.Verification), nil
 	}
@@ -248,24 +268,24 @@ func (e *GateEvaluator) evalCoverage(gate Gate, executions []ToolExecution) (boo
 	if cmd == "" {
 		cmd = "make coverage"
 	}
-	
+
 	// Check if coverage command was run
 	found, exitCode := e.findCommandExitCode(executions, cmd)
 	if !found {
 		return false, fmt.Sprintf("coverage command %q not observed in session", cmd), nil
 	}
-	
+
 	if exitCode != 0 {
 		return false, fmt.Sprintf("coverage command exited with code %d", exitCode), nil
 	}
-	
+
 	// TODO: Parse coverage output and check threshold
 	// For now, just verify the command ran successfully
 	threshold := e.config.CoverageThreshold
 	if threshold <= 0 {
 		threshold = 0.8 // default 80%
 	}
-	
+
 	// In a real implementation, we'd parse the coverage output
 	// For now, we'll check if there's a coverage report in the execution
 	for _, exec := range executions {
@@ -274,7 +294,7 @@ func (e *GateEvaluator) evalCoverage(gate Gate, executions []ToolExecution) (boo
 			return true, "", nil
 		}
 	}
-	
+
 	return false, fmt.Sprintf("coverage threshold %.0f%% not verified (no coverage output parsed)", threshold*100), nil
 }
 
@@ -283,7 +303,7 @@ func (e *GateEvaluator) evalReview(gate Gate, executions []ToolExecution) (bool,
 	// Check if code-review skill was invoked (task.review or code-review tool)
 	reviewFound := false
 	findings := make([]Finding, 0)
-	
+
 	for _, exec := range executions {
 		if strings.Contains(strings.ToLower(exec.ToolName), "review") ||
 			strings.Contains(strings.ToLower(exec.ToolName), "code-review") {
@@ -296,18 +316,18 @@ func (e *GateEvaluator) evalReview(gate Gate, executions []ToolExecution) (bool,
 			findings = append(findings, extractedFindings...)
 		}
 	}
-	
+
 	if !reviewFound {
 		return false, "code review not executed (no review tool invocation observed)", nil
 	}
-	
+
 	// Check if all findings have been triaged
 	var createdTickets []string
 	for _, finding := range findings {
 		if finding.Disposition == "" {
 			return false, "review findings not triaged (missing disposition)", nil
 		}
-		
+
 		// Verify disposition is valid
 		if finding.Disposition == DispositionDeferWithTicket {
 			if finding.RelatedTicketID == "" {
@@ -324,19 +344,19 @@ func (e *GateEvaluator) evalReview(gate Gate, executions []ToolExecution) (bool,
 				}
 			}
 		}
-		
+
 		if finding.Disposition == DispositionWontfix && finding.DispositionReason == "" {
 			return false, fmt.Sprintf("finding %s wontfix but no reason provided", finding.ID), nil
 		}
 	}
-	
+
 	// Record created tickets in evidence
 	if len(createdTickets) > 0 {
 		ev := Evidence{
 			GateName:     gate.Name,
 			Timestamp:    time.Now(),
 			TaskID:       e.observedEv.ClaimedAt().String(), // This is a placeholder; we'll use task ID from context
-			TaskType:     TaskTypeCoding, // Will be overridden
+			TaskType:     TaskTypeCoding,                    // Will be overridden
 			Verification: gate.Verification,
 			Inputs:       map[string]any{"deferred_tickets": createdTickets},
 			Verdict:      VerdictPass,
@@ -344,14 +364,14 @@ func (e *GateEvaluator) evalReview(gate Gate, executions []ToolExecution) (bool,
 		}
 		_ = e.ledger.Append(context.Background(), ev)
 	}
-	
+
 	return true, "", nil
 }
 
 func (e *GateEvaluator) evalHygiene(gate Gate, executions []ToolExecution) (bool, string, error) {
 	// Check for temp files, untracked artifacts, secrets in worktree
 	// This would typically run a git status check or similar
-	
+
 	// For now, check if any hygiene-related command was run
 	hygieneFound := false
 	for _, exec := range executions {
@@ -360,18 +380,18 @@ func (e *GateEvaluator) evalHygiene(gate Gate, executions []ToolExecution) (bool
 			if c, ok := exec.Args["command"].(string); ok {
 				cmd = c
 			}
-			if strings.Contains(cmd, "git status") || 
+			if strings.Contains(cmd, "git status") ||
 				strings.Contains(cmd, "git diff") ||
 				strings.Contains(cmd, "ls -la") {
 				hygieneFound = true
 			}
 		}
 	}
-	
+
 	if !hygieneFound {
 		return false, "hygiene check not observed (no git status/diff or file listing)", nil
 	}
-	
+
 	// In reality, we'd parse the output for temp files, secrets, etc.
 	// For now, assume pass if check was run
 	return true, "", nil
@@ -394,6 +414,55 @@ func (e *GateEvaluator) evalCitation(gate Gate, task *Task) (bool, string, error
 	// Check if research output contains citations
 	// This would be evaluated based on task progress records
 	return true, "", nil
+}
+
+// evalGit evaluates the git worktree gate at resolve time. It verifies the task
+// worktree state and runs the configured check-in flow (auto | park | pr).
+func (e *GateEvaluator) evalGit(ctx context.Context, gate Gate, task *Task, executions []ToolExecution) (bool, string, error) {
+	state, err := e.worktreeManager.CheckWorktreeState(ctx, task.ID, task.Worktree)
+	if err != nil {
+		return false, "", err
+	}
+
+	var issues []string
+	if !state.IsTaskWorktree {
+		issues = append(issues, "current tree is not the task's registered worktree")
+	}
+	if !state.TaskBranchExists {
+		issues = append(issues, fmt.Sprintf("task branch %q does not exist", state.TaskBranch))
+	}
+	if !state.WorkCommitted {
+		issues = append(issues, "work not committed on the task worktree")
+	}
+	if !state.NoStrayWorktrees {
+		issues = append(issues, "stray worktrees detected")
+	}
+	if !state.DiffConfined {
+		issues = append(issues, "task worktree is not checked out on the task branch; diff not confined")
+	}
+	if len(issues) > 0 {
+		return false, strings.Join(issues, "; "), nil
+	}
+
+	result, err := e.worktreeManager.CheckIn(ctx, task.ID)
+	if err != nil {
+		return false, err.Error(), nil
+	}
+	e.lastCheckInResult = &result
+
+	evidence := fmt.Sprintf("git gate passed: worktree=%s branch=%s merge=%s", state.WorktreePath, state.TaskBranch, result.MergeMode)
+	switch {
+	case result.Merged:
+		evidence += fmt.Sprintf(" merged into %s", result.BaseBranch)
+	case result.ParkedBranch != "":
+		evidence += fmt.Sprintf(" parked on %s", result.ParkedBranch)
+	case result.PushedBranch != "":
+		evidence += fmt.Sprintf(" pushed %s", result.PushedBranch)
+	}
+	if result.DriftWarning != "" {
+		evidence += "; " + result.DriftWarning
+	}
+	return true, evidence, nil
 }
 
 func (e *GateEvaluator) evalCommandExitCode(executions []ToolExecution, cmd, gateName string) (bool, string, error) {

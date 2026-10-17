@@ -9,6 +9,7 @@ import (
 	"github.com/okayest-dev/genie/internal/gates"
 	"github.com/okayest-dev/genie/internal/session"
 	"github.com/okayest-dev/genie/internal/tools"
+	"github.com/okayest-dev/genie/internal/worktree"
 )
 
 // GateRunner is the interface for running quality gates on task resolution.
@@ -35,22 +36,24 @@ type TaskResolveArgs struct {
 
 // ResolutionRecord is the return value of task_resolve.
 type ResolutionRecord struct {
-	TaskID     string   `json:"task_id"`
-	GatesPassed []string `json:"gates_passed"`
-	Commits    []string `json:"commits"`
-	Worktree   string   `json:"worktree"`
-	FollowUps  []string `json:"follow_ups"`
+	TaskID      string                  `json:"task_id"`
+	GatesPassed []string                `json:"gates_passed"`
+	Commits     []string                `json:"commits"`
+	Worktree    string                  `json:"worktree"`
+	FollowUps   []string                `json:"follow_ups"`
+	CheckIn     *worktree.CheckInResult `json:"check_in,omitempty"`
 }
 
 // TaskResolveTool implements the task_resolve tool.
 type TaskResolveTool struct {
-	tracker    Tracker
-	state      *TaskState
-	gateRunner GateRunner
-	enabled    bool
-	timeout    time.Duration
-	sess       *session.Session
-	restoreCwd func() error
+	tracker          Tracker
+	state            *TaskState
+	gateRunner       GateRunner
+	enabled          bool
+	timeout          time.Duration
+	sess             *session.Session
+	restoreCwd       func() error
+	worktreeTeardown func(taskID string) error
 }
 
 // NewTaskResolveTool creates a new task_resolve tool.
@@ -76,6 +79,13 @@ func (t *TaskResolveTool) SetSession(sess *session.Session) {
 // to the main checkout once the task (and its worktree) is resolved (og-wm7.3).
 func (t *TaskResolveTool) SetRestoreCwd(fn func() error) {
 	t.restoreCwd = fn
+}
+
+// SetWorktreeTeardown registers the callback that tears down the task's worktree
+// after the check-in flow completes (og-wm7.3.3). The callback receives the
+// resolved task's id so teardown can run after the active task is cleared.
+func (t *TaskResolveTool) SetWorktreeTeardown(fn func(taskID string) error) {
+	t.worktreeTeardown = fn
 }
 
 // Name returns the tool name.
@@ -142,27 +152,28 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 		Description: active.Task.Description,
 		CreatedAt:   active.Task.CreatedAt,
 		UpdatedAt:   active.Task.UpdatedAt,
+		Worktree:    t.state.WorktreePath(),
 	}
-	
+
 	// Get deferred findings from task state
 	deferredFindings := t.state.GetDeferredFindings()
-	
+
 	// Convert to gates.DeferredFindingRecord
 	var gateDeferredFindings []gates.DeferredFindingRecord
 	for _, df := range deferredFindings {
 		gateDeferredFindings = append(gateDeferredFindings, gates.DeferredFindingRecord{
-			GateName:      df.GateName,
-			FindingID:     df.FindingID,
-			Invariant:     df.Invariant,
-			Severity:      df.Severity,
-			Category:      df.Category,
-			BlastRadius:   df.BlastRadius,
-			Recurrence:    df.Recurrence,
-			Description:   df.Description,
-			RecordedAt:    df.RecordedAt,
+			GateName:    df.GateName,
+			FindingID:   df.FindingID,
+			Invariant:   df.Invariant,
+			Severity:    df.Severity,
+			Category:    df.Category,
+			BlastRadius: df.BlastRadius,
+			Recurrence:  df.Recurrence,
+			Description: df.Description,
+			RecordedAt:  df.RecordedAt,
 		})
 	}
-	
+
 	gateResult, err := t.gateRunner.Run(ctx, gatesTask, gateDeferredFindings)
 	if err != nil {
 		return "", fmt.Errorf("gate runner failed: %w", err)
@@ -211,6 +222,9 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 					"commit_ref":         joinWithComma(gateResult.Commits),
 					"worktree_ref":       gateResult.Worktree,
 				}
+				if gateResult.CheckInInfo != nil {
+					boundarySummary["check_in"] = gateResult.CheckInInfo
+				}
 				summaryJSON, _ := json.Marshal(boundarySummary)
 				_ = t.sess.AppendCompaction(string(summaryJSON), startLine, endLine)
 			}
@@ -227,6 +241,13 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 		}
 	}
 
+	// Teardown the worktree after check-in (if configured and worktree was used)
+	if hadWorktree && t.worktreeTeardown != nil {
+		if err := t.worktreeTeardown(active.Task.ID); err != nil {
+			return "", fmt.Errorf("task resolved but failed to teardown worktree: %w", err)
+		}
+	}
+
 	// Build resolution record
 	record := ResolutionRecord{
 		TaskID:      active.Task.ID,
@@ -234,6 +255,7 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 		Commits:     gateResult.Commits,
 		Worktree:    gateResult.Worktree,
 		FollowUps:   gateResult.FollowUps,
+		CheckIn:     gateResult.CheckInInfo,
 	}
 
 	recordJSON, _ := json.Marshal(record)
@@ -253,10 +275,10 @@ func (t *TaskResolveTool) buildEvidencePointers() []map[string]any {
 	pointers := make([]map[string]any, 0, len(executions))
 	for _, exec := range executions {
 		pointers = append(pointers, map[string]any{
-			"tool":       exec.ToolName,
-			"timestamp":  exec.Timestamp.Format(time.RFC3339),
-			"exit_code":  exec.ExitCode,
-			"duration":   exec.Duration.String(),
+			"tool":      exec.ToolName,
+			"timestamp": exec.Timestamp.Format(time.RFC3339),
+			"exit_code": exec.ExitCode,
+			"duration":  exec.Duration.String(),
 		})
 	}
 	return pointers
@@ -285,6 +307,21 @@ func buildResolutionComment(task *Task, summary string, gateResult GateResult) s
 	}
 	if gateResult.Worktree != "" {
 		comment += fmt.Sprintf("- **Worktree**: %s\n", gateResult.Worktree)
+	}
+	if gateResult.CheckInInfo != nil {
+		ci := gateResult.CheckInInfo
+		comment += fmt.Sprintf("- **Check-in**: %s", ci.MergeMode)
+		if ci.Merged {
+			comment += fmt.Sprintf(" (merged to %s)", ci.BaseBranch)
+		} else if ci.ParkedBranch != "" {
+			comment += fmt.Sprintf(" (parked on %s)", ci.ParkedBranch)
+		} else if ci.PushedBranch != "" {
+			comment += fmt.Sprintf(" (pushed %s)", ci.PushedBranch)
+		}
+		if ci.DriftWarning != "" {
+			comment += fmt.Sprintf(" — drift: %s", ci.DriftWarning)
+		}
+		comment += "\n"
 	}
 	if len(gateResult.FollowUps) > 0 {
 		comment += fmt.Sprintf("- **Follow-up tickets**: %s\n", joinWithComma(gateResult.FollowUps))

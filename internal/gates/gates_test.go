@@ -243,7 +243,7 @@ func TestGateEvaluatorRun(t *testing.T) {
 		BuildCommand:      "make build",
 	}
 	observed := NewObservedEvidenceTracker()
-	evaluator := NewGateEvaluator(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore())
+	evaluator := NewGateEvaluator(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore(), nil)
 
 	ctx := context.Background()
 	task := &Task{
@@ -315,7 +315,7 @@ func TestGateEvaluatorMissingBuild(t *testing.T) {
 		BuildCommand: "make build",
 	}
 	observed := NewObservedEvidenceTracker()
-	evaluator := NewGateEvaluator(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore())
+	evaluator := NewGateEvaluator(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore(), nil)
 
 	ctx := context.Background()
 	task := &Task{
@@ -352,7 +352,7 @@ func TestGateEvaluatorCoverageThreshold(t *testing.T) {
 		CoverageCommand:   "make coverage",
 	}
 	observed := NewObservedEvidenceTracker()
-	evaluator := NewGateEvaluator(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore())
+	evaluator := NewGateEvaluator(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore(), nil)
 
 	ctx := context.Background()
 	task := &Task{
@@ -396,7 +396,7 @@ func TestGateRunnerImpl(t *testing.T) {
 		TestCommand:  "make test",
 	}
 	observed := NewObservedEvidenceTracker()
-	runner := NewGateRunner(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore())
+	runner := NewGateRunner(registry, ledger, config, observed, nil, NewInMemoryDeferredFindingStore(), nil)
 
 	ctx := context.Background()
 	task := &Task{
@@ -883,7 +883,7 @@ func TestGateRunnerWithDeferredFinding(t *testing.T) {
 	var createdTickets []string
 	fakeTicketCreator := &fakeTicketCreator{createdTickets: &createdTickets}
 	
-	runner := NewGateRunner(registry, ledger, config, observed, fakeTicketCreator, deferredStore)
+	runner := NewGateRunner(registry, ledger, config, observed, fakeTicketCreator, deferredStore, nil)
 
 	ctx := context.Background()
 	task := &Task{
@@ -954,7 +954,7 @@ func TestGateRunnerWithMultipleDeferredFindings(t *testing.T) {
 	var createdTickets []string
 	fakeTicketCreator := &fakeTicketCreator{createdTickets: &createdTickets}
 	
-	runner := NewGateRunner(registry, ledger, config, observed, fakeTicketCreator, deferredStore)
+	runner := NewGateRunner(registry, ledger, config, observed, fakeTicketCreator, deferredStore, nil)
 
 	ctx := context.Background()
 	task := &Task{

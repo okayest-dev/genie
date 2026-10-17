@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/okayest-dev/genie/internal/worktree"
 )
 
 // GateType identifies a gate by name.
@@ -21,25 +23,25 @@ const (
 type TaskType string
 
 const (
-	TaskTypeCoding     TaskType = "task"
-	TaskTypeResearch   TaskType = "research"
-	TaskTypeGrilling   TaskType = "grilling"
-	TaskTypePrototype  TaskType = "prototype"
-	TaskTypeEpic       TaskType = "epic"
-	TaskTypeFeature    TaskType = "feature"
-	TaskTypeBug        TaskType = "bug"
+	TaskTypeCoding    TaskType = "task"
+	TaskTypeResearch  TaskType = "research"
+	TaskTypeGrilling  TaskType = "grilling"
+	TaskTypePrototype TaskType = "prototype"
+	TaskTypeEpic      TaskType = "epic"
+	TaskTypeFeature   TaskType = "feature"
+	TaskTypeBug       TaskType = "bug"
 )
 
 // Gate defines a quality gate rule.
 type Gate struct {
-	Name              string           `json:"name"`
-	Description       string           `json:"description"`
-	AppliesTo         []TaskType       `json:"applies_to"`
-	Enforcement       EnforcementLevel `json:"enforcement"`
-	Precondition      string           `json:"precondition"`
-	Verification      VerificationType `json:"verification"`
-	PassCriteria      string           `json:"pass_criteria"`
-	Config            json.RawMessage  `json:"config,omitempty"`
+	Name         string           `json:"name"`
+	Description  string           `json:"description"`
+	AppliesTo    []TaskType       `json:"applies_to"`
+	Enforcement  EnforcementLevel `json:"enforcement"`
+	Precondition string           `json:"precondition"`
+	Verification VerificationType `json:"verification"`
+	PassCriteria string           `json:"pass_criteria"`
+	Config       json.RawMessage  `json:"config,omitempty"`
 }
 
 // VerificationType identifies how the harness verifies the gate.
@@ -54,6 +56,7 @@ const (
 	VerificationTraceability VerificationType = "traceability"
 	VerificationHumanConfirm VerificationType = "human_confirmation"
 	VerificationCitation     VerificationType = "citation"
+	VerificationGit          VerificationType = "git"
 )
 
 // GateSet is a collection of gates for a specific task type.
@@ -64,14 +67,14 @@ type GateSet struct {
 
 // Evidence is a record of a gate check.
 type Evidence struct {
-	GateName     string                 `json:"gate_name"`
-	Timestamp    time.Time              `json:"timestamp"`
-	TaskID       string                 `json:"task_id"`
-	TaskType     TaskType               `json:"task_type"`
-	Verification VerificationType       `json:"verification"`
-	Inputs       map[string]any         `json:"inputs"`
-	Verdict      Verdict                `json:"verdict"`
-	Details      string                 `json:"details,omitempty"`
+	GateName     string           `json:"gate_name"`
+	Timestamp    time.Time        `json:"timestamp"`
+	TaskID       string           `json:"task_id"`
+	TaskType     TaskType         `json:"task_type"`
+	Verification VerificationType `json:"verification"`
+	Inputs       map[string]any   `json:"inputs"`
+	Verdict      Verdict          `json:"verdict"`
+	Details      string           `json:"details,omitempty"`
 }
 
 // Verdict is the result of a gate check.
@@ -102,6 +105,9 @@ type Task struct {
 	Description string
 	CreatedAt   string
 	UpdatedAt   string
+	// Worktree is the worktree the session recorded at claim time (empty when
+	// no worktree was allocated). The git gate verifies it at resolve time.
+	Worktree string
 }
 
 // GateRegistry manages gate definitions and per-task-type gate sets.
@@ -121,12 +127,13 @@ type GateRunner interface {
 
 // GateResult represents the outcome of running gates on a task.
 type GateResult struct {
-	Passed    []string
-	Failed    []FailedGate
-	Skipped   []string
-	Commits   []string
-	Worktree  string
-	FollowUps []string
+	Passed      []string
+	Failed      []FailedGate
+	Skipped     []string
+	Commits     []string
+	Worktree    string
+	FollowUps   []string
+	CheckInInfo *worktree.CheckInResult
 }
 
 // FailedGate represents a gate that failed with its evidence gap.
@@ -156,16 +163,16 @@ type TicketCreator interface {
 
 // CreateTicketArgs holds arguments for creating a follow-up ticket.
 type CreateTicketArgs struct {
-	Title         string
-	Description   string
-	FindingOf     string // Source task ID (provenance)
-	SourceGate    string // Gate name that generated the finding
-	FindingID     string // Finding ID
-	Invariant     string // Invariant violated
-	Severity      string // Finding severity
-	Category      string // Finding category
-	BlastRadius   int    // Blast radius files
-	Recurrence    int    // Recurrence count
+	Title       string
+	Description string
+	FindingOf   string // Source task ID (provenance)
+	SourceGate  string // Gate name that generated the finding
+	FindingID   string // Finding ID
+	Invariant   string // Invariant violated
+	Severity    string // Finding severity
+	Category    string // Finding category
+	BlastRadius int    // Blast radius files
+	Recurrence  int    // Recurrence count
 }
 
 // GateConfig holds configuration for the gate system.
@@ -181,28 +188,28 @@ type GateConfig struct {
 
 // DeferredFindingRecord represents a deferred gate finding recorded during task work (from task state).
 type DeferredFindingRecord struct {
-	GateName      string `json:"gate_name"`
-	FindingID     string `json:"finding_id"`
-	Invariant     string `json:"invariant"`
-	Severity      string `json:"severity"`
-	Category      string `json:"category"`
-	BlastRadius   int    `json:"blast_radius"`
-	Recurrence    int    `json:"recurrence"`
-	Description   string `json:"description"`
-	RecordedAt    string `json:"recorded_at"`
+	GateName    string `json:"gate_name"`
+	FindingID   string `json:"finding_id"`
+	Invariant   string `json:"invariant"`
+	Severity    string `json:"severity"`
+	Category    string `json:"category"`
+	BlastRadius int    `json:"blast_radius"`
+	Recurrence  int    `json:"recurrence"`
+	Description string `json:"description"`
+	RecordedAt  string `json:"recorded_at"`
 }
 
 // DeferredFinding represents a finding that has been deferred with a ticket (stored in deferred finding store).
 type DeferredFinding struct {
-	GateName      string    `json:"gate_name"`
-	FindingID     string    `json:"finding_id"`
-	Invariant     string    `json:"invariant"`
-	Severity      string    `json:"severity"`
-	Category      string    `json:"category"`
-	BlastRadius   int       `json:"blast_radius"`
-	Recurrence    int       `json:"recurrence"`
-	TicketID      string    `json:"ticket_id"`
-	FindingOf     string    `json:"finding_of"`     // Source task ID
-	Description   string    `json:"description"`
-	CreatedAt     time.Time `json:"created_at"`
+	GateName    string    `json:"gate_name"`
+	FindingID   string    `json:"finding_id"`
+	Invariant   string    `json:"invariant"`
+	Severity    string    `json:"severity"`
+	Category    string    `json:"category"`
+	BlastRadius int       `json:"blast_radius"`
+	Recurrence  int       `json:"recurrence"`
+	TicketID    string    `json:"ticket_id"`
+	FindingOf   string    `json:"finding_of"` // Source task ID
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
 }

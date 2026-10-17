@@ -3,6 +3,8 @@ package gates
 import (
 	"context"
 	"time"
+
+	"github.com/okayest-dev/genie/internal/worktree"
 )
 
 // GateRunnerImpl implements the GateRunner interface for tasktools.
@@ -14,8 +16,8 @@ type GateRunnerImpl struct {
 }
 
 // NewGateRunner creates a new gate runner.
-func NewGateRunner(registry GateRegistry, ledger EvidenceLedger, config GateConfig, observed *ObservedEvidenceTracker, ticketCreator TicketCreator, deferredFindingStore DeferredFindingStore) *GateRunnerImpl {
-	evaluator := NewGateEvaluator(registry, ledger, config, observed, ticketCreator, deferredFindingStore)
+func NewGateRunner(registry GateRegistry, ledger EvidenceLedger, config GateConfig, observed *ObservedEvidenceTracker, ticketCreator TicketCreator, deferredFindingStore DeferredFindingStore, worktreeManager worktree.ManagerInterface) *GateRunnerImpl {
+	evaluator := NewGateEvaluator(registry, ledger, config, observed, ticketCreator, deferredFindingStore, worktreeManager)
 	return &GateRunnerImpl{
 		evaluator: evaluator,
 		registry:  registry,
@@ -31,16 +33,16 @@ func (r *GateRunnerImpl) Run(ctx context.Context, task *Task, deferredFindings [
 	if r.evaluator.deferredFindingStore != nil && len(deferredFindings) > 0 {
 		for _, df := range deferredFindings {
 			finding := DeferredFinding{
-				GateName:      df.GateName,
-				FindingID:     df.FindingID,
-				Invariant:     df.Invariant,
-				Severity:      df.Severity,
-				Category:      df.Category,
-				BlastRadius:   df.BlastRadius,
-				Recurrence:    df.Recurrence,
-				FindingOf:     task.ID, // The source task is the current task
-				Description:   df.Description,
-				CreatedAt:     time.Now(), // Will be parsed from df.RecordedAt if needed
+				GateName:    df.GateName,
+				FindingID:   df.FindingID,
+				Invariant:   df.Invariant,
+				Severity:    df.Severity,
+				Category:    df.Category,
+				BlastRadius: df.BlastRadius,
+				Recurrence:  df.Recurrence,
+				FindingOf:   task.ID, // The source task is the current task
+				Description: df.Description,
+				CreatedAt:   time.Now(), // Will be parsed from df.RecordedAt if needed
 			}
 			// Parse the recorded time
 			if t, err := time.Parse(time.RFC3339, df.RecordedAt); err == nil {

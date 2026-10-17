@@ -55,7 +55,7 @@ type ProviderSource interface {
 
 // Options bundles the mode-shaped pieces an entry point injects. Everything a
 // turn touches that is derivable from Config + Cwd — tools, skills, plugins,
-	// sessions, and the permission gate — is assembled inside New.
+// sessions, and the permission gate — is assembled inside New.
 type Options struct {
 	// Config is the harness config. A nil config is tolerated as a zero
 	// configuration (unit-test handles).
@@ -98,9 +98,9 @@ type Options struct {
 	// roles wherever the profile can display them. All nil leaves the turn
 	// output byte-identical plain, so callers that never wired styling get
 	// today's bytes.
-	Theme          *theme.Theme
-	StdoutProfile  *style.RenderProfile
-	StderrProfile  *style.RenderProfile
+	Theme         *theme.Theme
+	StdoutProfile *style.RenderProfile
+	StderrProfile *style.RenderProfile
 }
 
 // env is the mutable slice of handle state a turn reads, snapshotted under the
@@ -159,11 +159,12 @@ type Handle struct {
 	tracker   tasktools.Tracker
 	// baseCwd is the run's original working root, restored after a task's
 	// worktree is torn down. Guarded by mu.
-	baseCwd string
-	gateRunner *gates.GateRunnerImpl
-	evidenceLedger gates.EvidenceLedger
+	baseCwd         string
+	worktreeManager worktree.ManagerInterface
+	gateRunner      *gates.GateRunnerImpl
+	evidenceLedger  gates.EvidenceLedger
 
-	claimTool  *tasktools.TaskClaimTool
+	claimTool   *tasktools.TaskClaimTool
 	resolveTool *tasktools.TaskResolveTool
 	resetTool   *tasktools.SessionResetTool
 
@@ -174,7 +175,7 @@ type Handle struct {
 
 	// Token accumulation and prompt status for the idle prompt bar.
 	// Guarded by mu.
-	totalTokens    int
+	totalTokens      int
 	lastPromptStatus PromptStatus
 
 	// Git gatherer for the prompt git segment.
@@ -262,9 +263,6 @@ func New(opts Options) (*Handle, error) {
 		}
 		h.evidenceLedger = evidenceLedger
 
-		// Create gate registry and runner
-		gateRegistry := gates.NewDefaultGateRegistry()
-
 		// Create follow-up engine for dedup guard and priority shaping (og-hd8)
 		followupMetrics := &tasktools.FollowupMetrics{}
 		followupEngine := tasktools.NewFollowupEngine(tracker, opts.Config.TaskTools.Followup, followupMetrics)
@@ -275,23 +273,29 @@ func New(opts Options) (*Handle, error) {
 		// Create deferred finding store
 		deferredFindingStore := gates.NewInMemoryDeferredFindingStore()
 
-		gateRunner := gates.NewGateRunner(gateRegistry, evidenceLedger, opts.Config.Gates, h.taskState.EvidenceTracker().Observed(), ticketCreator, deferredFindingStore)
-		h.gateRunner = gateRunner
-
 		claimTool := tasktools.NewTaskClaimTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
 		h.claimTool = claimTool
 		full.Register(claimTool)
 
 		// Worktree isolation (og-wm7.3): when policy asks for it and the run is
 		// in a git repo, claim allocates a task worktree and rebinds the session
-		// cwd. Non-git repos are exempt (allocation is skipped).
+		// cwd. Non-git repos are exempt (allocation is skipped). Configure this
+		// before building the gate runner so the resolve-time git gate (og-wm7.3.3)
+		// receives the manager.
 		h.configureWorktree(claimTool, opts.Config.Worktree.Policy)
+
+		// Create gate registry and runner
+		gateRegistry := gates.NewDefaultGateRegistry()
+
+		gateRunner := gates.NewGateRunner(gateRegistry, evidenceLedger, opts.Config.Gates, h.taskState.EvidenceTracker().Observed(), ticketCreator, deferredFindingStore, h.worktreeManager)
+		h.gateRunner = gateRunner
 
 		// Task resolve tool with gate runner
 		resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, gateRunner, true, opts.Config.TaskTools.CommandTimeout)
 		h.resolveTool = resolveTool
 		full.Register(resolveTool)
 		resolveTool.SetRestoreCwd(h.RestoreCwd)
+		resolveTool.SetWorktreeTeardown(h.TeardownWorktree)
 
 		// Task create tool with follow-up engine
 		createTool := tasktools.NewTaskCreateToolWithFollowup(tracker, followupEngine, true, opts.Config.TaskTools.CommandTimeout)
@@ -547,6 +551,7 @@ func (h *Handle) configureWorktree(claim *tasktools.TaskClaimTool, policy string
 		return
 	}
 	manager := worktree.New(root, h.opts.Config.Worktree)
+	h.worktreeManager = manager
 	claim.ConfigureWorktree(policy, manager, h.RebindCwd)
 	slog.Info("worktree policy active", "policy", policy, "repo", root, "path", h.opts.Config.Worktree.Path)
 }
@@ -589,6 +594,16 @@ func (h *Handle) RestoreCwd() error {
 	return h.RebindCwd(h.baseCwd)
 }
 
+// TeardownWorktree tears down the task's worktree after check-in. It is called
+// after the session cwd has been restored to the main checkout and the active
+// task has been cleared, so the task id is passed in explicitly.
+func (h *Handle) TeardownWorktree(taskID string) error {
+	if h.worktreeManager == nil || taskID == "" {
+		return nil
+	}
+	return h.worktreeManager.Teardown(context.Background(), taskID)
+}
+
 // wrap builds the context-wrapped client for a base client and session,
 // sourcing modelinfo from the base client per ADR-0004.
 func (h *Handle) wrap(base llm.Client, sess *session.Session) llm.Client {
@@ -614,52 +629,52 @@ func (h *Handle) Bound() []skill.ParsedSkill {
 const codeToolInstruction = "\nWhen using the code tool, request the permission axes you need via the permissions field (read, write, net, run, env). Your requests are intersected with the effective policy — you will see what was granted. On a denial, do not retry the call; instead, call request_permission to ask in advance, or work within the granted scope. Do not re-attempt a permission you personally rejected. The current permissions snapshot above is the authoritative source."
 
 // resolveInstruction assembles the instruction for the given agent,
-	// re-running the skill pipeline (discover → filter → bind → build) on every
-	// read so SKILL.md edits are picked up without a config reload, and appending
-	// the live base-policy snapshot.
-	func (h *Handle) resolveInstruction(agent *config.ResolvedAgent) (string, error) {
-		var agentSkills []string
-		agentName := ""
-		if agent != nil {
-			agentSkills = agent.Skills
-			agentName = agent.Name
-		}
-		filtered, warns, err := skill.FilteredPool(h.opts.Config.Skills.Dirs, h.opts.Config.Skills.Enable, h.opts.Config.Skills.Disable)
-		if err != nil {
-			return "", err
-		}
-		bound, err := skill.BindToAgent(filtered, agentSkills, agentName)
-		if err != nil {
-			return "", err
-		}
-		// Publish the bound set so the skill tool resolves against what this agent
-		// actually has, and build the layer from the same slice — the index and the
-		// tool's pool then describe one set, never two that drifted.
-		h.mu.Lock()
-		h.bound = bound
-		h.mu.Unlock()
-		layer := skill.BuildSkillLayer(bound)
-		for _, w := range warns {
-			slog.Warn(w.Message)
-		}
-		s, err := instruct.LoadWithAgentAndPermissions(h.opts.Config, agent, layer, h.opts.Cwd, h.store.BaseSnapshot())
-		if err != nil {
-			return "", err
-		}
-
-		// Inject code tool instruction paragraph when the tool is enabled.
-		// The paragraph tells the model to request needed axes in permissions;
-		// know requests are intersected with effective policy and it sees what
-		// was granted; on a denial, NOT retry but ask via request_permission or
-		// work within the granted scope; and not re-attempt a personally rejected
-		// permission. The existing base-policy snapshot stays the mechanism's
-		// source of truth.
-		if !h.full.IsDisabled("code") {
-			s += codeToolInstruction
-		}
-
-		return s, nil
+// re-running the skill pipeline (discover → filter → bind → build) on every
+// read so SKILL.md edits are picked up without a config reload, and appending
+// the live base-policy snapshot.
+func (h *Handle) resolveInstruction(agent *config.ResolvedAgent) (string, error) {
+	var agentSkills []string
+	agentName := ""
+	if agent != nil {
+		agentSkills = agent.Skills
+		agentName = agent.Name
 	}
+	filtered, warns, err := skill.FilteredPool(h.opts.Config.Skills.Dirs, h.opts.Config.Skills.Enable, h.opts.Config.Skills.Disable)
+	if err != nil {
+		return "", err
+	}
+	bound, err := skill.BindToAgent(filtered, agentSkills, agentName)
+	if err != nil {
+		return "", err
+	}
+	// Publish the bound set so the skill tool resolves against what this agent
+	// actually has, and build the layer from the same slice — the index and the
+	// tool's pool then describe one set, never two that drifted.
+	h.mu.Lock()
+	h.bound = bound
+	h.mu.Unlock()
+	layer := skill.BuildSkillLayer(bound)
+	for _, w := range warns {
+		slog.Warn(w.Message)
+	}
+	s, err := instruct.LoadWithAgentAndPermissions(h.opts.Config, agent, layer, h.opts.Cwd, h.store.BaseSnapshot())
+	if err != nil {
+		return "", err
+	}
+
+	// Inject code tool instruction paragraph when the tool is enabled.
+	// The paragraph tells the model to request needed axes in permissions;
+	// know requests are intersected with effective policy and it sees what
+	// was granted; on a denial, NOT retry but ask via request_permission or
+	// work within the granted scope; and not re-attempt a personally rejected
+	// permission. The existing base-policy snapshot stays the mechanism's
+	// source of truth.
+	if !h.full.IsDisabled("code") {
+		s += codeToolInstruction
+	}
+
+	return s, nil
+}
 
 // snapshot returns a consistent view of the handle's mutable state.
 func (h *Handle) snapshot() (env, *session.Session) {
@@ -1033,9 +1048,9 @@ func runModel(cur env) string {
 // gitGatherer handles gathering git branch and dirty state for the prompt segment.
 // It implements the degraded path with timeout and recovery as per ADR-0011.
 type gitGatherer struct {
-	cwd          string
-	mu           sync.Mutex
-	degraded     bool
+	cwd           string
+	mu            sync.Mutex
+	degraded      bool
 	lastTurnCount int
 }
 
