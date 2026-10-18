@@ -39,12 +39,44 @@ type DeferredFindingRecord struct {
 	RecordedAt    string `json:"recorded_at"`
 }
 
+// ReviewFindingRecord is a single finding reported by a task_review call,
+// carrying the review's triage decision for it.
+type ReviewFindingRecord struct {
+	FindingID      string `json:"finding_id"`
+	Invariant      string `json:"invariant"`
+	Category       string `json:"category"`
+	Severity       string `json:"severity"`
+	BlastRadius    int    `json:"blast_radius"`
+	Recurrence     int    `json:"recurrence"`
+	SourceFile     string `json:"source_file,omitempty"`
+	SourceEvidence string `json:"source_evidence,omitempty"`
+	Description    string `json:"description"`
+	// Disposition is the triage decision: resolve-inline, defer-with-ticket, or
+	// wontfix. Every recorded finding must carry one.
+	Disposition string `json:"disposition"`
+	// Reason records why a finding was wontfixed (required for wontfix).
+	Reason string `json:"reason,omitempty"`
+}
+
+// ReviewRecord is an attestation that a review was performed against the active
+// task. The review's method and subject are free-form: the harness consumes the
+// findings, not the review procedure.
+type ReviewRecord struct {
+	Subject string `json:"subject"`
+	Method  string `json:"method,omitempty"`
+	// HumanConfirmed marks that a human made the review's decisions (needed to
+	// wontfix a security/hygiene finding).
+	HumanConfirmed bool                  `json:"human_confirmed,omitempty"`
+	Findings       []ReviewFindingRecord `json:"findings"`
+}
+
 // TaskState manages the active task state for a session.
 type TaskState struct {
 	active               *ActiveTask
 	onChange             func([]byte) error
 	progressLog          []ProgressRecord
 	deferredFindings     []DeferredFindingRecord
+	reviews              []ReviewRecord
 	evidenceTracker      *gates.ObservedEvidenceTracker
 	taskStartLine        int    // transcript line index when task was claimed
 	worktreePath         string // worktree allocated for the active task, if any
@@ -81,6 +113,8 @@ func (s *TaskState) Set(task *Task) {
 		ClaimedAt: claimedAt,
 	}
 	s.progressLog = []ProgressRecord{}
+	s.deferredFindings = nil
+	s.reviews = nil
 	s.taskStartLine = 0 // will be set by caller after session is available
 	// Notify evidence tracker of claim time
 	s.evidenceTracker.SetClaimedAt(claimedAt)
@@ -118,6 +152,8 @@ func (s *TaskState) WorktreePath() string {
 func (s *TaskState) Clear() {
 	s.active = nil
 	s.progressLog = nil
+	s.deferredFindings = nil
+	s.reviews = nil
 	s.taskStartLine = 0
 	s.worktreePath = ""
 	if s.onChange != nil {
@@ -169,10 +205,28 @@ func (s *TaskState) GetDeferredFindings() []DeferredFindingRecord {
 	return s.deferredFindings
 }
 
+// AddReview records a review attestation (with its findings) for the active task.
+func (s *TaskState) AddReview(record ReviewRecord) error {
+	if s.active == nil {
+		return fmt.Errorf("no active task")
+	}
+	s.reviews = append(s.reviews, record)
+	if s.onChange != nil {
+		data, _ := json.Marshal(s)
+		_ = s.onChange(data)
+	}
+	return nil
+}
+
+// GetReviews returns the review attestations recorded for the active task.
+func (s *TaskState) GetReviews() []ReviewRecord {
+	return s.reviews
+}
+
 // MarshalJSON implements custom JSON serialization for the session transcript marker.
 func (s *TaskState) MarshalJSON() ([]byte, error) {
 	if s.active == nil {
-		return json.Marshal(map[string]any{"active_task": nil, "progress_log": s.progressLog, "deferred_findings": s.deferredFindings})
+		return json.Marshal(map[string]any{"active_task": nil, "progress_log": s.progressLog, "deferred_findings": s.deferredFindings, "reviews": s.reviews})
 	}
 	return json.Marshal(map[string]any{
 		"active_task": map[string]any{
@@ -183,8 +237,9 @@ func (s *TaskState) MarshalJSON() ([]byte, error) {
 			"claimed_at":   s.active.ClaimedAt.Format(time.RFC3339),
 			"worktree_path": s.worktreePath,
 		},
-		"progress_log":     s.progressLog,
+		"progress_log":      s.progressLog,
 		"deferred_findings": s.deferredFindings,
+		"reviews":           s.reviews,
 	})
 }
 
