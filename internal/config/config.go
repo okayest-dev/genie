@@ -126,6 +126,11 @@ type Context struct {
 	// Windows maps a model ID to an explicit context-window override (in
 	// tokens). An override takes precedence over provider-reported data.
 	Windows map[string]int
+	// DefaultWindowTokens is the fallback context window used when no
+	// authoritative provider window exists and no per-model override is set.
+	// This is a last-resort fallback, never a replacement for provider data:
+	// an override still wins, and a reported window still wins.
+	DefaultWindowTokens int
 	// PluginsOrder is the deterministic chain order for plugin context hooks
 	// (before_request/after_response). A plugin not listed is appended in
 	// registration order. Empty means registration order for all.
@@ -387,13 +392,14 @@ type skillsFile struct {
 }
 
 type contextFile struct {
-	Turns         *int               `toml:"turns"`
-	BudgetTokens  *int               `toml:"budget_tokens"`
-	BudgetPercent *float64           `toml:"budget_percent"`
-	Windows       map[string]int     `toml:"windows"`
-	Plugins       contextPluginsFile `toml:"plugins"`
-	CondenseSize  *int               `toml:"condense_size"`
-	NetDrop       *bool              `toml:"net_drop"`
+	Turns              *int               `toml:"turns"`
+	BudgetTokens       *int               `toml:"budget_tokens"`
+	BudgetPercent      *float64           `toml:"budget_percent"`
+	DefaultWindowTokens *int              `toml:"default_window_tokens"`
+	Windows            map[string]int     `toml:"windows"`
+	Plugins            contextPluginsFile `toml:"plugins"`
+	CondenseSize       *int               `toml:"condense_size"`
+	NetDrop            *bool              `toml:"net_drop"`
 }
 
 type contextPluginsFile struct {
@@ -492,6 +498,12 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 				return nil, err
 			}
 			cfg.Context.BudgetPercent = *fc.Context.BudgetPercent
+		}
+		if fc.Context.DefaultWindowTokens != nil {
+			if *fc.Context.DefaultWindowTokens <= 0 {
+				return nil, fmt.Errorf("config: context.default_window_tokens must be a positive number of tokens, got %d", *fc.Context.DefaultWindowTokens)
+			}
+			cfg.Context.DefaultWindowTokens = *fc.Context.DefaultWindowTokens
 		}
 		if len(fc.Context.Windows) > 0 {
 			cfg.Context.Windows = make(map[string]int, len(fc.Context.Windows))

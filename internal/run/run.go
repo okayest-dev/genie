@@ -153,7 +153,7 @@ type Handle struct {
 	ctxSeam      *plugin.ContextSeam
 	life         *plugin.LifecycleSeam
 	counter      tokens.Counter
-	buildCtxOpts func(base llm.Client) []contextmgr.Option
+	buildCtxOpts func(base llm.Client, modelID string) []contextmgr.Option
 
 	taskState *tasktools.TaskState
 	tracker   tasktools.Tracker
@@ -309,6 +309,10 @@ func New(opts Options) (*Handle, error) {
 		deferFindingTool := tasktools.NewTaskDeferFindingTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
 		full.Register(deferFindingTool)
 
+		// Task review tool (review gate findings channel)
+		reviewTool := tasktools.NewTaskReviewTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+		full.Register(reviewTool)
+
 		// Session reset tool
 		resetTool := tasktools.NewSessionResetTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout, h)
 		full.Register(resetTool)
@@ -426,7 +430,7 @@ func New(opts Options) (*Handle, error) {
 
 	// Context-window & budget options are built per base client so a provider
 	// switch re-sources modelinfo from the fresh client (ADR-0004).
-	h.buildCtxOpts = func(base llm.Client) []contextmgr.Option {
+	h.buildCtxOpts = func(base llm.Client, modelID string) []contextmgr.Option {
 		var infoSource modelinfo.Source
 		if p, ok := base.(llm.ModelInfoProvider); ok {
 			infoSource = p
@@ -435,6 +439,14 @@ func New(opts Options) (*Handle, error) {
 			BudgetTokens:  opts.Config.Context.BudgetTokens,
 			BudgetPercent: opts.Config.Context.BudgetPercent,
 		})
+		// Seed the resolver with the default window for the current model if
+		// no override exists and no provider window is available. This ensures
+		// the budget is non-zero from turn one, enabling compaction.
+		if modelID != "" && opts.Config.Context.DefaultWindowTokens > 0 {
+			if _, hasOverride := opts.Config.Context.Windows[modelID]; !hasOverride {
+				resolver.Seed(modelID, opts.Config.Context.DefaultWindowTokens)
+			}
+		}
 		return []contextmgr.Option{
 			contextmgr.WithTurns(opts.Config.Context.Turns),
 			contextmgr.WithCounter(h.counter),
@@ -507,7 +519,7 @@ func New(opts Options) (*Handle, error) {
 	h.cur = env{
 		provider:   provider,
 		baseClient: baseClient,
-		client:     h.wrap(baseClient, sess),
+		client:     h.wrap(baseClient, sess, model),
 		model:      model,
 		agent:      opts.Agent,
 		registry:   scoped,
@@ -606,11 +618,11 @@ func (h *Handle) TeardownWorktree(taskID string) error {
 
 // wrap builds the context-wrapped client for a base client and session,
 // sourcing modelinfo from the base client per ADR-0004.
-func (h *Handle) wrap(base llm.Client, sess *session.Session) llm.Client {
+func (h *Handle) wrap(base llm.Client, sess *session.Session, modelID string) llm.Client {
 	if base == nil {
 		return nil
 	}
-	return contextmgr.New(base, sess, h.buildCtxOpts(base)...)
+	return contextmgr.New(base, sess, h.buildCtxOpts(base, modelID)...)
 }
 
 // Bound implements skilltool.Pool over the agent's bound skill set. It is
@@ -912,7 +924,15 @@ func (h *Handle) NotifyGitTurnCompleted() {
 func (h *Handle) SetModel(id string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.cur.model == id {
+		return
+	}
 	h.cur.model = id
+	// Re-wrap the client with the new model to seed the resolver with the
+	// default window for the new model.
+	if h.cur.baseClient != nil {
+		h.cur.client = h.wrap(h.cur.baseClient, h.sess, id)
+	}
 }
 
 // NewSession starts a fresh session and rebinds the context client to it. The
@@ -930,7 +950,7 @@ func (h *Handle) NewSession() (*session.Session, error) {
 		h.ledger = ledger.New(h.opts.Config.SessionDir, sess.ID)
 	}
 	h.sess = sess
-	h.cur.client = h.wrap(h.cur.baseClient, sess)
+	h.cur.client = h.wrap(h.cur.baseClient, sess, h.cur.model)
 	h.mu.Unlock()
 	if h.opts.Stderr != nil {
 		if h.opts.Theme != nil && h.opts.StderrProfile != nil {
@@ -974,7 +994,7 @@ func (h *Handle) SwitchProvider(name string) error {
 	h.cur.provider = name
 	h.cur.baseClient = client
 	h.cur.model = model
-	h.cur.client = h.wrap(client, h.sess)
+	h.cur.client = h.wrap(client, h.sess, model)
 	h.mu.Unlock()
 	return nil
 }

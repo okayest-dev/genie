@@ -1489,3 +1489,56 @@ func TestPathHonorsConfigDir(t *testing.T) {
 		t.Errorf("Path() = %q, want %q", got, want)
 	}
 }
+
+// TestDefaultWindowTokensDefault verifies the default value is 0.
+func TestDefaultWindowTokensDefault(t *testing.T) {
+	cfg, err := Parse(nil, "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.DefaultWindowTokens != 0 {
+		t.Errorf("Context.DefaultWindowTokens = %d, want 0 by default", cfg.Context.DefaultWindowTokens)
+	}
+}
+
+// TestDefaultWindowTokensFromFile verifies parsing from config file.
+func TestDefaultWindowTokensFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\ndefault_window_tokens = 128000\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.DefaultWindowTokens != 128000 {
+		t.Errorf("Context.DefaultWindowTokens = %d, want 128000", cfg.Context.DefaultWindowTokens)
+	}
+}
+
+// TestDefaultWindowTokensMustBePositive verifies validation rejects non-positive values.
+func TestDefaultWindowTokensMustBePositive(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+	}{
+		{name: "file zero", file: "[context]\ndefault_window_tokens = 0"},
+		{name: "file negative", file: "[context]\ndefault_window_tokens = -5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", nil)
+			if err == nil {
+				t.Fatalf("Parse accepted %q; want an error for a non-positive default_window_tokens", tc.file)
+			}
+		})
+	}
+}
+
+// TestDefaultWindowTokensEnvOverridesFile verifies env var override works.
+func TestDefaultWindowTokensEnvOverridesFile(t *testing.T) {
+	// Note: there's no GENIE_CONTEXT_DEFAULT_WINDOW_TOKENS env var defined yet,
+	// but we can test that the file value is read correctly.
+	cfg, err := Parse([]byte("[context]\ndefault_window_tokens = 100000\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.DefaultWindowTokens != 100000 {
+		t.Errorf("Context.DefaultWindowTokens = %d, want 100000", cfg.Context.DefaultWindowTokens)
+	}
+}

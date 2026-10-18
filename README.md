@@ -73,7 +73,7 @@ base_branch = ""                # branch merge=auto merges into (default: repo d
 drift_check = "warn"            # warn or block when the base branch has moved
 ```
 
-Once enabled, use the `task_claim` tool to claim tasks, `task_create` to create new tasks, `task_progress` to record checkpoints, `task_resolve` to close them, and `session_reset` to start a fresh context:
+Once enabled, use the `task_claim` tool to claim tasks, `task_create` to create new tasks, `task_progress` to record checkpoints, `task_review` to attest a review, `task_resolve` to close them, and `session_reset` to start a fresh context:
 ```bash
 # In the REPL, ask the model to claim a task
 task_claim
@@ -83,6 +83,12 @@ task_create({"title": "Add error handling", "type": "task", "finding_of": "og-wm
 
 # Record a progress checkpoint mid-task (does not change lifecycle state)
 task_progress({"summary": "Implemented core logic", "notes": "Evidence: tests pass", "tracker_note": "Phase 1 complete"})
+
+# Attest a review and report its findings (required by the review gate)
+task_review({"subject": "diff main..HEAD", "method": "code-review skill", "findings": [
+  {"finding_id": "f1", "invariant": "no unbounded queries", "category": "functional",
+   "severity": "P2", "disposition": "defer-with-ticket"}
+]})
 
 # After completing the work, resolve the task with a summary
 task_resolve({"summary": "Implemented feature X. All tests pass. Commits: abc123..def456"})
@@ -96,6 +102,13 @@ The `task_progress` tool:
 - Records the checkpoint in the session's active-task evidence (timestamp, summary, notes)
 - Can optionally append a tracker note (comment on the tracker)
 - Never changes task lifecycle state — the active task remains claimable for resolve
+
+The `task_review` tool:
+- Requires an active task and a `subject` describing what was reviewed
+- Records one or more review attestations against the active task; the harness does not define *how* the review is run
+- Every finding carries a `disposition`: `resolve-inline` (fixed here), `defer-with-ticket` (a follow-up ticket is created with provenance back to the task), or `wontfix` (a `reason` is required; `security`/`hygiene` wontfix also requires `human_confirmed=true`)
+- A review with no findings is a clean review
+- Feeds the **review gate**, which refuses `task_resolve` until a review is recorded and every finding is dispositioned
 
 The `task_resolve` tool:
 - Requires a resolution `summary` with traceability (ticket, commit range, gate evidence)
@@ -137,7 +150,7 @@ While a task is active, Genie prevents the model from bypassing the governed tas
 
 | Policy | Behavior |
 |--------|----------|
-| **strict** (default) | All tracker writes (`bd close`, `bd claim`, `bd create`, `bd comment`, `bd update`, etc.) are refused with a message directing the model to use the governed tool (`task_resolve`, `task_claim`, `task_create`, `task_progress`). |
+| **strict** (default) | All tracker writes (`bd close`, `bd claim`, `bd create`, `bd comment`, `bd update`, etc.) are refused with a message directing the model to use the governed tool (`task_resolve`, `task_claim`, `task_create`, `task_progress`, `task_review`). |
 | **permissive** | Only lifecycle mutations of the *active* task are refused (e.g., `bd close og-1` when `og-1` is active). Creating new tasks or modifying other tasks is allowed. |
 | **off** | The guard is disabled; raw `bd` commands behave normally. |
 
@@ -249,10 +262,11 @@ The model has access to eight tools:
 | **task_claim** | Claim the next ready task from the tracker, or a specific task by ID. Only one task can be active per session. Requires `task_tools` enabled in config. |
 | **task_create** | Create a new task in the tracker. Requires title; optional type, labels, priority, description, parent, depends_on, and finding_of (provenance). Returns the created task with its ID following project prefix conventions. Requires `task_tools` enabled in config. |
 | **task_progress** | Record a progress checkpoint for the active task without changing its lifecycle state. Captures summary, notes, and optionally appends a tracker comment. Requires `task_tools` enabled in config. |
+| **task_review** | Attest that a review was performed for the active task and report its findings with their dispositions (`resolve-inline`, `defer-with-ticket`, `wontfix`). Feeds the review gate. Requires `task_tools` enabled in config. |
 | **task_resolve** | Resolve (close) the currently active task. Requires a resolution summary with traceability. Runs quality gates; blocking gate failures refuse the resolve. Epic/feature types require `human_confirmed=true`. Requires `task_tools` enabled in config. |
 | **session_reset** | Reset the session (equivalent to `/new`), creating a fresh context. Refused if a task is active — resolve the task first to flush its context via boundary compaction, then call `session_reset` if a full reset is still needed. Requires `task_tools` enabled in config. |
 
-`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool. `task_claim`, `task_create`, `task_progress`, `task_resolve`, and `session_reset` are gated by the `task_tools.enable` config option.
+`read`, `write`, `edit`, and `bash` can be individually disabled in config. `request_permission` and `skill` are always-on for every default agent — `request_permission` is a negotiation channel, not a capability, and `skill` is the only route to a skill body — so neither has a config toggle; an agent whose explicit `tools = [...]` list omits one drops it from that agent's toolset. The `env` axis is gated only at runtime (mid-execution runtime checks); there is no standalone `env` tool. `task_claim`, `task_create`, `task_progress`, `task_review`, `task_resolve`, and `session_reset` are gated by the `task_tools.enable` config option.
 
 ### Code tool schema
 
@@ -346,6 +360,10 @@ code_timeout = 30
 
 [context]
 # turns = 0   # prior turns of history carried into each new turn; 0 = all
+# budget_tokens = 0        # absolute token budget; 0 = derived from budget_percent
+# budget_percent = 75      # budget as percentage of context window (default 75)
+# default_window_tokens = 0 # fallback context window when no provider data exists
+# windows.gpt-4o = 128000   # per-model explicit context window overrides
 
 [permissions]
 # Per-axis base policy: scopes already covered without escalation. Restrictive

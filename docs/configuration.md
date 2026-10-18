@@ -226,6 +226,7 @@ disable = ["broken-plugin"] # denylist (takes precedence)
 | `context.turns` | integer | `0` (all) | `GENIE_CONTEXT_TURNS` | prior turns of history injected into each new turn; `0` = unlimited |
 | `context.budget_tokens` | integer (tokens) | `0` (unset) | `GENIE_CONTEXT_BUDGET_TOKENS` | absolute context budget; overrides the percentage below |
 | `context.budget_percent` | float | `75` | `GENIE_CONTEXT_BUDGET_PERCENT` | budget as a percentage of the model's context window |
+| `context.default_window_tokens` | integer (tokens) | `0` (disabled) | — | fallback context window when no authoritative provider data exists and no per-model override is set; enables compaction on providers that don't report a window |
 | `context.windows` | map[string]int | `{}` | — | per-model context window overrides, in tokens |
 | `context.condense_size` | integer (tokens) | `0` (disabled) | `GENIE_CONTEXT_CONDENSE_SIZE` | threshold above which a prior-turn tool result is condensed |
 | `context.net_drop` | boolean | `false` | `GENIE_CONTEXT_NET_DROP` | drop oversized prior-turn tool results entirely (calls stay visible) |
@@ -236,7 +237,7 @@ disable = ["broken-plugin"] # denylist (takes precedence)
 See [context management](context-management.md) for how these work. Validation:
 
 - `budget_percent` must land in `(0, 100]`.
-- `turns`, `budget_tokens`, `condense_size`, and every `windows` entry must be non-negative; `budget_tokens` and windows must be positive when set.
+- `turns`, `budget_tokens`, `condense_size`, `default_window_tokens`, and every `windows` entry must be non-negative; `budget_tokens`, `default_window_tokens`, and windows must be positive when set.
 - Single-active conflict: two plugins claiming the same `active_compact`/`active_condense` gap without an explicit choice is a startup error.
 
 ```toml
@@ -244,6 +245,7 @@ See [context management](context-management.md) for how these work. Validation:
 turns = 0            # 0 = keep the whole conversation
 # budget_tokens = 50000
 budget_percent = 75
+# default_window_tokens = 128000  # fallback for providers without window data
 # windows = { "big-pickle" = 200000 }
 condense_size = 0    # 0 = condensation off
 net_drop = false
