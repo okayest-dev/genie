@@ -212,7 +212,22 @@ func errorFromStatus(resp *http.Response) error {
 			message = ge.Error.Message
 		}
 	}
+	// Check for context overflow errors in the message.
+	if kind == llm.KindInvalidRequest && isContextOverflow(message) {
+		kind = llm.KindContextOverflow
+	}
 	return &llm.ProviderError{Kind: kind, Message: message, StatusCode: resp.StatusCode}
+}
+
+// isContextOverflow reports whether the error message indicates a context
+// length overflow. Google uses specific error messages for this.
+func isContextOverflow(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "context_length_exceeded") ||
+		strings.Contains(lower, "maximum context length") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "token limit") ||
+		strings.Contains(lower, "exceeds the maximum")
 }
 
 // systemInstructionToWire extracts system messages and returns the

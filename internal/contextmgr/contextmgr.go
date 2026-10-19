@@ -52,6 +52,29 @@ type Hooks interface {
 	Condense(ctx context.Context, req llm.Request) (llm.Request, error)
 }
 
+// Summarizer is a function that generates a summary from conversation material.
+// It is called outside the ContextManager chain (using the base client, no
+// injected history, no tools) to avoid recursion. The ContextManager assembles
+// the material and calls the summarizer; the summarizer is responsible for
+// making the model call with appropriate caps.
+type Summarizer func(ctx context.Context, in SummaryInput) (string, error)
+
+// SummaryInput is the material for a summarization call.
+type SummaryInput struct {
+	Model    string         // the model to use for summarization
+	Material []llm.Message  // already condensed, no instruction layer
+	Purpose  SummaryPurpose // Compact | Brief
+	Target   int            // requested output size hint (max tokens)
+}
+
+// SummaryPurpose distinguishes compaction summaries from handoff briefs.
+type SummaryPurpose int
+
+const (
+	SummaryPurposeCompact SummaryPurpose = iota
+	SummaryPurposeBrief
+)
+
 // singleActiveSeam is an optional capability the Hooks seam may expose so the
 // ContextManager knows whether it must run its own built-in single-active
 // compact/condense implementation, or delegate to the seam's (an external
@@ -80,6 +103,10 @@ type ContextManager struct {
 	resolver *modelinfo.Resolver
 	// hooks is the optional plugin context seam invoked around each Stream.
 	hooks Hooks
+	// summarizer is the optional function for generating LLM-written summaries
+	// (compaction and briefs). When nil, compaction uses the mechanical
+	// buildSummary and briefs use the active model.
+	summarizer Summarizer
 	// cm is the derived context map over the session transcript. It is rebuilt
 	// from the transcript on each request and supplies the structural layer
 	// boundaries request assembly retains against.
@@ -160,6 +187,13 @@ func WithCondenseSize(size int) Option {
 // requests entirely (their assistant tool-call stays). Off by default.
 func WithNetDrop(b bool) Option {
 	return func(m *ContextManager) { m.netDrop = b }
+}
+
+// WithSummarizer attaches the summarizer function for LLM-written compaction
+// summaries and handoff briefs. When unset, compaction uses the mechanical
+// buildSummary and briefs use the session's active model.
+func WithSummarizer(fn Summarizer) Option {
+	return func(m *ContextManager) { m.summarizer = fn }
 }
 
 // New wraps inner so that Stream requests gain the session's prior history.
@@ -527,7 +561,7 @@ func (m *ContextManager) builtinCompact(ctx context.Context, req llm.Request, so
 		rangeHi = sources[mi]
 	}
 
-	summary := buildSummary(removedMsgs)
+	summary := m.generateCompactionSummary(ctx, req.Model, removedMsgs)
 	if err := m.sess.AppendCompaction(summary, rangeLo, rangeHi); err != nil {
 		m.degrade("context compaction persist: %v", err)
 	}
@@ -559,6 +593,32 @@ func (m *ContextManager) builtinCompact(ctx context.Context, req llm.Request, so
 	}
 	req.Messages = out
 	return req, outSrc
+}
+
+// generateCompactionSummary produces a summary for the evicted messages.
+// When a summarizer is configured and built-in compaction is active, it calls
+// the model; otherwise it falls back to the mechanical buildSummary.
+func (m *ContextManager) generateCompactionSummary(ctx context.Context, model string, removedMsgs []llm.Message) string {
+	// Use model summarizer only when built-in compaction is active and a
+	// summarizer is configured.
+	if m.summarizer != nil && m.builtInCompactActive() {
+		// Cap the summarizer output to a reasonable size (2000 tokens max).
+		// This prevents the summary itself from blowing the budget.
+		const maxSummaryTokens = 2000
+		in := SummaryInput{
+			Model:    model,
+			Material: removedMsgs,
+			Purpose:  SummaryPurposeCompact,
+			Target:   maxSummaryTokens,
+		}
+		summary, err := m.summarizer(ctx, in)
+		if err == nil && summary != "" {
+			return summary
+		}
+		// On any summarizer failure, degrade to mechanical summary.
+		m.degrade("context summarizer failed, falling back to mechanical summary: %v", err)
+	}
+	return buildSummary(removedMsgs)
 }
 
 // builtinCondense implements the harness's built-in condenser (ADR-0001): a
@@ -778,4 +838,209 @@ func messageFingerprint(msg llm.Message) string {
 		b.WriteByte(';')
 	}
 	return b.String()
+}
+
+// Summarize assembles a handoff brief from the session's durable intent.
+// It respects compaction markers (so already-compacted prefixes contribute
+// their summary, not raw turns), applies the condenser projection, and runs
+// the fold logic when the material exceeds the model's budget. The returned
+// markdown body includes all fixed headings; Files touched is left empty for
+// the caller (Handle) to populate from the ledger.
+func (m *ContextManager) Summarize(ctx context.Context, model string) (string, error) {
+	if m.sess == nil || m.summarizer == nil {
+		return "", fmt.Errorf("summarizer not configured or no session")
+	}
+	if m.resolver == nil || m.counter == nil {
+		return "", fmt.Errorf("resolver or counter not configured")
+	}
+
+	lines, err := m.sess.Lines()
+	if err != nil {
+		return "", fmt.Errorf("read transcript: %w", err)
+	}
+	m.cm.rebuild(lines)
+
+	instr := m.cm.Layer(LayerInstruction)
+	if len(instr) == 0 {
+		return "", fmt.Errorf("no instruction layer found")
+	}
+	currentStart := instr[len(instr)-1].Line
+
+	// Assemble durable-intent material (user + assistant messages from prior turns).
+	// Respect compaction markers: already-compacted ranges contribute their summary.
+	retained := m.retainPriorTurns(instr, currentStart)
+
+	var material []llm.Message
+	var sources []int
+
+	// Walk prior region in transcript order, emitting retained messages or summaries.
+	cur := 0
+	for _, comp := range m.cm.Compactions() {
+		if !comp.RangeValid() || comp.To >= currentStart {
+			continue
+		}
+		for ; cur < currentStart && cur < comp.From; cur++ {
+			if retained[cur] {
+				if msg, ok := messageOf(lines[cur]); ok {
+					material = append(material, msg)
+					sources = append(sources, cur)
+				}
+			}
+		}
+		// Emit the compaction summary as a synthetic user message.
+		material = append(material, llm.Message{Role: llm.RoleUser, Content: comp.Summary})
+		sources = append(sources, -1)
+		if comp.To+1 > cur {
+			cur = comp.To + 1
+		}
+	}
+	for ; cur < currentStart; cur++ {
+		if retained[cur] {
+			if msg, ok := messageOf(lines[cur]); ok {
+				material = append(material, msg)
+				sources = append(sources, cur)
+			}
+		}
+	}
+
+	// Apply condenser projection to the material.
+	if m.condenseSize > 0 && m.counter != nil {
+		for i := range material {
+			if sources[i] >= 0 && sources[i] < currentStart && material[i].ToolCallID != "" {
+				if m.messageCount(model, material[i], sources[i]) > m.condenseSize {
+					if m.netDrop {
+						// Drop the result; keep the assistant tool-call.
+						material = append(material[:i], material[i+1:]...)
+						sources = append(sources[:i], sources[i+1:]...)
+						i--
+						continue
+					}
+					material[i].Content = condenseResult(material[i].Content)
+				}
+			}
+		}
+	}
+
+	// Run fold if material exceeds budget.
+	budget := m.resolver.Budget(ctx, model)
+	if budget <= 0 {
+		budget = m.resolver.ContextWindow(ctx, model) * 3 / 4 // 75% default
+	}
+	// Reserve tokens for the prompt overhead and output.
+	const (
+		promptOverheadTokens = 500  // system prompt + framing
+		maxOutputTokens      = 4000 // hard cap on brief size
+	)
+	availableForMaterial := budget - promptOverheadTokens - maxOutputTokens
+	if availableForMaterial < 0 {
+		availableForMaterial = 0
+	}
+
+	material, sources = m.foldMaterial(ctx, model, material, sources, availableForMaterial)
+
+	// Build the brief prompt and call the summarizer.
+	briefPrompt := buildBriefPrompt(material)
+	in := SummaryInput{
+		Model:    model,
+		Material: briefPrompt,
+		Purpose:  SummaryPurposeBrief,
+		Target:   maxOutputTokens,
+	}
+	body, err := m.summarizer(ctx, in)
+	if err != nil {
+		return "", fmt.Errorf("summarizer call: %w", err)
+	}
+	if body == "" {
+		return "", fmt.Errorf("summarizer returned empty body")
+	}
+
+	// Hard truncation guard on output.
+	const maxBriefRunes = 15000
+	if utf8.RuneCountInString(body) > maxBriefRunes {
+		body = string([]rune(body)[:maxBriefRunes]) + "\n… [brief truncated]"
+	}
+
+	return body, nil
+}
+
+// foldMaterial reduces the material to fit within the token budget by
+// iteratively summarizing the oldest chunk that fits, carrying the summary
+// forward as a synthetic leading message.
+func (m *ContextManager) foldMaterial(ctx context.Context, model string, material []llm.Message, sources []int, budget int) ([]llm.Message, []int) {
+	if m.summarizer == nil || m.counter == nil {
+		return material, sources
+	}
+	for {
+		total := 0
+		for i := range material {
+			total += m.messageCount(model, material[i], sources[i])
+		}
+		if total <= budget {
+			return material, sources
+		}
+		// Find the oldest chunk that fits within budget when summarized.
+		// We'll summarize from the beginning up to some split point.
+		split := -1
+		running := 0
+		for i := range material {
+			running += m.messageCount(model, material[i], sources[i])
+			if running > budget/2 { // leave room for the summary we'll generate
+				split = i
+				break
+			}
+		}
+		if split <= 0 {
+			// Even the first message is too large; truncate it.
+			if len(material) > 0 {
+				material[0].Content = truncateRunes(material[0].Content, 2000)
+				sources[0] = -1
+			}
+			return material, sources
+		}
+		// Summarize the prefix [0:split].
+		prefix := material[:split]
+		in := SummaryInput{
+			Model:    model,
+			Material: prefix,
+			Purpose:  SummaryPurposeCompact,
+			Target:   500,
+		}
+		summary, err := m.summarizer(ctx, in)
+		if err != nil || summary == "" {
+			// Fallback: drop the prefix entirely.
+			m.degrade("fold summarizer failed, dropping prefix: %v", err)
+			material = material[split:]
+			sources = sources[split:]
+			continue
+		}
+		// Replace prefix with its summary.
+		material = append([]llm.Message{{Role: llm.RoleUser, Content: summary}}, material[split:]...)
+		sources = append([]int{-1}, sources[split:]...)
+		// Loop again with the new material.
+	}
+}
+
+// buildBriefPrompt wraps the material with the brief system prompt.
+func buildBriefPrompt(material []llm.Message) []llm.Message {
+	const sys = `You are writing a handoff brief for another agent or human picking up this work. They have ZERO access to this conversation. Write a structured markdown document with EXACTLY these headings (empty sections say "none"):
+
+# Handoff brief — <session id>: <one-line goal>
+
+## Goal
+## Done
+## Decisions
+## Current state
+## Next steps
+## Open questions
+## Constraints learned
+## Files touched
+
+Rules:
+- Files touched will be filled in separately; write "none" for now.
+- Be specific: name decisions, file paths, error messages, next commands.
+- No fluff. The reader needs to continue work, not read a story.
+- Output ONLY the markdown, no extra commentary.`
+	msgs := []llm.Message{{Role: llm.RoleSystem, Content: sys}}
+	msgs = append(msgs, material...)
+	return msgs
 }

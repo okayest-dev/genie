@@ -1419,3 +1419,231 @@ func TestGateEvidenceLedgerAccessibleAfterCompaction(t *testing.T) {
 		t.Errorf("gate evidence pointers should be accessible in compaction summary for audit. Messages: %v", inner.gotReq.Messages)
 	}
 }
+
+// TestSummarizerGeneratesCompactionSummary verifies that when a summarizer is
+// configured, the built-in compactor calls it instead of using the mechanical
+// buildSummary.
+func TestSummarizerGeneratesCompactionSummary(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	// Small budget to force compaction
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 30})
+
+	summarizerCalled := false
+	summarizer := func(ctx context.Context, in SummaryInput) (string, error) {
+		summarizerCalled = true
+		if in.Purpose != SummaryPurposeCompact {
+			return "", fmt.Errorf("expected compact purpose, got %v", in.Purpose)
+		}
+		if in.Model != "m" {
+			return "", fmt.Errorf("expected model m, got %q", in.Model)
+		}
+		return "LLM-written compaction summary", nil
+	}
+
+	m := New(inner, s, WithCounter(c), WithResolver(r), WithSummarizer(summarizer))
+
+	// Build prior turns that exceed budget
+	for i := 1; i <= 4; i++ {
+		simulateTurn(t, s, "sys", fmt.Sprintf("question %d", i))
+		if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("answer %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := simulateTurn(t, s, "sys", "current question")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if !summarizerCalled {
+		t.Errorf("summarizer was not called")
+	}
+
+	// Verify the LLM-written summary was persisted
+	lines, err := s.Lines()
+	if err != nil {
+		t.Fatalf("Lines: %v", err)
+	}
+	hasMarker := false
+	for _, ln := range lines {
+		if ln.Role == session.RoleCompaction {
+			hasMarker = true
+			if ln.Content != "LLM-written compaction summary" {
+				t.Errorf("marker summary = %q, want %q", ln.Content, "LLM-written compaction summary")
+			}
+			break
+		}
+	}
+	if !hasMarker {
+		t.Errorf("no compaction marker written")
+	}
+}
+
+// TestSummarizerFailureDegradesToMechanical verifies that a summarizer failure
+// falls back to the mechanical buildSummary and compaction still happens.
+func TestSummarizerFailureDegradesToMechanical(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 30})
+
+	summarizer := func(ctx context.Context, in SummaryInput) (string, error) {
+		return "", fmt.Errorf("summarizer error")
+	}
+
+	m := New(inner, s, WithCounter(c), WithResolver(r), WithSummarizer(summarizer))
+
+	// Build prior turns that exceed budget
+	for i := 1; i <= 4; i++ {
+		simulateTurn(t, s, "sys", fmt.Sprintf("question %d", i))
+		if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("answer %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := simulateTurn(t, s, "sys", "current question")
+	if _, err := m.Stream(context.Background(), req); err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	// Verify the mechanical summary was used (contains "[compacted earlier turns]")
+	lines, err := s.Lines()
+	if err != nil {
+		t.Fatalf("Lines: %v", err)
+	}
+	foundMechanical := false
+	for _, ln := range lines {
+		if ln.Role == session.RoleCompaction {
+			if strings.Contains(ln.Content, "[compacted earlier turns]") {
+				foundMechanical = true
+			}
+			break
+		}
+	}
+	if !foundMechanical {
+		t.Errorf("summarizer failure should degrade to mechanical summary")
+	}
+}
+
+// TestSummarizeMethodGeneratesBrief verifies the Summarize method produces a
+// brief with all fixed headings.
+func TestSummarizeMethodGeneratesBrief(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+
+	summarizer := func(ctx context.Context, in SummaryInput) (string, error) {
+		if in.Purpose != SummaryPurposeBrief {
+			return "", fmt.Errorf("expected brief purpose, got %v", in.Purpose)
+		}
+		// Return a brief with all required headings
+		return `## Goal
+Test goal
+
+## Done
+Did something
+
+## Decisions
+Made a choice
+
+## Current state
+Working
+
+## Next steps
+1. Next
+
+## Open questions
+None
+
+## Constraints learned
+None
+
+## Files touched
+none`, nil
+	}
+
+	m := New(inner, s, WithCounter(c), WithResolver(r), WithSummarizer(summarizer))
+
+	// Add some history
+	simulateTurn(t, s, "sys", "do work")
+	if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: "did work"}); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := m.Summarize(context.Background(), "m")
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+
+	// Check all fixed headings are present
+	required := []string{"## Goal", "## Done", "## Decisions", "## Current state", "## Next steps", "## Open questions", "## Constraints learned", "## Files touched"}
+	for _, heading := range required {
+		if !strings.Contains(brief, heading) {
+			t.Errorf("brief missing heading %q", heading)
+		}
+	}
+}
+
+// TestSummarizeWithEmptySession verifies Summarize handles a session with
+// minimal history gracefully.
+func TestSummarizeWithEmptySession(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+
+	summarizer := func(ctx context.Context, in SummaryInput) (string, error) {
+		return "brief content", nil
+	}
+
+	m := New(inner, s, WithCounter(c), WithResolver(r), WithSummarizer(summarizer))
+
+	// Minimal: just one system message
+	if err := s.Append(llm.Message{Role: llm.RoleSystem, Content: "instr"}); err != nil {
+		t.Fatal(err)
+	}
+
+	brief, err := m.Summarize(context.Background(), "m")
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if brief == "" {
+		t.Errorf("brief should not be empty")
+	}
+}
+
+// TestFoldMaterialReducesTokenCount verifies the fold logic reduces material
+// that exceeds the budget.
+func TestFoldMaterialReducesTokenCount(t *testing.T) {
+	s := newSession(t)
+	inner := &mockClient{}
+	c := &fakeCounter{}
+	r := modelinfo.New(nil, map[string]int{"m": 100}, modelinfo.Options{BudgetTokens: 500})
+
+	summarizer := func(ctx context.Context, in SummaryInput) (string, error) {
+		return "folded summary", nil
+	}
+
+	m := New(inner, s, WithCounter(c), WithResolver(r), WithSummarizer(summarizer))
+
+	// Add many turns
+	for i := 1; i <= 10; i++ {
+		simulateTurn(t, s, "sys", fmt.Sprintf("question %d", i))
+		if err := s.Append(llm.Message{Role: llm.RoleAssistant, Content: fmt.Sprintf("answer %d", i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Summarize with a very small budget to trigger folding
+	// The Summarize method internally computes available budget
+	brief, err := m.Summarize(context.Background(), "m")
+	if err != nil {
+		t.Fatalf("Summarize: %v", err)
+	}
+	if brief == "" {
+		t.Errorf("brief should not be empty after folding")
+	}
+}

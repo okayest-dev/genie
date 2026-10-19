@@ -45,13 +45,13 @@ func NewClient(baseURL, apiKey string) *Client {
 // error; mid-stream failures surface as a terminal error event.
 func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Event], error) {
 	payload, err := json.Marshal(map[string]any{
-		"model":    req.Model,
-		"input":    inputToWire(req.Messages),
-		"instructions": instructionsToWire(req.Messages),
-		"tools":    toolsToWire(req.Tools),
-		"stream":   true,
-		"tool_choice":              "auto",
-		"parallel_tool_calls":      false,
+		"model":               req.Model,
+		"input":               inputToWire(req.Messages),
+		"instructions":        instructionsToWire(req.Messages),
+		"tools":               toolsToWire(req.Tools),
+		"stream":              true,
+		"tool_choice":         "auto",
+		"parallel_tool_calls": false,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -247,8 +247,22 @@ func errorFromStatus(resp *http.Response) error {
 	var eb errBody
 	if json.Unmarshal(body, &eb) == nil && eb.Error != nil && eb.Error.Message != "" {
 		message = eb.Error.Message
+		// Check for context overflow errors in the message.
+		if kind == llm.KindInvalidRequest && isContextOverflow(message) {
+			kind = llm.KindContextOverflow
+		}
 	}
 	return &llm.ProviderError{Kind: kind, Message: message, StatusCode: resp.StatusCode}
+}
+
+// isContextOverflow reports whether the error message indicates a context
+// length overflow. OpenAI Responses API uses similar messages to chat/completions.
+func isContextOverflow(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "context_length_exceeded") ||
+		strings.Contains(lower, "maximum context length") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "token limit")
 }
 
 // instructionsToWire extracts system messages and returns the instructions
@@ -323,8 +337,8 @@ func toolsToWire(tools []llm.ToolDef) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, map[string]any{
-			"type": "function",
-			"name": t.Name,
+			"type":        "function",
+			"name":        t.Name,
 			"description": t.Description,
 			"parameters":  t.Parameters,
 		})

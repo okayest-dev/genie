@@ -42,6 +42,15 @@ type Error struct {
 	Body   string
 }
 
+// ContextOverflowError returns an Error configured for a context length
+// exceeded response (HTTP 400 with a standard overflow message).
+func ContextOverflowError() *Error {
+	return &Error{
+		Status: http.StatusBadRequest,
+		Body:   `{"error":{"message":"context_length_exceeded: maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}`,
+	}
+}
+
 // Request records what the binary sent to the provider.
 type Request struct {
 	Method string

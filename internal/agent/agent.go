@@ -188,6 +188,8 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 	retriedNoTools := false
 	// Track length-finish retries to avoid infinite continuation loops.
 	retriedLength := false
+	// Track context-overflow retries to avoid infinite loops.
+	retriedOverflow := false
 
 	for {
 		stream, err := c.Stream(ctx, req)
@@ -208,6 +210,16 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 						}
 					}
 					reply.Reset()
+					continue
+				}
+			}
+			// Check for context overflow — compact and retry once before any output.
+			if !retriedOverflow && reply.Len() == 0 {
+				var pe *llm.ProviderError
+				if errors.As(err, &pe) && pe.Kind == llm.KindContextOverflow {
+					retriedOverflow = true
+					slog.Info("context overflow before output, compacting and retrying", "error", pe.Message)
+					// The ContextManager will re-run compaction on the retry.
 					continue
 				}
 			}

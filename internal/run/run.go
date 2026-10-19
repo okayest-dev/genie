@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -447,7 +448,7 @@ func New(opts Options) (*Handle, error) {
 				resolver.Seed(modelID, opts.Config.Context.DefaultWindowTokens)
 			}
 		}
-		return []contextmgr.Option{
+		optsList := []contextmgr.Option{
 			contextmgr.WithTurns(opts.Config.Context.Turns),
 			contextmgr.WithCounter(h.counter),
 			contextmgr.WithResolver(resolver),
@@ -456,6 +457,12 @@ func New(opts Options) (*Handle, error) {
 			contextmgr.WithCondenseSize(opts.Config.Context.CondenseSize),
 			contextmgr.WithNetDrop(opts.Config.Context.NetDrop),
 		}
+		// Attach summarizer when summary_model is configured.
+		if opts.Config.Context.SummaryModel != "" {
+			summarizer := makeSummarizer(base, opts.Config.Context.SummaryModel, resolver, h.counter, ctxDegrade)
+			optsList = append(optsList, contextmgr.WithSummarizer(summarizer))
+		}
+		return optsList
 	}
 
 	// Session and (optionally) ledger. The session notice goes to Stderr so
@@ -623,6 +630,137 @@ func (h *Handle) wrap(base llm.Client, sess *session.Session, modelID string) ll
 		return nil
 	}
 	return contextmgr.New(base, sess, h.buildCtxOpts(base, modelID)...)
+}
+
+// makeSummarizer creates a summarizer function that uses the base client
+// (below the ContextManager) to avoid recursion. It disables tools and caps
+// output tokens.
+func makeSummarizer(base llm.Client, summaryModel string, resolver *modelinfo.Resolver, counter tokens.Counter, onDegrade func(string)) contextmgr.Summarizer {
+	return func(ctx context.Context, in contextmgr.SummaryInput) (string, error) {
+		// Resolve the summary model from the active provider's catalog.
+		// If the configured model is not found, use the base client's model.
+		model := in.Model
+		if summaryModel != "" {
+			model = summaryModel
+		}
+		// Build a request with no tools, no history, just the material.
+		req := llm.Request{
+			Model:    model,
+			Messages: in.Material,
+			Tools:    nil, // tools disabled for summarization
+		}
+		// Add a system prompt for the summarizer.
+		var sysPrompt string
+		switch in.Purpose {
+		case contextmgr.SummaryPurposeCompact:
+			sysPrompt = `Summarize the following evicted conversation turns into a compact summary that preserves: task/goal, decisions made, files/commands touched, current state, and what remains. Keep it under ` + fmt.Sprintf("%d", in.Target) + ` tokens. Output only the summary.`
+		case contextmgr.SummaryPurposeBrief:
+			// The brief prompt is already in the material (from buildBriefPrompt).
+			// Just ensure we respect the target.
+			sysPrompt = `Write the handoff brief. Output ONLY the markdown document.`
+		}
+		if sysPrompt != "" {
+			req.Messages = append([]llm.Message{{Role: llm.RoleSystem, Content: sysPrompt}}, req.Messages...)
+		}
+
+		// Stream the response and collect text.
+		stream, err := base.Stream(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		var builder strings.Builder
+		for ev := range stream {
+			if ev.Kind == llm.EventText {
+				builder.WriteString(ev.Text)
+			}
+		}
+		output := builder.String()
+		if output == "" {
+			return "", fmt.Errorf("empty summarizer output")
+		}
+		return output, nil
+	}
+}
+
+// Summarize generates a handoff brief for the current session and writes it
+// to the session directory as brief-N.md. It returns the path to the written
+// file. The brief includes the model-written body plus the Files Touched
+// section populated from the change ledger.
+func (h *Handle) Summarize(ctx context.Context) (string, error) {
+	cur, sess := h.snapshot()
+	if cur.client == nil {
+		return "", errors.New("no provider selected")
+	}
+	// Get the context manager to call its Summarize method.
+	cm, ok := cur.client.(*contextmgr.ContextManager)
+	if !ok {
+		return "", errors.New("client is not a ContextManager")
+	}
+	model := h.Model()
+	body, err := cm.Summarize(ctx, model)
+	if err != nil {
+		return "", err
+	}
+
+	// Build the full brief with ledger section.
+	var brief strings.Builder
+	brief.WriteString(fmt.Sprintf("# Handoff brief — %s: ", sess.ID))
+	// Extract one-line goal from the first user message (first turn).
+	if h.ledger != nil {
+		// We'll add the goal from the session
+		lines, _ := sess.Lines()
+		goal := "work session"
+		for _, line := range lines {
+			if line.Role == "user" && line.Content != "" {
+				goal = line.Content
+				if len(goal) > 80 {
+					goal = goal[:80] + "..."
+				}
+				break
+			}
+		}
+		brief.WriteString(goal)
+	} else {
+		brief.WriteString("work session")
+	}
+	brief.WriteString("\n\n")
+	brief.WriteString(body)
+	brief.WriteString("\n\n## Files touched\n")
+	if h.ledger != nil {
+		batches, err := ledger.LoadBatches(h.opts.Config.SessionDir, sess.ID)
+		if err == nil && len(batches) > 0 {
+			seen := make(map[string]bool)
+			for _, batch := range batches {
+				for _, f := range batch.Files {
+					if !seen[f.Path] {
+						brief.WriteString(fmt.Sprintf("- %s (%s, +%d/-%d)\n", f.Path, f.Ops, f.Delta.Added, f.Delta.Removed))
+						seen[f.Path] = true
+					}
+				}
+			}
+		} else {
+			brief.WriteString("none\n")
+		}
+	} else {
+		brief.WriteString("none\n")
+	}
+
+	// Write to session dir as brief-N.md.
+	sessionDir := h.opts.Config.SessionDir
+	if sessionDir == "" {
+		sessionDir = h.opts.Cwd
+	}
+	n := 1
+	for {
+		path := filepath.Join(sessionDir, fmt.Sprintf("brief-%d.md", n))
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if err := os.WriteFile(path, []byte(brief.String()), 0o644); err != nil {
+				return "", fmt.Errorf("write brief: %w", err)
+			}
+			return path, nil
+		}
+		n++
+	}
 }
 
 // Bound implements skilltool.Pool over the agent's bound skill set. It is

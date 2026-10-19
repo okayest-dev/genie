@@ -52,7 +52,13 @@ When an assembled request's token total crosses the budget, Genie's built-in com
 - **persisting** — the evicted range is recorded as a JSONL metadata marker (role `compaction`, with `compacted_from`/`compacted_to` bounds and the summary text), *never* a transcript rewrite, so a resumed session recognises the already-compacted intent layer on load;
 - **best-effort** — if nothing older remains to evict, the request ships as assembled.
 
-The summary is deliberately mechanical (200 chars per evicted message, capped overall) — shaping what makes it into summaries is tracked as follow-up work.
+By default the summary is mechanical (200 chars per evicted message, capped overall). When `context.summary_model` is set, the compactor instead calls that model to write the summary. The summarization call uses the base client (no injected history, no tools) with a capped output and a system prompt that preserves task/goal, decisions, files/commands, current state, and what remains. On any summarizer failure the compactor degrades to the mechanical summary, never skipping compaction.
+
+### LLM-written handoff briefs
+
+When `context.summary_model` is set, that model also generates `/summarize` handoff briefs. Without it, `/summarize` uses the session's active model. The brief includes fixed headings (Goal, Done, Decisions, Current state, Next steps, Open questions, Constraints learned, Files touched) and is written to `brief-N.md` in the session directory (numbered, never overwrites). The Files Touched section is populated from the change ledger.
+
+When a session exceeds the model's budget, the condenser projection is applied first, then the material is folded: the oldest chunk that fits is summarized and carried forward as a synthetic message, repeating until the tail fits. This ensures the brief covers the whole session even when the raw transcript won't fit.
 
 ## Condensation and net-drop
 

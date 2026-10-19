@@ -238,6 +238,7 @@ With no provider selected, `-p` runs on the first declared provider and prints a
 | `/help` | Show available commands |
 | `/quit`, `/exit` | Exit the REPL |
 | `/new` | Start a new session |
+| `/summarize` | Write a handoff brief (brief-N.md) |
 | `/task` | Show the active task and its lifecycle record (id, title, type, labels, claimed-at, progress checkpoints, lifecycle history) |
 | `/provider` | List providers (`*` marks the current one) |
 | `/provider <id>` | Switch providers mid-session; the next turn runs on that provider's default model and the transcript continues |
@@ -364,6 +365,7 @@ code_timeout = 30
 # budget_percent = 75      # budget as percentage of context window (default 75)
 # default_window_tokens = 0 # fallback context window when no provider data exists
 # windows.gpt-4o = 128000   # per-model explicit context window overrides
+# summary_model = "gpt-4o-mini"  # model for LLM-written compaction summaries and handoff briefs; unset = mechanical compaction, active model for briefs
 
 [permissions]
 # Per-axis base policy: scopes already covered without escalation. Restrictive

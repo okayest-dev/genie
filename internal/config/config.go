@@ -148,6 +148,12 @@ type Context struct {
 	// (their assistant tool-call stays), so the model sees the call was
 	// invoked. Off by default.
 	NetDrop bool
+	// SummaryModel names the model used to generate LLM-written compaction
+	// summaries and handoff briefs. When unset, compaction stays mechanical
+	// (buildSummary) while briefs use the session's active model. When set,
+	// that model writes both. The value must name a model in the active
+	// provider's catalog.
+	SummaryModel string
 }
 
 // Lifecycle holds the lifecycle-hooks plugin seam knobs (og-cbu.3/og-cbu.4).
@@ -392,14 +398,15 @@ type skillsFile struct {
 }
 
 type contextFile struct {
-	Turns              *int               `toml:"turns"`
-	BudgetTokens       *int               `toml:"budget_tokens"`
-	BudgetPercent      *float64           `toml:"budget_percent"`
-	DefaultWindowTokens *int              `toml:"default_window_tokens"`
-	Windows            map[string]int     `toml:"windows"`
-	Plugins            contextPluginsFile `toml:"plugins"`
-	CondenseSize       *int               `toml:"condense_size"`
-	NetDrop            *bool              `toml:"net_drop"`
+	Turns               *int               `toml:"turns"`
+	BudgetTokens        *int               `toml:"budget_tokens"`
+	BudgetPercent       *float64           `toml:"budget_percent"`
+	DefaultWindowTokens *int               `toml:"default_window_tokens"`
+	Windows             map[string]int     `toml:"windows"`
+	Plugins             contextPluginsFile `toml:"plugins"`
+	CondenseSize        *int               `toml:"condense_size"`
+	NetDrop             *bool              `toml:"net_drop"`
+	SummaryModel        string             `toml:"summary_model"`
 }
 
 type contextPluginsFile struct {
@@ -531,6 +538,9 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		}
 		if fc.Context.NetDrop != nil {
 			cfg.Context.NetDrop = *fc.Context.NetDrop
+		}
+		if fc.Context.SummaryModel != "" {
+			cfg.Context.SummaryModel = fc.Context.SummaryModel
 		}
 		if len(fc.Providers) > 0 {
 			applyProviders(&cfg, fc.Providers)
@@ -979,6 +989,10 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 		}
 		cfg.Context.NetDrop = b
 		applied = append(applied, "GENIE_CONTEXT_NET_DROP")
+	}
+	if v := env["GENIE_CONTEXT_SUMMARY_MODEL"]; v != "" {
+		cfg.Context.SummaryModel = v
+		applied = append(applied, "GENIE_CONTEXT_SUMMARY_MODEL")
 	}
 	if v := env["GENIE_THEME"]; v != "" {
 		cfg.Theme = v

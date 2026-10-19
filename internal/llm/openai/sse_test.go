@@ -119,3 +119,27 @@ func TestListModels(t *testing.T) {
 		t.Errorf("models = %+v, want the two catalog ids", models)
 	}
 }
+
+func TestIsContextOverflow(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		msg   string
+		want  bool
+	}{
+		{"openai context_length_exceeded", `{"error":{"message":"context_length_exceeded: maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}`, true},
+		{"maximum context length", "maximum context length exceeded", true},
+		{"context window", "context window exceeded", true},
+		{"token limit", "token limit reached", true},
+		{"max_tokens", "max_tokens exceeded", true},
+		{"rate limit", "rate limit exceeded", false},
+		{"auth error", "invalid api key", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isContextOverflow(tc.msg)
+			if got != tc.want {
+				t.Errorf("isContextOverflow(%q) = %v, want %v", tc.msg, got, tc.want)
+			}
+		})
+	}
+}

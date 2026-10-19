@@ -48,8 +48,8 @@ type Message struct {
 
 // ToolCall is one function call the model requests.
 type ToolCall struct {
-	ID       string
-	Name     string
+	ID        string
+	Name      string
 	Arguments string // raw JSON arguments
 }
 
@@ -109,12 +109,13 @@ type Usage struct {
 type ErrorKind string
 
 const (
-	KindAuth           ErrorKind = "auth"
-	KindRateLimit      ErrorKind = "rate_limit"
-	KindInvalidRequest ErrorKind = "invalid_request"
-	KindNetwork        ErrorKind = "network"
-	KindTimeout        ErrorKind = "timeout"
-	KindOther          ErrorKind = "other"
+	KindAuth            ErrorKind = "auth"
+	KindRateLimit       ErrorKind = "rate_limit"
+	KindInvalidRequest  ErrorKind = "invalid_request"
+	KindNetwork         ErrorKind = "network"
+	KindTimeout         ErrorKind = "timeout"
+	KindContextOverflow ErrorKind = "context_overflow"
+	KindOther           ErrorKind = "other"
 )
 
 // ProviderError is the normalized error surface for the provider. Its

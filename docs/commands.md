@@ -46,6 +46,7 @@ Commands that list selectable items (`/model`, `/provider`, `/agent`, `/changes`
 | `/help` | Show the command surface, including the flat *Plugin commands* section |
 | `/quit`, `/exit` | Leave the REPL |
 | `/new` | Start a fresh session (with its own transcript and ledger) |
+| `/summarize` | Write a handoff brief to `brief-N.md` in the session directory (numbered, never overwrites); the brief covers goal, done, decisions, current state, next steps, open questions, constraints learned, and files touched from the change ledger |
 | `/changes` | List the current session's change batches (numbered, with id, time, line delta, touched files) |
 | `/changes:<id|num>` | Show a batch's stored unified diffs by batch ID or list number |
 | `/model` | List the current provider's model catalog (numbered, `*` marks the current model) |

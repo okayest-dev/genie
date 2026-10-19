@@ -47,15 +47,15 @@ func NewClient(baseURL, apiKey string) *Client {
 // error; mid-stream failures surface as a terminal error event.
 func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Event], error) {
 	payload, err := json.Marshal(map[string]any{
-		"model":              req.Model,
-		"messages":           messagesToWire(req.Messages),
-		"stream":             true,
+		"model":               req.Model,
+		"messages":            messagesToWire(req.Messages),
+		"stream":              true,
 		"parallel_tool_calls": false,
 		"stream_options": map[string]any{
 			"include_usage": true,
 		},
-		"tools":        toolsToWire(req.Tools),
-		"tool_choice":  "auto",
+		"tools":       toolsToWire(req.Tools),
+		"tool_choice": "auto",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -245,8 +245,23 @@ func errorFromStatus(resp *http.Response) error {
 	var eb errBody
 	if json.Unmarshal(body, &eb) == nil && eb.Error != nil && eb.Error.Message != "" {
 		message = eb.Error.Message
+		// Check for context overflow errors in the message.
+		if kind == llm.KindInvalidRequest && isContextOverflow(message) {
+			kind = llm.KindContextOverflow
+		}
 	}
 	return &llm.ProviderError{Kind: kind, Message: message, StatusCode: resp.StatusCode}
+}
+
+// isContextOverflow reports whether the error message indicates a context
+// length overflow. OpenAI-compatible providers use various error codes/messages.
+func isContextOverflow(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "context_length_exceeded") ||
+		strings.Contains(lower, "maximum context length") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "token limit") ||
+		strings.Contains(lower, "max_tokens")
 }
 
 // messagesToWire maps canonical messages to the wire's message objects.
@@ -299,10 +314,10 @@ func toolsToWire(tools []llm.ToolDef) []map[string]any {
 // Wire types for chat.completion.chunk parsing.
 
 type toolCallDelta struct {
-	Index    int               `json:"index"`
-	ID       string            `json:"id"`
-	Type     string            `json:"type"`
-	Function functionDelta    `json:"function"`
+	Index    int           `json:"index"`
+	ID       string        `json:"id"`
+	Type     string        `json:"type"`
+	Function functionDelta `json:"function"`
 }
 
 type functionDelta struct {
@@ -313,8 +328,8 @@ type functionDelta struct {
 type delta struct {
 	// Reasoning and refusal fields are deliberately not decoded: unknown
 	// fields are dropped at the seam.
-	Content   *string          `json:"content"`
-	ToolCalls []toolCallDelta  `json:"tool_calls"`
+	Content   *string         `json:"content"`
+	ToolCalls []toolCallDelta `json:"tool_calls"`
 }
 
 type choice struct {

@@ -332,6 +332,16 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		}
 		return false
 
+	case "/summarize":
+		path, err := cfg.Run.Summarize(ctx)
+		if err != nil {
+			fmt.Fprintf(cfg.Stderr, "Error: %v\n", err)
+		} else {
+			slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+			fmt.Fprintf(slashOut, "wrote %s\n", path)
+		}
+		return false
+
 	case "/copilot":
 		if len(pathParts) < 2 || pathParts[1] == "" {
 			printCopilotHelp(cfg)
@@ -363,6 +373,7 @@ func printHelp(cfg *Config) {
 	fmt.Fprintln(slashOut, "  /help                    show this help")
 	fmt.Fprintln(slashOut, "  /quit, /exit             exit the REPL")
 	fmt.Fprintln(slashOut, "  /new                     start a new session")
+	fmt.Fprintln(slashOut, "  /summarize               write a handoff brief (brief-N.md)")
 	fmt.Fprintln(slashOut, "  /changes                 list change batches")
 	fmt.Fprintln(slashOut, "  /changes:<id>            show change details")
 	fmt.Fprintln(slashOut, "  /task                    show the active task and its lifecycle")

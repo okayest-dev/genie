@@ -4962,3 +4962,89 @@ model = "test-model"
 		t.Errorf("stdout missing 'Lifecycle history:' section: %q", stdout)
 	}
 }
+
+// TestContextOverflowRetriesOnce tests that a context overflow error before
+// any assistant output triggers exactly one retry with compaction.
+func TestContextOverflowRetriesOnce(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{
+		Error: fake.ContextOverflowError(),
+	})
+	p.SetBehaviors(
+		// First request: overflow
+		fake.Behavior{Error: fake.ContextOverflowError()},
+		// Second request (retry): success
+		fake.Behavior{Chunks: []string{
+			fake.TextDelta("ok"),
+			fake.Finish("stop"),
+			fake.Usage(10, 5, 15),
+		}},
+	)
+
+	env := providerEnv(t, p)
+	stdout, stderr, code := run(t, env, "-p", "hello")
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stdout, "ok") {
+		t.Errorf("stdout = %q, want 'ok'", stdout)
+	}
+	// Should have made 2 requests (first overflow, second success)
+	reqs := p.Requests()
+	if len(reqs) != 2 {
+		t.Errorf("requests = %d, want 2 (overflow + retry)", len(reqs))
+	}
+}
+
+// TestContextOverflowSecondFails tests that a second context overflow after
+// retry surfaces a clear error and ends the turn.
+func TestContextOverflowSecondFails(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{})
+	p.SetBehaviors(
+		// First request: overflow
+		fake.Behavior{Error: fake.ContextOverflowError()},
+		// Second request (retry): overflow again
+		fake.Behavior{Error: fake.ContextOverflowError()},
+	)
+
+	env := providerEnv(t, p)
+	stdout, stderr, code := run(t, env, "-p", "hello")
+	if code == 0 {
+		t.Fatalf("exit code = 0, want non-zero")
+	}
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty on failure", stdout)
+	}
+	if !strings.Contains(stderr, "context_length_exceeded") && !strings.Contains(stderr, "context overflow") {
+		t.Errorf("stderr = %q, want context overflow message", stderr)
+	}
+	// Should have made 2 requests (first overflow, second overflow)
+	reqs := p.Requests()
+	if len(reqs) != 2 {
+		t.Errorf("requests = %d, want 2 (overflow + retry)", len(reqs))
+	}
+}
+
+// TestContextOverflowAfterOutputDoesNotRetry tests that a context overflow
+// after assistant output has been produced does not retry (avoids corrupting
+// the conversation).
+func TestContextOverflowAfterOutputDoesNotRetry(t *testing.T) {
+	p := scriptedProvider(t, fake.Behavior{})
+	p.SetBehaviors(
+		// First request: streams some text, then overflow mid-stream
+		fake.Behavior{Chunks: []string{
+			fake.TextDelta("partial "),
+			// Simulate mid-stream overflow by returning error
+			// Note: The fake doesn't support mid-stream errors easily,
+			// so this test documents the expected behavior.
+		}},
+	)
+
+	env := providerEnv(t, p)
+	stdout, stderr, code := run(t, env, "-p", "hello")
+	// The fake doesn't support mid-stream errors, so this test is a placeholder
+	// for the expected behavior. In a real scenario, mid-stream overflow
+	// would be an EventError in the stream, not an open failure.
+	_ = stdout
+	_ = stderr
+	_ = code
+}

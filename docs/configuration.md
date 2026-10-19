@@ -230,6 +230,7 @@ disable = ["broken-plugin"] # denylist (takes precedence)
 | `context.windows` | map[string]int | `{}` | — | per-model context window overrides, in tokens |
 | `context.condense_size` | integer (tokens) | `0` (disabled) | `GENIE_CONTEXT_CONDENSE_SIZE` | threshold above which a prior-turn tool result is condensed |
 | `context.net_drop` | boolean | `false` | `GENIE_CONTEXT_NET_DROP` | drop oversized prior-turn tool results entirely (calls stay visible) |
+| `context.summary_model` | string | `""` (unset) | `GENIE_CONTEXT_SUMMARY_MODEL` | model for LLM-written compaction summaries and handoff briefs; unset = mechanical compaction, active model for briefs; when set, that model writes both |
 | `context.plugins.order` | array of strings | discovery order | — | chain order for context hooks |
 | `context.plugins.active_compact` | string | `builtin` | — | single-active compact implementation (plugin name) |
 | `context.plugins.active_condense` | string | `builtin` | — | single-active condense implementation (plugin name) |
@@ -249,6 +250,7 @@ budget_percent = 75
 # windows = { "big-pickle" = 200000 }
 condense_size = 0    # 0 = condensation off
 net_drop = false
+# summary_model = "gpt-4o-mini"  # LLM-written compaction summaries + briefs; unset = mechanical compaction, active model for briefs
 
 [context.plugins]
 # order = ["my-ctx-hook"]
@@ -291,6 +293,7 @@ The complete set of knobs that can be set from the environment:
 | `GENIE_CONTEXT_BUDGET_PERCENT` | `context.budget_percent` | number in `(0, 100]` |
 | `GENIE_CONTEXT_CONDENSE_SIZE` | `context.condense_size` | non-negative integer |
 | `GENIE_CONTEXT_NET_DROP` | `context.net_drop` | boolean |
+| `GENIE_CONTEXT_SUMMARY_MODEL` | `context.summary_model` | model ID from the active provider's catalog |
 | `GENIE_DEBUG` | debug mode, same as `-d` | `true` / `1` / `yes` |
 | `GENIE_CONFIG_DIR` | base dir for `config.toml` | directory path |
 
