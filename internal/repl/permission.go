@@ -3,11 +3,12 @@ package repl
 import (
 	"context"
 	"fmt"
-	"io"
+	"os"
 	"strings"
 	"sync"
 
 	"github.com/okayest-dev/genie/internal/permissions"
+	"github.com/okayest-dev/genie/internal/style"
 )
 
 // routerMode is the current SIGINT consumer.
@@ -113,9 +114,10 @@ type lineReader interface {
 // input with the choice hint, and treats ^C as a rejection of the current axis
 // (never a turn cancel).
 type interactiveNegotiator struct {
-	rl     lineReader
-	out    io.Writer
-	router *interruptRouter
+	rl           lineReader
+	renderer     *style.Renderer
+	promptStyle  style.Style
+	router       *interruptRouter
 }
 
 // Negotiate prompts for one axis. The prompt and its re-prompts are
@@ -124,30 +126,57 @@ func (n *interactiveNegotiator) Negotiate(ctx context.Context, axis permissions.
 	n.router.enterPrompt()
 	defer n.router.leavePrompt()
 
-	// The negotiator renders its own prompt, so blank readline's idle prompt.
-	n.rl.SetPrompt("")
-
 	promptText := permissions.RenderPrompt(axis, scope)
+	styledPrompt := n.renderer.Render(n.promptStyle, promptText)
+
+	// In non-TTY environments (tests, pipes), readline doesn't display the
+	// prompt. Write it directly to stdout, then use readline to read the line.
+	if !n.renderer.IsTTY() {
+		return n.negotiateNonTTY(ctx, styledPrompt)
+	}
+
 	for {
 		if ctx.Err() != nil {
 			// The turn was cancelled; decline the axis.
-			fmt.Fprintln(n.out)
+			n.rl.SetPrompt("")
 			return permissions.ResponseReject, nil
 		}
-		fmt.Fprint(n.out, promptText)
+		n.rl.SetPrompt(styledPrompt)
 		line, err := n.rl.Readline()
+		n.rl.SetPrompt("")
 		if err != nil {
 			// EOF, ^C (readline.ErrInterrupt), or read error denies (fail safe).
-			fmt.Fprintln(n.out)
 			return permissions.ResponseReject, nil
 		}
 		resp, known := parseChoice(line)
 		if !known {
-			fmt.Fprintln(n.out)
-			fmt.Fprintln(n.out, permissions.RenderUnknownHint())
+			fmt.Fprint(os.Stdout, n.renderer.Render(n.promptStyle, "\n"))
+			fmt.Fprint(os.Stdout, n.renderer.Render(n.promptStyle, permissions.RenderUnknownHint()+"\n"))
 			continue
 		}
-		fmt.Fprintln(n.out)
+		return resp, nil
+	}
+}
+
+// negotiateNonTTY handles permission prompts in non-TTY environments by
+// writing the prompt directly to stdout, then using readline to read the line.
+func (n *interactiveNegotiator) negotiateNonTTY(ctx context.Context, styledPrompt string) (permissions.Response, error) {
+	for {
+		if ctx.Err() != nil {
+			return permissions.ResponseReject, nil
+		}
+		fmt.Fprint(os.Stdout, styledPrompt)
+		line, err := n.rl.Readline()
+		if err != nil {
+			// EOF, ^C, or read error denies (fail safe).
+			return permissions.ResponseReject, nil
+		}
+		resp, known := parseChoice(line)
+		if !known {
+			fmt.Fprint(os.Stdout, n.renderer.Render(n.promptStyle, "\n"))
+			fmt.Fprint(os.Stdout, n.renderer.Render(n.promptStyle, permissions.RenderUnknownHint()+"\n"))
+			continue
+		}
 		return resp, nil
 	}
 }

@@ -67,7 +67,7 @@ func Run(ctx context.Context, cfg *Config) error {
 		return errors.New("repl: no run handle")
 	}
 
-	// A readline instance owns the interactive input: line editing, cursor
+// A readline instance owns the interactive input: line editing, cursor
 	// keys, and cross-session history. While it is reading it consumes ^C
 	// itself (returning readline.ErrInterrupt), so the SIGINT router below only
 	// fires during a turn, when the terminal is back in canonical mode.
@@ -101,8 +101,9 @@ func Run(ctx context.Context, cfg *Config) error {
 	// Swap in the interactive negotiator: the deny-point gate and the
 	// request_permission tool both follow, so inline escalation prompts are
 	// byte-identical to pre-negotiation prompts.
-	promptOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "prompt")
-	cfg.Run.SetNegotiator(&interactiveNegotiator{rl: rl, out: promptOut, router: router})
+	promptStyle := cfg.Theme.RoleStyle("prompt")
+	renderer := style.NewRenderer(cfg.Profile)
+	cfg.Run.SetNegotiator(&interactiveNegotiator{rl: rl, renderer: renderer, promptStyle: promptStyle, router: router})
 
 	for {
 		// Point readline at the idle prompt: the bar's final line (the prompt

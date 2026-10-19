@@ -32,6 +32,11 @@ func NewRenderer(profile *RenderProfile) *Renderer {
 	return &Renderer{profile: profile}
 }
 
+// IsTTY returns whether the renderer's profile is connected to a TTY.
+func (r *Renderer) IsTTY() bool {
+	return r.profile.IsTTY
+}
+
 // Render applies a style to the given text and returns the styled output.
 // If the profile is Ascii or colour is disabled, returns plain text (attributes still apply if not colour).
 func (r *Renderer) Render(style Style, text string) string {
