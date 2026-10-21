@@ -31,8 +31,10 @@ func init() {
 // durable GitHub OAuth token for a short-lived Copilot JWT on demand.
 type Client struct {
 	domain      string // GitHub host: github.com or a *.ghe.com tenant
-	dataHome    string // XDG data home; the credential store lives under it
-	exchangeURL string // test override; empty means the domain's default
+	dataHome        string // XDG data home; the credential store lives under it
+	exchangeURL     string // test override; empty means the domain's default
+	userAuthURL     string // test override for user auth validation endpoint
+	copilotAPIBase  string // test override for inference API base
 
 	httpClient *http.Client
 
@@ -60,32 +62,7 @@ func NewClient(domain, xdgDataHome string) *Client {
 // within refresh_in of expiry. The derived token lives in memory only
 // (ADR-0002); the store is read fresh on every exchange so a concurrent login
 // is picked up on the next request.
-func (c *Client) access(ctx context.Context) (token, apiBase string, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.copilotToken != "" && time.Now().Before(c.refreshAfter) {
-		return c.copilotToken, c.apiBase, nil
-	}
-	oauth, err := ReadOAuthToken(c.dataHome, c.domain)
-	if err != nil {
-		return "", "", err
-	}
-	tr, err := c.exchange(ctx, oauth)
-	if err != nil {
-		return "", "", err
-	}
-	c.copilotToken = tr.Token
-	c.apiBase = tr.Endpoints.API
-	if c.apiBase == "" {
-		c.apiBase = defaultAPIBase
-	}
-	ttl := time.Duration(tr.RefreshIn)*time.Second - 60*time.Second
-	if ttl < time.Second {
-		ttl = time.Second
-	}
-	c.refreshAfter = time.Now().Add(ttl)
-	return c.copilotToken, c.apiBase, nil
-}
+// The access method is defined in token.go to include the GHE data-residency fallback.
 
 // Stream sends one chat/completions request and returns the normalized event
 // stream. Open failures (auth, 404, network down) surface as the returned
