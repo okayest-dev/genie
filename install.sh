@@ -1403,8 +1403,18 @@ main() {
         esac
     done
 
+    # Build the title box with proper alignment
+    local title="Genie Installer v${SCRIPT_VERSION}"
+    local box_width=60
+    local title_len=${#title}
+    local padding_total=$((box_width - 2 - title_len))  # -2 for the ║ borders
+    local padding_left=$((padding_total / 2))
+    local padding_right=$((padding_total - padding_left))
+    local left_pad=$(printf '%*s' "$padding_left" '')
+    local right_pad=$(printf '%*s' "$padding_right" '')
+
     echo -e "\033[1;36m╔══════════════════════════════════════════════════════════╗\033[0m" >&2
-    echo -e "\033[1;36m║           Genie Installer v${SCRIPT_VERSION}                    ║\033[0m" >&2
+    echo -e "\033[1;36m║${left_pad}${title}${right_pad}║\033[0m" >&2
     echo -e "\033[1;36m╚══════════════════════════════════════════════════════════╝\033[0m" >&2
     echo >&2
     log_info "Target version: ${version}"
