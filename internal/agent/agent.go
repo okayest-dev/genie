@@ -276,26 +276,36 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 			}
 		}
 
-		// Persist the assistant's reply to the transcript.
-		if reply.Len() > 0 && sess != nil {
-			assistantMsg := llm.Message{
+		// Persist the assistant's reply to the transcript and add it to the
+		// request messages so the model sees its own prior response on the next
+		// iteration.
+		var assistantMsg llm.Message
+		if reply.Len() > 0 {
+			assistantMsg = llm.Message{
 				Role:    llm.RoleAssistant,
 				Content: reply.String(),
 			}
 			if len(toolCalls) > 0 {
 				assistantMsg.ToolCalls = toolCalls
 			}
-			if err := sess.Append(assistantMsg); err != nil {
-				return llm.Usage{}, err
+			if sess != nil {
+				if err := sess.Append(assistantMsg); err != nil {
+					return llm.Usage{}, err
+				}
 			}
-		} else if len(toolCalls) > 0 && reply.Len() == 0 && sess != nil {
-			// Tool-call-only message (no text content).
-			if err := sess.Append(llm.Message{
+		} else if len(toolCalls) > 0 {
+			assistantMsg = llm.Message{
 				Role:      llm.RoleAssistant,
 				ToolCalls: toolCalls,
-			}); err != nil {
-				return llm.Usage{}, err
 			}
+			if sess != nil {
+				if err := sess.Append(assistantMsg); err != nil {
+					return llm.Usage{}, err
+				}
+			}
+		}
+		if assistantMsg.Role != "" {
+			req.Messages = append(req.Messages, assistantMsg)
 		}
 
 		// No tool calls — turn is complete.
