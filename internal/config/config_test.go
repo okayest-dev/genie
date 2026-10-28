@@ -1040,18 +1040,18 @@ func TestProvidersParseFromFileAndDump(t *testing.T) {
 }
 
 // TestShippedProviderDefaults verifies AC4: defaults exist for zen, a generic
-// openai-compatible provider, anthropic, responses, google, copilot and
-// bedrock, each with usable default values. Copilot and bedrock are the
+// openai-compatible provider, anthropic, responses, google, copilot, bedrock
+// and openrouter, each with usable default values. Copilot and bedrock are the
 // wires-with-their-own-auth exceptions: they carry no base_url and no
 // api_key_env (copilot uses its credential store, ADR-0002; bedrock the AWS
-// SDK credential chain).
+// SDK credential chain). OpenRouter is an OpenAI-compatible gateway.
 func TestShippedProviderDefaults(t *testing.T) {
 	cfg, err := Parse(nil, "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(cfg.Providers) != 7 {
-		t.Fatalf("len(Providers) = %d, want 7 shipped defaults", len(cfg.Providers))
+	if len(cfg.Providers) != 8 {
+		t.Fatalf("len(Providers) = %d, want 8 shipped defaults", len(cfg.Providers))
 	}
 	wires := llm.WireNames()
 	for name, p := range cfg.Providers {

@@ -762,33 +762,242 @@ func TestFindingFilter(t *testing.T) {
 	}
 }
 
-func TestReviewGateFindings(t *testing.T) {
-	// Test parsing findings from review output
-	output := `Some review output
-FINDING: {"id":"finding-1","invariant_violated":"No secrets in code","category":"security","severity":"P1","blast_radius_files":2,"recurrence_count":1,"source_task_id":"og-1","source_file":"auth.go","source_evidence":"Hardcoded token"}
-More review text
-FINDING: {"id":"finding-2","invariant_violated":"Style violation","category":"style","severity":"P3","blast_radius_files":1,"recurrence_count":0,"source_task_id":"og-1","source_file":"style.go","source_evidence":"Bad naming"}`
+// reviewOnlyEvaluator builds an evaluator with only the review gate enabled so
+// review assertions don't depend on build/test executions.
+func reviewOnlyEvaluator(ledger EvidenceLedger, ticketCreator TicketCreator) *GateEvaluator {
+	registry := NewDefaultGateRegistry()
+	observed := NewObservedEvidenceTracker()
+	return NewGateEvaluator(registry, ledger, GateConfig{EnabledGates: []string{"review"}}, observed, ticketCreator, NewInMemoryDeferredFindingStore(), nil)
+}
 
-	findings, err := ReviewGateFindings(output)
+func reviewResult(t *testing.T, ev *GateEvaluator, task *Task) GateResult {
+	t.Helper()
+	result, err := ev.Run(context.Background(), task)
 	if err != nil {
-		t.Fatalf("ReviewGateFindings failed: %v", err)
+		t.Fatalf("Run failed: %v", err)
+	}
+	return result
+}
+
+func reviewPassed(result GateResult) bool {
+	for _, name := range result.Passed {
+		if name == "review" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestReviewGateRequiresAttestation(t *testing.T) {
+	ledger := NewInMemoryEvidenceLedger()
+	ev := reviewOnlyEvaluator(ledger, nil)
+
+	task := &Task{ID: "og-review-1", Type: TaskTypeCoding}
+	result := reviewResult(t, ev, task)
+
+	if reviewPassed(result) {
+		t.Fatalf("review gate passed without an attestation: %v", result.Passed)
+	}
+	if len(result.Failed) != 1 || !strings.Contains(result.Failed[0].EvidenceGap, "no review recorded") {
+		t.Fatalf("expected review gate to fail on missing attestation, got %v", result.Failed)
+	}
+}
+
+func TestReviewGateResolveInlinePasses(t *testing.T) {
+	ledger := NewInMemoryEvidenceLedger()
+	var created []string
+	ev := reviewOnlyEvaluator(ledger, &fakeTicketCreator{createdTickets: &created})
+
+	task := &Task{
+		ID:   "og-review-2",
+		Type: TaskTypeCoding,
+		Reviews: []TaskReview{{
+			Subject: "diff main..HEAD",
+			Method:  "code-review skill",
+			Findings: []Finding{{
+				ID:                 "f1",
+				InvariantViolated:  "Naming",
+				Category:           CategoryStyle,
+				Severity:           SeverityP3,
+				Disposition:        DispositionResolveInline,
+				DispositionReason:  "renamed",
+			}},
+		}},
+	}
+	result := reviewResult(t, ev, task)
+
+	if !reviewPassed(result) {
+		t.Fatalf("review gate should pass with a dispositioned finding, failed: %v", result.Failed)
+	}
+	if len(created) != 0 {
+		t.Errorf("resolve-inline finding should not create tickets, got %v", created)
+	}
+	if len(result.FollowUps) != 0 {
+		t.Errorf("expected no follow-ups, got %v", result.FollowUps)
+	}
+}
+
+func TestReviewGateDeferCreatesTicketWithProvenance(t *testing.T) {
+	ledger := NewInMemoryEvidenceLedger()
+	var created []string
+	var args []CreateTicketArgs
+	tc := &fakeTicketCreator{createdTickets: &created, args: &args}
+	ev := reviewOnlyEvaluator(ledger, tc)
+
+	task := &Task{
+		ID:   "og-review-3",
+		Type: TaskTypeCoding,
+		Reviews: []TaskReview{{
+			Subject: "diff main..HEAD",
+			Findings: []Finding{{
+				ID:                "f1",
+				InvariantViolated: "No hardcoded secrets",
+				Category:          CategorySecurity,
+				Severity:          SeverityP1,
+				BlastRadiusFiles:  2,
+				RecurrenceCount:   1,
+				SourceTaskID:      "og-review-3",
+				Disposition:       DispositionDeferWithTicket,
+			}},
+		}},
+	}
+	result := reviewResult(t, ev, task)
+
+	if !reviewPassed(result) {
+		t.Fatalf("review gate should pass, failed: %v", result.Failed)
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected 1 follow-up ticket, got %v", created)
+	}
+	// Provenance: the created ticket cites the source task.
+	if len(args) != 1 || args[0].FindingOf != "og-review-3" {
+		t.Fatalf("expected provenance finding_of=og-review-3, got %+v", args)
+	}
+	if args[0].FindingID != "f1" || args[0].Invariant != "No hardcoded secrets" {
+		t.Errorf("ticket args lost finding detail: %+v", args[0])
+	}
+	// The ticket id is surfaced on the result and in the ledger evidence.
+	if len(result.FollowUps) != 1 || result.FollowUps[0] != created[0] {
+		t.Errorf("result.FollowUps = %v, want %v", result.FollowUps, created)
+	}
+	evs, err := ledger.Get(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("Get evidence failed: %v", err)
+	}
+	foundTicket := false
+	for _, e := range evs {
+		if e.GateName != "review" {
+			continue
+		}
+		if e.TaskID != task.ID {
+			t.Errorf("review evidence TaskID = %q, want %q", e.TaskID, task.ID)
+		}
+		ids, _ := e.Inputs["deferred_tickets"].([]string)
+		if len(ids) == 1 && ids[0] == created[0] {
+			foundTicket = true
+		}
+	}
+	if !foundTicket {
+		t.Errorf("review evidence did not carry the created ticket id: %+v", evs)
+	}
+}
+
+func TestReviewGateWontfixRequiresReason(t *testing.T) {
+	ledger := NewInMemoryEvidenceLedger()
+	ev := reviewOnlyEvaluator(ledger, nil)
+
+	task := &Task{
+		ID:   "og-review-4",
+		Type: TaskTypeCoding,
+		Reviews: []TaskReview{{
+			Findings: []Finding{{
+				ID:          "f1",
+				Disposition: DispositionWontfix,
+			}},
+		}},
+	}
+	result := reviewResult(t, ev, task)
+	if reviewPassed(result) {
+		t.Fatalf("wontfix without a reason should fail")
+	}
+	if !strings.Contains(result.Failed[0].EvidenceGap, "no reason") {
+		t.Errorf("expected reason gap, got %q", result.Failed[0].EvidenceGap)
+	}
+}
+
+func TestReviewGateSecurityWontfixRequiresHuman(t *testing.T) {
+	ledger := NewInMemoryEvidenceLedger()
+	ev := reviewOnlyEvaluator(ledger, nil)
+
+	task := &Task{
+		ID:   "og-review-5",
+		Type: TaskTypeCoding,
+		Reviews: []TaskReview{{
+			HumanConfirmed: false,
+			Findings: []Finding{{
+				ID:                "f1",
+				Category:          CategorySecurity,
+				Disposition:       DispositionWontfix,
+				DispositionReason: "accepted risk, I promise",
+			}},
+		}},
+	}
+	result := reviewResult(t, ev, task)
+	if reviewPassed(result) {
+		t.Fatalf("security wontfix without human confirmation should fail")
+	}
+	if !strings.Contains(result.Failed[0].EvidenceGap, "human") {
+		t.Errorf("expected human-confirmation gap, got %q", result.Failed[0].EvidenceGap)
 	}
 
-	if len(findings) != 2 {
-		t.Errorf("expected 2 findings, got %d", len(findings))
+	// Same finding, human confirmed: passes.
+	task.Reviews[0].HumanConfirmed = true
+	result = reviewResult(t, ev, task)
+	if !reviewPassed(result) {
+		t.Fatalf("security wontfix with human confirmation should pass, failed: %v", result.Failed)
 	}
+}
 
-	if findings[0].ID != "finding-1" {
-		t.Errorf("first finding ID = %s, want finding-1", findings[0].ID)
+func TestReviewGateMissingDispositionFails(t *testing.T) {
+	ledger := NewInMemoryEvidenceLedger()
+	ev := reviewOnlyEvaluator(ledger, nil)
+
+	task := &Task{
+		ID:   "og-review-6",
+		Type: TaskTypeCoding,
+		Reviews: []TaskReview{{
+			Findings: []Finding{{ID: "f1", InvariantViolated: "unaddressed"}},
+		}},
 	}
-	if findings[0].Category != CategorySecurity {
-		t.Errorf("first finding category = %s, want security", findings[0].Category)
+	result := reviewResult(t, ev, task)
+	if reviewPassed(result) {
+		t.Fatalf("undispositioned finding should fail the gate")
 	}
-	if findings[1].ID != "finding-2" {
-		t.Errorf("second finding ID = %s, want finding-2", findings[1].ID)
+	if !strings.Contains(result.Failed[0].EvidenceGap, "missing disposition") {
+		t.Errorf("expected missing-disposition gap, got %q", result.Failed[0].EvidenceGap)
 	}
-	if findings[1].Category != CategoryStyle {
-		t.Errorf("second finding category = %s, want style", findings[1].Category)
+}
+
+func TestReviewGateDeferWithoutTicketCreatorFails(t *testing.T) {
+	ledger := NewInMemoryEvidenceLedger()
+	ev := reviewOnlyEvaluator(ledger, nil) // no ticket creator
+
+	task := &Task{
+		ID:   "og-review-7",
+		Type: TaskTypeCoding,
+		Reviews: []TaskReview{{
+			Findings: []Finding{{
+				ID:          "f1",
+				Disposition: DispositionDeferWithTicket,
+			}},
+		}},
+	}
+	result := reviewResult(t, ev, task)
+	if reviewPassed(result) {
+		t.Fatalf("defer without a ticket creator must not silently pass")
+	}
+	if !strings.Contains(result.Failed[0].EvidenceGap, "no ticket creator") {
+		t.Errorf("expected no-ticket-creator gap, got %q", result.Failed[0].EvidenceGap)
 	}
 }
 
@@ -1039,10 +1248,16 @@ func TestGateRunnerWithMultipleDeferredFindings(t *testing.T) {
 // fakeTicketCreator is a test implementation of TicketCreator.
 type fakeTicketCreator struct {
 	createdTickets *[]string
+	args           *[]CreateTicketArgs
 }
 
 func (f *fakeTicketCreator) CreateTicket(ctx context.Context, args CreateTicketArgs) (string, error) {
 	ticketID := fmt.Sprintf("og-%d", time.Now().UnixNano())
-	*f.createdTickets = append(*f.createdTickets, ticketID)
+	if f.createdTickets != nil {
+		*f.createdTickets = append(*f.createdTickets, ticketID)
+	}
+	if f.args != nil {
+		*f.args = append(*f.args, args)
+	}
 	return ticketID, nil
 }

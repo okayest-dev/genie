@@ -94,6 +94,14 @@ var defaultProviders = map[string]Provider{
 		Wire:  llm.WireBedrock,
 		Model: "anthropic.claude-sonnet-4-6",
 	},
+	"openrouter": {
+		// OpenRouter provides an OpenAI-compatible API gateway to many models.
+		// The base URL is the OpenRouter API endpoint; the API key is the
+		// OpenRouter key from the user's account. The default model is one of
+		// the free models available on OpenRouter.
+		Wire: llm.WireOpenAI, BaseURL: "https://openrouter.ai/api/v1",
+		APIKeyEnv: "OPENROUTER_API_KEY", Model: "recursive/flint-v1.0:free",
+	},
 }
 
 // Tools holds the four per-tool toggles. All default to enabled; a disabled
@@ -211,6 +219,20 @@ type GatesConfig = gates.GateConfig
 // WorktreeConfig holds configuration for git-worktree task isolation (og-wm7.3).
 type WorktreeConfig = worktree.Config
 
+// LoopConfig holds configuration for the autonomous loop driver (og-wm7.6).
+type LoopConfig struct {
+	// RefixAttempts is the maximum number of consecutive refix attempts before escalation.
+	RefixAttempts int
+	// EmptyFrontierAction is what to do when the frontier is empty: "stop" or "suggest".
+	EmptyFrontierAction string
+	// EscalationLabel is the label applied to a task when refix attempts are exhausted.
+	EscalationLabel string
+	// MaxTasksPerRun is the maximum number of tasks to process in one run (0 = unlimited).
+	MaxTasksPerRun int
+	// PreferReadyForAgent controls whether to prefer ready-for-agent labelled tickets.
+	PreferReadyForAgent bool
+}
+
 // Config is the resolved harness configuration.
 type Config struct {
 	// Providers is the set of declared providers keyed by name, seeded with
@@ -260,6 +282,8 @@ type Config struct {
 	Gates     GatesConfig
 	// Worktree is the git-worktree task-isolation surface (og-wm7.3).
 	Worktree WorktreeConfig
+	// Loop is the autonomous frontier loop configuration (og-wm7.6).
+	Loop LoopConfig
 }
 
 // Permissions is the resolved permission policy. Base maps each axis name
@@ -302,6 +326,7 @@ type fileConfig struct {
 	TaskTools       taskToolsFile   `toml:"task_tools"`
 	Gates           gatesFile       `toml:"gates"`
 	Worktree        worktreeFile    `toml:"worktree"`
+	Loop            loopFile        `toml:"loop"`
 }
 
 // worktreeFile is the TOML schema for [worktree] (og-wm7.3).
@@ -312,6 +337,15 @@ type worktreeFile struct {
 	Merge        *string `toml:"merge"`
 	BaseBranch   *string `toml:"base_branch"`
 	DriftCheck   *string `toml:"drift_check"`
+}
+
+// loopFile is the TOML schema for [loop] (og-wm7.6).
+type loopFile struct {
+	RefixAttempts       *int    `toml:"refix_attempts"`
+	EmptyFrontierAction *string `toml:"empty_frontier_action"`
+	EscalationLabel     *string `toml:"escalation_label"`
+	MaxTasksPerRun      *int    `toml:"max_tasks_per_run"`
+	PreferReadyForAgent *bool   `toml:"prefer_ready_for_agent"`
 }
 
 // providerFiles is the TOML schema for [providers.*]: nested tables keyed by
@@ -480,6 +514,7 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		if err := cfg.Worktree.Validate(); err != nil {
 			return nil, fmt.Errorf("config: %w", err)
 		}
+		applyLoop(&cfg.Loop, fc.Loop)
 		applyPluginsErr := applyPlugins(&cfg, fc.Plugins, userConfigDir)
 		if applyPluginsErr != nil {
 			return nil, applyPluginsErr
@@ -787,6 +822,26 @@ func applyWorktree(dst *worktree.Config, src worktreeFile) {
 	}
 	if src.DriftCheck != nil {
 		dst.DriftCheck = *src.DriftCheck
+	}
+}
+
+// applyLoop overlays the [loop] table on the defaults. A set key wins;
+// an omitted key keeps the default.
+func applyLoop(dst *LoopConfig, src loopFile) {
+	if src.RefixAttempts != nil {
+		dst.RefixAttempts = *src.RefixAttempts
+	}
+	if src.EmptyFrontierAction != nil {
+		dst.EmptyFrontierAction = *src.EmptyFrontierAction
+	}
+	if src.EscalationLabel != nil {
+		dst.EscalationLabel = *src.EscalationLabel
+	}
+	if src.MaxTasksPerRun != nil {
+		dst.MaxTasksPerRun = *src.MaxTasksPerRun
+	}
+	if src.PreferReadyForAgent != nil {
+		dst.PreferReadyForAgent = *src.PreferReadyForAgent
 	}
 }
 

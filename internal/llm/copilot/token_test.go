@@ -398,3 +398,71 @@ func TestExchangeErrorNonGHEHost(t *testing.T) {
 		t.Errorf("message = %q, should contain original error", pe.Message)
 	}
 }
+
+func TestExchangeErrorGHEDataResidency404(t *testing.T) {
+	// Test that GHE data-residency hosts with 404 on the exchange endpoint
+	// also fall back to user auth validation and succeed
+	dataHome := t.TempDir()
+	// Write credentials for the ghe.com host
+	store := CredentialsFile{Version: 1, Hosts: map[string]HostEntry{
+		"octocorp.ghe.com": {OAuthToken: "gho_abc"},
+	}}
+	data, err := json.Marshal(store)
+	if err != nil {
+		t.Fatalf("marshal store: %v", err)
+	}
+	path := StorePath(dataHome)
+	if err := writeFilePrivate(path, data); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Token exchange returns 404 (new behavior?)
+		if r.URL.Path == "/copilot_internal/v2/token" {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		// User auth validation returns 200 (works on data-residency)
+		if r.URL.Path == "/copilot_internal/user" {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"user":"testuser"}`)
+			return
+		}
+		// Models endpoint on copilot-api
+		if r.URL.Path == "/v1/models" {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"data":[{"id":"gpt-4o"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewClient("octocorp.ghe.com", dataHome)
+	c.exchangeURL = srv.URL + "/copilot_internal/v2/token"
+	c.userAuthURL = srv.URL + "/copilot_internal/user"
+	c.copilotAPIBase = srv.URL
+	
+	// The access method should fall back and succeed
+	token, apiBase, err := c.access(context.Background())
+	if err != nil {
+		t.Fatalf("access should succeed with fallback: %v", err)
+	}
+	if token != "gho_abc" {
+		t.Errorf("token = %q, want oauth token", token)
+	}
+	if apiBase != srv.URL {
+		t.Errorf("apiBase = %q, want %q", apiBase, srv.URL)
+	}
+	
+	// ListModels should work with the fallback apiBase
+	models, err := c.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels should work with fallback: %v", err)
+	}
+	if len(models) == 0 || models[0].ID != "gpt-4o" {
+		t.Errorf("models = %v, want [gpt-4o]", models)
+	}
+}

@@ -907,6 +907,16 @@ func (h *Handle) TaskState() *tasktools.TaskState {
 	return h.taskState
 }
 
+// GateRunner returns the gate runner for this run.
+func (h *Handle) GateRunner() gates.GateRunner {
+	return h.gateRunner
+}
+
+// WorktreeManager returns the worktree manager for this run.
+func (h *Handle) WorktreeManager() worktree.ManagerInterface {
+	return h.worktreeManager
+}
+
 // Provider returns the active provider name.
 func (h *Handle) Provider() string {
 	cur, _ := h.snapshot()

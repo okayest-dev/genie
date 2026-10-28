@@ -157,6 +157,7 @@ func (m *MarkdownTracker) Create(ctx context.Context, args tracker.CreateArgs) (
 		Description: args.Description,
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		UpdatedAt:   time.Now().Format(time.RFC3339),
+		FindingOf:   args.FindingOf,
 	}
 
 	if task.Type == "" {
@@ -288,6 +289,8 @@ func parseYAMLFrontmatter(frontmatter string) (*tracker.TrackerTask, error) {
 			task.CreatedAt = value
 		case "updated_at":
 			task.UpdatedAt = value
+		case "finding_of":
+			task.FindingOf = value
 		}
 	}
 	return task, nil
@@ -309,6 +312,7 @@ func (m *MarkdownTracker) writeTask(task *tracker.TrackerTask) error {
 		"labels":      task.Labels,
 		"created_at":  task.CreatedAt,
 		"updated_at":  task.UpdatedAt,
+		"finding_of":  task.FindingOf,
 	}
 
 	data, err := json.MarshalIndent(frontmatter, "", "  ")

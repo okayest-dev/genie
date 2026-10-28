@@ -2982,7 +2982,7 @@ model = "zen-model"
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
-	if !strings.Contains(stdout, "no such provider: nosuch") || !strings.Contains(stdout, "(available: anthropic, bedrock, copilot, google, openai, responses, zen)") {
+	if !strings.Contains(stdout, "no such provider: nosuch") || !strings.Contains(stdout, "(available: anthropic, bedrock, copilot, google, openai, openrouter, responses, zen)") {
 		t.Errorf("stdout = %q, want an error naming the available set", stdout)
 	}
 	if !strings.Contains(stdout, "zen reply") {
@@ -3025,7 +3025,7 @@ models = ["openai-default", "openai-1"]
 	if !strings.Contains(out, "Available providers:") {
 		t.Errorf("stdout = %q, want providers listing", out)
 	}
-	if !strings.Contains(out, "* 7: zen") || !strings.Contains(out, "  5: openai") {
+	if !strings.Contains(out, "* 8: zen") || !strings.Contains(out, "  5: openai") {
 		t.Errorf("stdout = %q, want zen marked current and openai unmarked", out)
 	}
 	if !strings.Contains(out, "Current: zen") {

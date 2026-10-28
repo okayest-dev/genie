@@ -589,6 +589,39 @@ capabilities = ["tools"]
 	}
 }
 
+func TestParseManifestFileNotDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create flat layout with manifest
+	flatManifest := `
+name = "file-plugin"
+version = "1.0.0"
+capabilities = ["tools"]
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "file-plugin.toml"), []byte(flatManifest), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a FILE (not directory) with the plugin name - this simulates
+	// the bug where bd-tracker is an executable file, not a directory
+	filePluginPath := filepath.Join(tmpDir, "file-plugin")
+	if err := os.WriteFile(filePluginPath, []byte("#!/bin/sh\necho hello"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should fall back to flat layout, not error with "not a directory"
+	m, err := ParseManifest(tmpDir, "file-plugin")
+	if err != nil {
+		t.Fatalf("ParseManifest failed with file-not-directory: %v", err)
+	}
+	if m.Version != "1.0.0" {
+		t.Errorf("expected flat layout to be used, got version %q", m.Version)
+	}
+	if !m.HasCapability("tools") {
+		t.Error("expected flat layout capability 'tools'")
+	}
+}
+
 func commandsPluginScript() string {
 	return `#!/bin/bash
 while IFS= read -r line; do

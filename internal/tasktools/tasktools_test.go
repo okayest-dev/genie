@@ -79,7 +79,7 @@ func TestTaskStateMarshalJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MarshalJSON failed: %v", err)
 	}
-	expected := `{"active_task":null,"deferred_findings":null,"progress_log":null}`
+	expected := `{"active_task":null,"deferred_findings":null,"progress_log":null,"reviews":null}`
 	if string(data) != expected {
 		t.Errorf("MarshalJSON() = %s, want %s", data, expected)
 	}

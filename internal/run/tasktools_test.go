@@ -12,6 +12,9 @@ func TestTaskClaimToolRegistered(t *testing.T) {
 		t.Fatalf("Load failed: %v", err)
 	}
 
+	// Enable task tools for this test
+	cfg.TaskTools.Enable = true
+
 	opts := Options{
 		Config:   cfg,
 		Cwd:      ".",
@@ -49,6 +52,9 @@ func TestTaskCreateToolRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load failed: %v", err)
 	}
+
+	// Enable task tools for this test
+	cfg.TaskTools.Enable = true
 
 	opts := Options{
 		Config:   cfg,

@@ -3,7 +3,6 @@ package gates
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -294,28 +293,4 @@ func contains[T comparable](slice []T, item T) bool {
 		}
 	}
 	return false
-}
-
-// ReviewGateFindings extracts findings from review tool output.
-func ReviewGateFindings(output string) ([]Finding, error) {
-	// In a real implementation, this would parse structured review output
-	// For now, we return a placeholder that the review tool can populate
-	var findings []Finding
-	
-	// Parse any structured finding markers in the output
-	// Example format: FINDING: <json>
-	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "FINDING:") {
-			findingJSON := strings.TrimPrefix(line, "FINDING:")
-			findingJSON = strings.TrimSpace(findingJSON)
-			var finding Finding
-			if err := json.Unmarshal([]byte(findingJSON), &finding); err == nil {
-				findings = append(findings, finding)
-			}
-		}
-	}
-	
-	return findings, nil
 }

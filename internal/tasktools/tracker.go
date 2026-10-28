@@ -27,11 +27,12 @@ var ErrTaskNotClaimable = errors.New("task is not claimable")
 
 // FakeTracker is a test implementation of Tracker and tracker.TrackerSource.
 type FakeTracker struct {
-	tasks         map[string]*tracker.TrackerTask
-	claimedID     string
-	frontierOrder []string
+	tasks          map[string]*tracker.TrackerTask
+	claimedID      string
+	frontierOrder  []string
 	createdTickets []string
-	isolation     tracker.Isolation
+	comments       map[string][]string
+	isolation      tracker.Isolation
 }
 
 // Ensure FakeTracker implements tracker.TrackerSource
@@ -49,6 +50,7 @@ func NewFakeTracker(tasks []*tracker.TrackerTask) *FakeTracker {
 		tasks:          m,
 		frontierOrder:  order,
 		createdTickets: make([]string, 0),
+		comments:       make(map[string][]string),
 		isolation:      tracker.IsolationUnknown,
 	}
 }
@@ -114,13 +116,19 @@ func (f *FakeTracker) Close(ctx context.Context, id string, reason string) error
 	return nil
 }
 
-// Comment adds a comment to a task (no-op for fake tracker).
+// Comment records a comment against a task so tests can assert on it.
 func (f *FakeTracker) Comment(ctx context.Context, id string, comment string) error {
 	_, ok := f.tasks[id]
 	if !ok {
 		return fmt.Errorf("task not found: %s", id)
 	}
+	f.comments[id] = append(f.comments[id], comment)
 	return nil
+}
+
+// GetComments returns the comments recorded against a task, in order.
+func (f *FakeTracker) GetComments(id string) []string {
+	return f.comments[id]
 }
 
 // Create creates a new task in the fake tracker.
@@ -143,6 +151,7 @@ func (f *FakeTracker) Create(ctx context.Context, args tracker.CreateArgs) (*tra
 		Description: args.Description,
 		CreatedAt:   time.Now().Format(time.RFC3339),
 		UpdatedAt:   time.Now().Format(time.RFC3339),
+		FindingOf:   args.FindingOf,
 	}
 
 	if task.Type == "" {

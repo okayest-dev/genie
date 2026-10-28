@@ -23,13 +23,16 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/okayest-dev/genie/internal/config"
+	"github.com/okayest-dev/genie/internal/gates"
 	"github.com/okayest-dev/genie/internal/ledger"
 	"github.com/okayest-dev/genie/internal/llm"
 	"github.com/okayest-dev/genie/internal/llm/copilot"
+	"github.com/okayest-dev/genie/internal/loop"
 	"github.com/okayest-dev/genie/internal/plugin"
 	"github.com/okayest-dev/genie/internal/prompt"
 	"github.com/okayest-dev/genie/internal/run"
 	"github.com/okayest-dev/genie/internal/style"
+	"github.com/okayest-dev/genie/internal/tasktools"
 	"github.com/okayest-dev/genie/internal/theme"
 )
 
@@ -351,6 +354,10 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		}
 		return false
 
+	case "/work-frontier":
+		handleWorkFrontier(ctx, cfg)
+		return false
+
 	default:
 		if cmds := cfg.Run.Commands(); cmds != nil && handlePluginCommand(line, cmds, cfg) {
 			return false
@@ -387,6 +394,7 @@ func printHelp(cfg *Config) {
 	fmt.Fprintln(slashOut, "  /copilot                 manage Copilot credentials")
 	fmt.Fprintln(slashOut, "  /copilot:auth:login      start device-flow login")
 	fmt.Fprintln(slashOut, "  /copilot:auth:status     show credential status")
+	fmt.Fprintln(slashOut, "  /work-frontier           start autonomous frontier loop")
 	fmt.Fprintln(slashOut, "")
 	fmt.Fprintln(slashOut, "  @<name> <prompt>         one-shot agent switch")
 	if cmds := cfg.Run.Commands(); cmds != nil {
@@ -922,5 +930,143 @@ func handleCopilotStatus(host string, cfg *Config, slashOut io.Writer) {
 			token = token[:8] + "..."
 		}
 		fmt.Fprintf(slashOut, "OAuth Token: %s\n", token)
+	}
+}
+
+// handleWorkFrontier starts the autonomous frontier loop.
+func handleWorkFrontier(ctx context.Context, cfg *Config) {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+
+	// Check if task tools are enabled
+	if !cfg.Run.TaskState().HasActive() && !cfg.Cfg.TaskTools.Enable {
+		fmt.Fprintln(slashOut, "task_tools not enabled in config; cannot run autonomous loop")
+		return
+	}
+
+	// Create loop config from run config
+	loopCfg := loop.DefaultLoopConfig()
+	if cfg.Cfg.Loop.RefixAttempts > 0 {
+		loopCfg.RefixAttempts = cfg.Cfg.Loop.RefixAttempts
+	}
+	if cfg.Cfg.Loop.EmptyFrontierAction != "" {
+		loopCfg.EmptyFrontierAction = cfg.Cfg.Loop.EmptyFrontierAction
+	}
+	if cfg.Cfg.Loop.EscalationLabel != "" {
+		loopCfg.EscalationLabel = cfg.Cfg.Loop.EscalationLabel
+	}
+	if cfg.Cfg.Loop.MaxTasksPerRun > 0 {
+		loopCfg.MaxTasksPerRun = cfg.Cfg.Loop.MaxTasksPerRun
+	}
+	loopCfg.PreferReadyForAgent = cfg.Cfg.Loop.PreferReadyForAgent
+
+	// Create a simple reporter that prints to the slash output
+	reporter := &loopReporter{out: slashOut}
+
+	// Create and run the loop driver
+	driver := loop.NewStandardLoopDriver(cfg.Run, loopCfg, reporter)
+
+	fmt.Fprintln(slashOut, "Starting autonomous frontier loop...")
+	report, err := driver.Run(ctx)
+	if err != nil {
+		fmt.Fprintf(slashOut, "Loop error: %v\n", err)
+		return
+	}
+
+	// Print the final report
+	printLoopReport(slashOut, *report)
+}
+
+// loopReporter implements loop.Reporter to print progress to the REPL.
+type loopReporter struct {
+	out io.Writer
+}
+
+func (r *loopReporter) OnStateChange(state loop.LoopState, taskID string) {
+	if taskID != "" {
+		fmt.Fprintf(r.out, "[%s] %s\n", state, taskID)
+	} else {
+		fmt.Fprintf(r.out, "[%s]\n", state)
+	}
+}
+
+func (r *loopReporter) OnTaskClaimed(task *tasktools.Task) {
+	fmt.Fprintf(r.out, "  Claimed: %s (%s)\n", task.ID, task.Title)
+}
+
+func (r *loopReporter) OnTaskProgress(taskID string, record tasktools.ProgressRecord) {
+	fmt.Fprintf(r.out, "  Progress [%s]: %s\n", taskID, record.Summary)
+}
+
+func (r *loopReporter) OnGateResult(taskID string, result gates.GateResult) {
+	if len(result.Failed) > 0 {
+		fmt.Fprintf(r.out, "  Gates FAILED for %s:\n", taskID)
+		for _, fg := range result.Failed {
+			fmt.Fprintf(r.out, "    - %s: %s\n", fg.Name, fg.EvidenceGap)
+		}
+	} else {
+		fmt.Fprintf(r.out, "  Gates PASSED for %s: %s\n", taskID, strings.Join(result.Passed, ", "))
+	}
+}
+
+func (r *loopReporter) OnTaskResolved(result loop.TaskResult) {
+	fmt.Fprintf(r.out, "  RESOLVED: %s (%s) - gates: %s\n", result.TaskID, result.Title, strings.Join(result.GatesPassed, ", "))
+	if len(result.FollowUpTickets) > 0 {
+		fmt.Fprintf(r.out, "    Follow-ups: %s\n", strings.Join(result.FollowUpTickets, ", "))
+	}
+}
+
+func (r *loopReporter) OnTaskEscalated(taskID string, reason string) {
+	fmt.Fprintf(r.out, "  ESCALATED: %s - %s\n", taskID, reason)
+}
+
+func (r *loopReporter) OnFrontierEmpty() {
+	fmt.Fprintln(r.out, "  Frontier empty")
+}
+
+func (r *loopReporter) OnReport(report loop.LoopReport) {
+	printLoopReport(r.out, report)
+}
+
+func (r *loopReporter) OnError(err error) {
+	fmt.Fprintf(r.out, "  ERROR: %v\n", err)
+}
+
+// printLoopReport prints the final loop report.
+func printLoopReport(out io.Writer, report loop.LoopReport) {
+	fmt.Fprintln(out, "\n=== Autonomous Loop Report ===")
+	fmt.Fprintf(out, "Duration: %v\n", report.TotalDuration.Round(time.Second))
+	fmt.Fprintf(out, "Tasks completed: %d\n", len(report.TasksCompleted))
+	fmt.Fprintf(out, "Tasks escalated: %d\n", len(report.TasksEscalated))
+	fmt.Fprintf(out, "Frontier empty: %v\n", report.FrontierEmpty)
+
+	if len(report.TasksCompleted) > 0 {
+		fmt.Fprintln(out, "\nCompleted tasks:")
+		for _, t := range report.TasksCompleted {
+			status := "✓"
+			if !t.Success {
+				status = "✗"
+			}
+			fmt.Fprintf(out, "  %s %s (%s) - gates: %s\n", status, t.TaskID, t.Title, strings.Join(t.GatesPassed, ", "))
+		}
+	}
+
+	if len(report.TasksEscalated) > 0 {
+		fmt.Fprintln(out, "\nEscalated tasks:")
+		for _, t := range report.TasksEscalated {
+			fmt.Fprintf(out, "  ⚠ %s (%s) - %s\n", t.TaskID, t.Title, t.Error)
+		}
+	}
+
+	if len(report.Suggestions) > 0 {
+		fmt.Fprintln(out, "\nSuggestions:")
+		for _, s := range report.Suggestions {
+			fmt.Fprintf(out, "  - %s\n", s)
+		}
+	}
+
+	if report.EscalatedToHuman {
+		fmt.Fprintln(out, "\n[Loop stopped: escalated to human]")
+	} else if report.FrontierEmpty {
+		fmt.Fprintln(out, "\n[Loop stopped: frontier empty]")
 	}
 }

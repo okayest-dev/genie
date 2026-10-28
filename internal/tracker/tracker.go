@@ -17,6 +17,9 @@ type TrackerTask struct {
 	Description string   `json:"description,omitempty"`
 	CreatedAt   string   `json:"created_at,omitempty"`
 	UpdatedAt   string   `json:"updated_at,omitempty"`
+	// FindingOf records the source task this ticket was spawned from, when the
+	// ticket was created from a review or gate finding (provenance).
+	FindingOf string `json:"finding_of,omitempty"`
 }
 
 // DedupMatch represents a potential duplicate ticket found during search.

@@ -388,8 +388,8 @@ code_timeout = 30
 [providers]
 # Declared providers, keyed by name. A provider is one wire, one endpoint,
 # one default model. Every valid provider ships as a default — one per
-# bundled wire: zen, openai, anthropic, responses, google, copilot, bedrock
-# — so a table for a known name only needs to override the keys you want to
+# bundled wire: zen, openai, anthropic, responses, google, copilot, bedrock,
+# openrouter — so a table for a known name only needs to override the keys you want to
 # change.
 #
 # [providers.zen]
@@ -415,6 +415,13 @@ code_timeout = 30
 # # credential_process). opts.profile selects an AWS profile and opts.region
 # # the region; absent, the chain's defaults apply.
 # opts        = { profile = "my-role", region = "us-east-1" }
+#
+# [providers.openrouter]
+# # OpenRouter provides an OpenAI-compatible gateway to many models.
+# # The API key is your OpenRouter key (from openrouter.ai/keys).
+# # Many free models are available (suffixed with :free).
+# api_key_env = "OPENROUTER_API_KEY"
+# model       = "recursive/flint-v1.0:free"
 #
 # A provider missing a default model, or naming an unknown wire, fails at
 # startup; duplicate provider tables are rejected. Selecting a provider that

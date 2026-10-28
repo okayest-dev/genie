@@ -20,25 +20,29 @@ func ParseManifest(pluginDir, binaryName string) (*Manifest, error) {
 
 	// Try new directory layout first: <pluginDir>/<name>/manifest.toml
 	dirManifest := filepath.Join(pluginDir, name, "manifest.toml")
-	data, err := os.ReadFile(dirManifest)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
+	
+	// First check if the plugin directory exists and is actually a directory
+	pluginDirPath := filepath.Join(pluginDir, name)
+	if info, err := os.Stat(pluginDirPath); err == nil && info.IsDir() {
+		data, err := os.ReadFile(dirManifest)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+		if data != nil {
+			return parseManifestData(data, dirManifest)
+		}
 	}
 
 	// Fall back to old flat layout: <pluginDir>/<name>.toml
-	if data == nil {
-		flatManifest := filepath.Join(pluginDir, name+".toml")
-		data, err = os.ReadFile(flatManifest)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, nil
-			}
-			return nil, err
+	flatManifest := filepath.Join(pluginDir, name+".toml")
+	data, err := os.ReadFile(flatManifest)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		return parseManifestData(data, flatManifest)
+		return nil, err
 	}
-
-	return parseManifestData(data, dirManifest)
+	return parseManifestData(data, flatManifest)
 }
 
 func parseManifestData(data []byte, manifestPath string) (*Manifest, error) {

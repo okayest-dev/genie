@@ -20,6 +20,9 @@ type GateEvaluator struct {
 	deferredFindingStore DeferredFindingStore
 	worktreeManager      worktree.ManagerInterface
 	lastCheckInResult    *worktree.CheckInResult
+	// pendingFollowUps accumulates follow-up ticket ids created while running a
+	// gate set; Run copies them onto GateResult.FollowUps.
+	pendingFollowUps []string
 }
 
 // ObservedEvidenceTracker tracks tool executions observed during the session.
@@ -113,8 +116,9 @@ func (e *GateEvaluator) Run(ctx context.Context, task *Task) (GateResult, error)
 	gateSet := e.registry.GetGateSet(task.Type)
 	result := GateResult{}
 
-	// Reset last check-in result
+	// Reset last check-in result and accumulated follow-ups
 	e.lastCheckInResult = nil
+	e.pendingFollowUps = nil
 
 	claimedAt := e.observedEv.ClaimedAt()
 	executions := e.observedEv.GetExecutionsSince(claimedAt)
@@ -206,6 +210,9 @@ func (e *GateEvaluator) Run(ctx context.Context, task *Task) (GateResult, error)
 
 	// Attach check-in result from git gate if present
 	result.CheckInInfo = e.lastCheckInResult
+	// Attach follow-up tickets created during gate evaluation (e.g. the review
+	// gate's deferred findings), so they land in the resolution record.
+	result.FollowUps = e.pendingFollowUps
 
 	return result, nil
 }
@@ -231,7 +238,7 @@ func (e *GateEvaluator) evaluateGate(ctx context.Context, gate Gate, task *Task,
 	case VerificationCoverage:
 		return e.evalCoverage(gate, executions)
 	case VerificationReview:
-		return e.evalReview(gate, executions)
+		return e.evalReview(ctx, gate, task, executions)
 	case VerificationHygiene:
 		return e.evalHygiene(gate, executions)
 	case VerificationTraceability:
@@ -298,72 +305,72 @@ func (e *GateEvaluator) evalCoverage(gate Gate, executions []ToolExecution) (boo
 	return false, fmt.Sprintf("coverage threshold %.0f%% not verified (no coverage output parsed)", threshold*100), nil
 }
 
-// evalReview evaluates the review gate.
-func (e *GateEvaluator) evalReview(gate Gate, executions []ToolExecution) (bool, string, error) {
-	// Check if code-review skill was invoked (task.review or code-review tool)
-	reviewFound := false
-	findings := make([]Finding, 0)
-
-	for _, exec := range executions {
-		if strings.Contains(strings.ToLower(exec.ToolName), "review") ||
-			strings.Contains(strings.ToLower(exec.ToolName), "code-review") {
-			reviewFound = true
-			// Extract findings from the review output
-			extractedFindings, err := ReviewGateFindings(exec.Stdout)
-			if err != nil {
-				continue
-			}
-			findings = append(findings, extractedFindings...)
-		}
+// evalReview evaluates the review gate. The gate is a guardrail over a review
+// performed outside the harness: it requires that a review was attested for the
+// task, then holds the agent to every finding the review produced — resolve it
+// inline, defer it with a provenance-linked ticket, or wontfix it explicitly.
+// The harness never decides what the review looked at.
+func (e *GateEvaluator) evalReview(ctx context.Context, gate Gate, task *Task, executions []ToolExecution) (bool, string, error) {
+	if len(task.Reviews) == 0 {
+		return false, "no review recorded for this task (use task_review to attest the review and its findings)", nil
 	}
 
-	if !reviewFound {
-		return false, "code review not executed (no review tool invocation observed)", nil
-	}
-
-	// Check if all findings have been triaged
 	var createdTickets []string
-	for _, finding := range findings {
-		if finding.Disposition == "" {
-			return false, "review findings not triaged (missing disposition)", nil
-		}
+	findingCount := 0
+	for _, review := range task.Reviews {
+		for i := range review.Findings {
+			finding := &review.Findings[i]
+			findingCount++
 
-		// Verify disposition is valid
-		if finding.Disposition == DispositionDeferWithTicket {
-			if finding.RelatedTicketID == "" {
-				// Try to create a ticket for this deferred finding
-				if e.ticketCreator != nil {
-					ticketID, err := e.createDeferredTicket(finding, gate.Name)
+			switch finding.Disposition {
+			case DispositionResolveInline:
+				// Fixed in-task; nothing further to create.
+			case DispositionDeferWithTicket:
+				if finding.RelatedTicketID == "" {
+					if e.ticketCreator == nil {
+						return false, fmt.Sprintf("finding %s deferred but no ticket creator available", finding.ID), nil
+					}
+					ticketID, err := e.createDeferredTicket(*finding, gate.Name)
 					if err != nil {
 						return false, fmt.Sprintf("finding %s deferred but failed to create ticket: %v", finding.ID, err), nil
 					}
 					finding.RelatedTicketID = ticketID
 					createdTickets = append(createdTickets, ticketID)
 				} else {
-					return false, fmt.Sprintf("finding %s deferred but no ticket creator available", finding.ID), nil
+					createdTickets = append(createdTickets, finding.RelatedTicketID)
 				}
+			case DispositionWontfix:
+				if strings.TrimSpace(finding.DispositionReason) == "" {
+					return false, fmt.Sprintf("finding %s wontfix but no reason provided", finding.ID), nil
+				}
+				if err := finding.ValidateDisposition(finding.Disposition, review.HumanConfirmed); err != nil {
+					return false, fmt.Sprintf("finding %s: %v", finding.ID, err), nil
+				}
+			case "":
+				return false, fmt.Sprintf("finding %s not triaged (missing disposition)", finding.ID), nil
+			default:
+				return false, fmt.Sprintf("finding %s has invalid disposition %q", finding.ID, finding.Disposition), nil
 			}
 		}
-
-		if finding.Disposition == DispositionWontfix && finding.DispositionReason == "" {
-			return false, fmt.Sprintf("finding %s wontfix but no reason provided", finding.ID), nil
-		}
 	}
 
-	// Record created tickets in evidence
+	e.pendingFollowUps = append(e.pendingFollowUps, createdTickets...)
+
+	inputs := map[string]any{"reviews": len(task.Reviews), "findings": findingCount}
 	if len(createdTickets) > 0 {
-		ev := Evidence{
-			GateName:     gate.Name,
-			Timestamp:    time.Now(),
-			TaskID:       e.observedEv.ClaimedAt().String(), // This is a placeholder; we'll use task ID from context
-			TaskType:     TaskTypeCoding,                    // Will be overridden
-			Verification: gate.Verification,
-			Inputs:       map[string]any{"deferred_tickets": createdTickets},
-			Verdict:      VerdictPass,
-			Details:      fmt.Sprintf("Deferred %d finding(s) with tickets: %v", len(createdTickets), createdTickets),
-		}
-		_ = e.ledger.Append(context.Background(), ev)
+		inputs["deferred_tickets"] = createdTickets
 	}
+	ev := Evidence{
+		GateName:     gate.Name,
+		Timestamp:    time.Now(),
+		TaskID:       task.ID,
+		TaskType:     task.Type,
+		Verification: gate.Verification,
+		Inputs:       inputs,
+		Verdict:      VerdictPass,
+		Details:      fmt.Sprintf("review attested (%d finding(s), %d follow-up ticket(s))", findingCount, len(createdTickets)),
+	}
+	_ = e.ledger.Append(ctx, ev)
 
 	return true, "", nil
 }

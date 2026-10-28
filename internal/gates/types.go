@@ -108,6 +108,20 @@ type Task struct {
 	// Worktree is the worktree the session recorded at claim time (empty when
 	// no worktree was allocated). The git gate verifies it at resolve time.
 	Worktree string
+	// Reviews are the review attestations recorded during task work. The review
+	// gate consumes their findings; it does not define how the review was run.
+	Reviews []TaskReview
+}
+
+// TaskReview is an attestation that a review was performed against a task,
+// carrying the findings it produced and their triage decisions. The review's
+// method and scope are the caller's business — the gate consumes the findings,
+// not the review procedure.
+type TaskReview struct {
+	Subject        string
+	Method         string
+	HumanConfirmed bool
+	Findings       []Finding
 }
 
 // GateRegistry manages gate definitions and per-task-type gate sets.

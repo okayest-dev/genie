@@ -149,14 +149,18 @@ func (c *Client) access(ctx context.Context) (token, apiBase string, err error) 
 	}
 
 	// For GHE data-residency (*.ghe.com), try the standard token exchange first.
-	// If it fails with the specific 403 "Resource not accessible by integration",
+	// If it fails with the specific 403 "Resource not accessible by integration"
+	// or 404 Not Found (also seen on some GHE data-residency tenants),
 	// fall back to the data-residency auth flow: validate via GET /copilot_internal/user
 	// and use copilot-api.<tenant>.ghe.com as the inference base.
 	tr, err := c.exchange(ctx, oauth)
 	if err != nil {
 		// Check if this is the data-residency specific error
-		if pe, ok := err.(*llm.ProviderError); ok && isGHEDataResidency(c.domain) && pe.StatusCode == http.StatusForbidden {
-			if strings.Contains(strings.ToLower(pe.Message), "resource not accessible by integration") {
+		if pe, ok := err.(*llm.ProviderError); ok && isGHEDataResidency(c.domain) &&
+			(pe.StatusCode == http.StatusForbidden || pe.StatusCode == http.StatusNotFound) {
+			// For 403, check for the specific error message. For 404, any 404 triggers fallback.
+			if pe.StatusCode == http.StatusNotFound ||
+				strings.Contains(strings.ToLower(pe.Message), "resource not accessible by integration") {
 				// Fall back to data-residency auth flow
 				if err := c.validateUserAuth(ctx, oauth); err != nil {
 					return "", "", err

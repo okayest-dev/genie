@@ -155,6 +155,34 @@ func (t *TaskResolveTool) Execute(raw json.RawMessage) (string, error) {
 		Worktree:    t.state.WorktreePath(),
 	}
 
+	// Attach the review attestations recorded during task work. Findings carry
+	// the source task id so a deferred finding's follow-up ticket inherits
+	// provenance back to this task.
+	for _, rv := range t.state.GetReviews() {
+		review := gates.TaskReview{
+			Subject:        rv.Subject,
+			Method:         rv.Method,
+			HumanConfirmed: rv.HumanConfirmed,
+			Findings:       make([]gates.Finding, 0, len(rv.Findings)),
+		}
+		for _, f := range rv.Findings {
+			review.Findings = append(review.Findings, gates.Finding{
+				ID:                 f.FindingID,
+				InvariantViolated:  f.Invariant,
+				Category:           gates.FindingCategory(f.Category),
+				Severity:           gates.FindingSeverity(f.Severity),
+				BlastRadiusFiles:   f.BlastRadius,
+				RecurrenceCount:    f.Recurrence,
+				SourceTaskID:       active.Task.ID,
+				SourceFile:         f.SourceFile,
+				SourceEvidence:     f.SourceEvidence,
+				Disposition:        gates.FindingDisposition(f.Disposition),
+				DispositionReason:  f.Reason,
+			})
+		}
+		gatesTask.Reviews = append(gatesTask.Reviews, review)
+	}
+
 	// Get deferred findings from task state
 	deferredFindings := t.state.GetDeferredFindings()
 
