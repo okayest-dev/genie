@@ -24,8 +24,13 @@ var _ tracker.TrackerSource = (*MarkdownTracker)(nil)
 // NewMarkdownTracker creates a new markdown tracker.
 func NewMarkdownTracker(tasksDir string) *MarkdownTracker {
 	if tasksDir == "" {
-		home, _ := os.UserHomeDir()
-		tasksDir = filepath.Join(home, ".config", "genie", "tasks")
+		// Check environment variable for tasks directory (for worktree isolation)
+		if envDir := os.Getenv("GENIE_TASKS_DIR"); envDir != "" {
+			tasksDir = envDir
+		} else {
+			home, _ := os.UserHomeDir()
+			tasksDir = filepath.Join(home, ".config", "genie", "tasks")
+		}
 	}
 	return &MarkdownTracker{tasksDir: tasksDir}
 }
