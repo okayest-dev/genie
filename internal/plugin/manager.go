@@ -113,42 +113,46 @@ func (m *Manager) LoadPlugins() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			slog.Info("plugin directory does not exist, skipping", "dir", m.pluginDir)
-			return nil
+			// Don't return early - we still need to register built-in tracker below
+			entries = nil
+		} else {
+			return fmt.Errorf("read plugin dir: %w", err)
 		}
-		return fmt.Errorf("read plugin dir: %w", err)
 	}
 
 	var pluginPaths []string
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue
-		}
-
-		if e.IsDir() {
-			// Directory layout: plugins/<name>/<name> (binary)
-			bin := filepath.Join(m.pluginDir, name, name)
-			info, err := os.Stat(bin)
-			if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+	if entries != nil {
+		for _, e := range entries {
+			name := e.Name()
+			if strings.HasPrefix(name, ".") {
 				continue
 			}
-			pluginPaths = append(pluginPaths, bin)
-			continue
-		}
 
-		// Flat layout (backward compat): plugins/<name> (binary)
-		full := filepath.Join(m.pluginDir, name)
-		info, err := os.Stat(full)
-		if err != nil {
-			continue
+			if e.IsDir() {
+				// Directory layout: plugins/<name>/<name> (binary)
+				bin := filepath.Join(m.pluginDir, name, name)
+				info, err := os.Stat(bin)
+				if err != nil || info.IsDir() || info.Mode()&0111 == 0 {
+					continue
+				}
+				pluginPaths = append(pluginPaths, bin)
+				continue
+			}
+
+			// Flat layout (backward compat): plugins/<name> (binary)
+			full := filepath.Join(m.pluginDir, name)
+			info, err := os.Stat(full)
+			if err != nil {
+				continue
+			}
+			if info.Mode()&0111 == 0 {
+				continue
+			}
+			if filepath.Ext(name) == ".go" {
+				continue
+			}
+			pluginPaths = append(pluginPaths, full)
 		}
-		if info.Mode()&0111 == 0 {
-			continue
-		}
-		if filepath.Ext(name) == ".go" {
-			continue
-		}
-		pluginPaths = append(pluginPaths, full)
 	}
 
 	if len(pluginPaths) > MaxPlugins {

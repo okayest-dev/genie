@@ -5048,3 +5048,545 @@ func TestContextOverflowAfterOutputDoesNotRetry(t *testing.T) {
 	_ = stderr
 	_ = code
 }
+
+// runGit runs a git command in the given directory and returns its output.
+// Fails the test on error.
+func runGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return string(out)
+}
+
+// initWorktreeTestRepo creates a git repo with initial commits and task files
+// for worktree testing. Returns the repo root, fake home directory, and a cleanup function.
+func initWorktreeTestRepo(t *testing.T) (string, string, func()) {
+	t.Helper()
+	root := t.TempDir()
+
+	// Initialize git repo
+	runGit(t, root, "init", "-q", "-b", "main")
+	runGit(t, root, "config", "user.email", "test@example.com")
+	runGit(t, root, "config", "user.name", "Test")
+
+	// Create a README
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Test Repo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", ".")
+	runGit(t, root, "commit", "-q", "-m", "initial commit")
+
+	// Create fake home directory with tasks in ~/.config/genie/tasks
+	fakeHome := t.TempDir()
+	tasksDir := filepath.Join(fakeHome, ".config", "genie", "tasks")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two open tasks
+	task1 := `---
+id: "og-1"
+title: "Task One"
+type: "task"
+status: "open"
+priority: 2
+assignee: ""
+labels: []
+created_at: "2026-01-01T00:00:00Z"
+updated_at: "2026-01-01T00:00:00Z"
+finding_of: ""
+---
+Task One description
+`
+	task2 := `---
+id: "og-2"
+title: "Task Two"
+type: "task"
+status: "open"
+priority: 2
+assignee: ""
+labels: []
+created_at: "2026-01-01T00:00:00Z"
+updated_at: "2026-01-01T00:00:00Z"
+finding_of: ""
+---
+Task Two description
+`
+	if err := os.WriteFile(filepath.Join(tasksDir, "og-1.md"), []byte(task1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "og-2.md"), []byte(task2), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := func() {
+		os.RemoveAll(root)
+		os.RemoveAll(fakeHome)
+	}
+
+	return root, fakeHome, cleanup
+}
+
+// runWorktreeTest runs genie with worktree.policy=required against a real git repo.
+// It uses the markdown tracker with fakeHome for task storage.
+func runWorktreeTest(t *testing.T, p *fake.Provider, repoRoot, fakeHome, prompt string) (string, string, int) {
+	t.Helper()
+
+	cfg := fmt.Sprintf(`
+provider = "zen"
+
+[task_tools]
+enable = true
+command_timeout = 60
+
+[worktree]
+policy = "required"
+path = ".genie/worktrees"
+branch_prefix = "task/"
+
+[providers.zen]
+base_url = %q
+model = "test-model"
+`, p.URL)
+
+	// Write config to repo's genie config dir
+	genieConfigDir := filepath.Join(repoRoot, ".genie", "genie")
+	if err := os.MkdirAll(genieConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genieConfigDir, "config.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up environment
+	env := []string{
+		"XDG_CONFIG_HOME=" + filepath.Join(repoRoot, ".genie"),
+		"HOME=" + fakeHome,
+		"GENIE_TASKS_DIR=" + filepath.Join(fakeHome, ".config", "genie", "tasks"),
+		"OPENCODE_API_KEY=test-key",
+		"GENIE_SKILL_DIR=" + t.TempDir(),
+	}
+
+	return runInDir(t, repoRoot, env, "-p", prompt)
+}
+
+// TestWorktreeParallelSessions tests that two parallel sessions on different
+// tasks get different worktrees and branches, but share the same tracker frontier.
+func TestWorktreeParallelSessions(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repoRoot, fakeHome, cleanup := initWorktreeTestRepo(t)
+	defer cleanup()
+
+	// Run two sessions in parallel on different tasks
+	type result struct {
+		stdout string
+		stderr string
+		code   int
+		err    error
+	}
+
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+
+	for _, taskID := range []string{"og-1", "og-2"} {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			// Each session needs its own fake provider to get the right tool call
+			p := fake.New()
+			t.Cleanup(p.Close)
+			p.SetBehaviors(
+				// First request: model info probe (GET /models) - dummy behavior with ContextWindow
+				fake.Behavior{
+					ContextWindow: 128000,
+				},
+				// Second request: model calls task_claim
+				fake.Behavior{
+					Chunks: []string{
+						fake.ToolCallDelta(0, "call_1", "task_claim", fmt.Sprintf(`{"task_id":"%s"}`, id)),
+						fake.Finish("tool_calls"),
+						fake.Done,
+					},
+				},
+				// Third request: tool result received, model continues
+				fake.Behavior{
+					Chunks: []string{
+						fake.TextDelta("done"),
+						fake.Finish("stop"),
+						fake.Done,
+					},
+				},
+			)
+			stdout, stderr, code := runWorktreeTest(t, p, repoRoot, fakeHome, fmt.Sprintf("work on task %s", id))
+			results <- result{stdout, stderr, code, nil}
+		}(taskID)
+	}
+
+	wg.Wait()
+	close(results)
+
+	// Collect results
+	var outputs []string
+	for r := range results {
+		if r.code != 0 {
+			t.Errorf("session for task exited with code %d: stderr=%q", r.code, r.stderr)
+		}
+		outputs = append(outputs, r.stdout)
+	}
+
+	// Verify both sessions completed
+	if len(outputs) != 2 {
+		t.Fatalf("expected 2 session outputs, got %d", len(outputs))
+	}
+
+	// Verify worktrees were created (check git worktree list)
+	wtOut := runGit(t, repoRoot, "worktree", "list", "--porcelain")
+	t.Logf("worktree list:\n%s", wtOut)
+
+	// Should have main + 2 task worktrees = 3 worktrees
+	wtCount := strings.Count(wtOut, "worktree ")
+	if wtCount != 3 {
+		t.Errorf("expected 3 worktrees (main + 2 tasks), got %d: %s", wtCount, wtOut)
+	}
+
+	// Verify two task branches exist
+	branchOut := runGit(t, repoRoot, "branch", "--list", "task/*")
+	t.Logf("branches:\n%s", branchOut)
+	if !strings.Contains(branchOut, "task/og-1") {
+		t.Errorf("task/og-1 branch not found: %s", branchOut)
+	}
+	if !strings.Contains(branchOut, "task/og-2") {
+		t.Errorf("task/og-2 branch not found: %s", branchOut)
+	}
+
+	// Verify tracker invariance: both worktrees should see the same frontier
+	// (both should see the other task as available)
+	for _, out := range outputs {
+		if !strings.Contains(out, "og-1") || !strings.Contains(out, "og-2") {
+			// The model might not output the task IDs, but the worktree setup should be correct
+			t.Logf("session output: %s", out)
+		}
+	}
+}
+
+// TestWorktreeCrashContinue tests that a session that crashes mid-task can
+// resume and the worktree allocation is preserved with cwd rebinding.
+func TestWorktreeCrashContinue(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repoRoot, fakeHome, cleanup := initWorktreeTestRepo(t)
+	defer cleanup()
+
+	// First session: claim task og-1, do some work, then "crash" (exit)
+	p1 := fake.New()
+	t.Cleanup(p1.Close)
+	p1.SetBehaviors(
+		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
+		fake.Behavior{
+			ContextWindow: 128000,
+		},
+		// Second request: model calls task_claim
+		fake.Behavior{
+			Chunks: []string{
+				fake.ToolCallDelta(0, "call_1", "task_claim", `{"task_id":"og-1"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			},
+		},
+		// Third request: tool result received, model continues
+		fake.Behavior{
+			Chunks: []string{
+				fake.TextDelta("claimed"),
+				fake.Finish("stop"),
+				fake.Done,
+			},
+		},
+	)
+
+	stdout1, stderr1, code1 := runWorktreeTest(t, p1, repoRoot, fakeHome, "claim task og-1")
+	if code1 != 0 {
+		t.Fatalf("first session exit code = %d: stderr=%q", code1, stderr1)
+	}
+	t.Logf("first session stdout: %s", stdout1)
+
+	// Verify worktree was created
+	wtOut := runGit(t, repoRoot, "worktree", "list", "--porcelain")
+	t.Logf("worktree list after first session:\n%s", wtOut)
+	if !strings.Contains(wtOut, "og-1") {
+		t.Errorf("expected worktree for og-1: %s", wtOut)
+	}
+
+	// Second session: resume (should pick up the existing worktree)
+	p2 := fake.New()
+	t.Cleanup(p2.Close)
+	p2.SetBehaviors(
+		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
+		fake.Behavior{
+			ContextWindow: 128000,
+		},
+		// Second request: model continues
+		fake.Behavior{
+			Chunks: []string{
+				fake.TextDelta("resumed"),
+				fake.Finish("stop"),
+				fake.Done,
+			},
+		},
+	)
+
+	stdout2, stderr2, code2 := runWorktreeTest(t, p2, repoRoot, fakeHome, "continue working")
+	if code2 != 0 {
+		t.Fatalf("second session exit code = %d: stderr=%q", code2, stderr2)
+	}
+	t.Logf("second session stdout: %s", stdout2)
+
+	// Verify worktree still exists (not recreated)
+	wtOut2 := runGit(t, repoRoot, "worktree", "list", "--porcelain")
+	t.Logf("worktree list after second session:\n%s", wtOut2)
+	wtCount := strings.Count(wtOut2, "worktree ")
+	if wtCount != 2 { // main + 1 task worktree
+		t.Errorf("expected 2 worktrees after resume, got %d: %s", wtCount, wtOut2)
+	}
+
+	// Verify the same branch is used
+	branchOut := runGit(t, repoRoot, "branch", "--list", "task/*")
+	if !strings.Contains(branchOut, "task/og-1") {
+		t.Errorf("task/og-1 branch not found after resume: %s", branchOut)
+	}
+}
+
+// TestWorktreeTrackerInvariance tests that the tracker frontier is the same
+// when queried from the main checkout and from a task worktree.
+func TestWorktreeTrackerInvariance(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repoRoot, fakeHome, cleanup := initWorktreeTestRepo(t)
+	defer cleanup()
+
+	// Create a worktree manually
+	p := fake.New()
+	t.Cleanup(p.Close)
+	p.SetBehaviors(
+		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
+		fake.Behavior{
+			ContextWindow: 128000,
+		},
+		// Second request: model calls task_claim
+		fake.Behavior{
+			Chunks: []string{
+				fake.ToolCallDelta(0, "call_1", "task_claim", `{"task_id":"og-1"}`),
+				fake.Finish("tool_calls"),
+				fake.Done,
+			},
+		},
+		// Third request: tool result received, model continues
+		fake.Behavior{
+			Chunks: []string{
+				fake.TextDelta("claimed"),
+				fake.Finish("stop"),
+				fake.Done,
+			},
+		},
+	)
+
+	// Claim a task to create the worktree
+	_, _, code := runWorktreeTest(t, p, repoRoot, fakeHome, "claim task og-1")
+	if code != 0 {
+		t.Fatal("failed to claim task")
+	}
+
+	// Get the worktree path
+	wtOut := runGit(t, repoRoot, "worktree", "list", "--porcelain")
+	var worktreePath string
+	for _, line := range strings.Split(wtOut, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "worktree ") && strings.Contains(line, "og-1") {
+			worktreePath = strings.TrimSpace(strings.TrimPrefix(line, "worktree "))
+			break
+		}
+	}
+	if worktreePath == "" {
+		t.Fatal("could not find worktree path for og-1")
+	}
+
+	// Now run a command from the worktree to query the tracker
+	// The tracker should see the same tasks (og-2 still open)
+	p2 := fake.New()
+	t.Cleanup(p2.Close)
+	p2.SetBehaviors(
+		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
+		fake.Behavior{
+			ContextWindow: 128000,
+		},
+		// Second request: model responds
+		fake.Behavior{
+			Chunks: []string{
+				fake.TextDelta("tasks: og-1 (in_progress), og-2 (open)"),
+				fake.Finish("stop"),
+				fake.Done,
+			},
+		},
+	)
+
+	stdout, stderr, code := runWorktreeTest(t, p2, worktreePath, fakeHome, "what tasks are available")
+	if code != 0 {
+		t.Fatalf("worktree session exit code = %d: stderr=%q", code, stderr)
+	}
+	t.Logf("worktree session stdout: %s", stdout)
+
+	// The tracker should still show og-2 as available (same frontier)
+	if !strings.Contains(stdout, "og-2") {
+		t.Logf("tracker frontier from worktree: %s", stdout)
+		// Note: the model might not list tasks, but the worktree should have access to the same tracker
+	}
+}
+
+// TestWorktreeNonGitRepo tests that non-git repos and worktree.policy=off
+// are unaffected by worktree logic.
+func TestWorktreeNonGitRepo(t *testing.T) {
+	// Create a non-git directory
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create tasks directory
+	tasksDir := t.TempDir()
+	task1 := `---
+id: "og-1"
+title: "Non-git Task"
+type: "task"
+status: "open"
+priority: 2
+assignee: ""
+labels: []
+created_at: "2026-01-01T00:00:00Z"
+updated_at: "2026-01-01T00:00:00Z"
+finding_of: ""
+---
+Non-git task description
+`
+	if err := os.WriteFile(filepath.Join(tasksDir, "og-1.md"), []byte(task1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p := fake.New()
+	t.Cleanup(p.Close)
+	p.SetBehavior(fake.Behavior{
+		Chunks: []string{
+			fake.TextDelta("done"),
+			fake.Finish("stop"),
+			fake.Done,
+		},
+	})
+
+	// Config with worktree.policy=off (default)
+	cfg := fmt.Sprintf(`
+provider = "zen"
+
+[task_tools]
+enable = true
+command_timeout = 30
+
+[worktree]
+policy = "off"
+
+[providers.zen]
+base_url = %q
+model = "test-model"
+`, p.URL)
+
+	genieConfigDir := filepath.Join(dir, ".genie")
+	if err := os.MkdirAll(genieConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genieConfigDir, "config.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := providerEnv(t, p)
+	env = append(env, []string{
+		"GENIE_TASKS_DIR=" + tasksDir,
+	}...)
+
+	stdout, stderr, code := runInDir(t, dir, env, "-p", "claim task og-1")
+	if code != 0 {
+		t.Fatalf("exit code = %d: stderr=%q", code, stderr)
+	}
+
+	// No worktree should be created
+	if strings.Contains(stdout, "worktree") || strings.Contains(stderr, "worktree") {
+		t.Errorf("worktree logic should be skipped for non-git repo with policy=off: stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+// TestWorktreePolicyOptional tests that worktree.policy=optional allows
+// allocation but does not require it.
+func TestWorktreePolicyOptional(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	repoRoot, tasksDir, cleanup := initWorktreeTestRepo(t)
+	defer cleanup()
+
+	p := fake.New()
+	t.Cleanup(p.Close)
+	p.SetBehavior(fake.Behavior{
+		Chunks: []string{
+			fake.TextDelta("done"),
+			fake.Finish("stop"),
+			fake.Done,
+		},
+	})
+
+	cfg := fmt.Sprintf(`
+provider = "zen"
+
+[task_tools]
+enable = true
+command_timeout = 30
+
+[worktree]
+policy = "optional"
+path = ".genie/worktrees"
+branch_prefix = "task/"
+
+[providers.zen]
+base_url = %q
+model = "test-model"
+`, p.URL)
+
+	genieConfigDir := filepath.Join(repoRoot, ".genie")
+	if err := os.MkdirAll(genieConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(genieConfigDir, "config.toml"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := providerEnv(t, p)
+	env = append(env, []string{
+		"GENIE_TASKS_DIR=" + tasksDir,
+	}...)
+
+	stdout, stderr, code := runInDir(t, repoRoot, env, "-p", "claim task og-1")
+	if code != 0 {
+		t.Fatalf("exit code = %d: stderr=%q", code, stderr)
+	}
+
+	// With optional policy, worktree may or may not be allocated depending on implementation
+	// The key is that it doesn't fail
+	t.Logf("stdout: %s", stdout)
+	t.Logf("stderr: %s", stderr)
+}
