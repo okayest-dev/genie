@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -1069,4 +1070,160 @@ func printLoopReport(out io.Writer, report loop.LoopReport) {
 	} else if report.FrontierEmpty {
 		fmt.Fprintln(out, "\n[Loop stopped: frontier empty]")
 	}
+}
+
+// handleNew handles the /new command with optional flags and prompt.
+// /new [--agent <name>] [--model <id>] [--handoff [<path>]] [<prompt>]
+func handleNew(ctx context.Context, args string, cfg *Config) error {
+	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+
+	// Parse flags and prompt
+	agentName := ""
+	modelID := ""
+	handoffPath := ""
+	handoffAuto := false
+	prompt := ""
+
+	// Parse flags manually since we need to handle the prompt which can contain dashes
+	tokens := strings.Fields(args)
+	for i := 0; i < len(tokens); i++ {
+		tok := tokens[i]
+		switch tok {
+		case "--agent":
+			if i+1 >= len(tokens) {
+				return fmt.Errorf("--agent requires a name")
+			}
+			agentName = tokens[i+1]
+			if strings.HasPrefix(agentName, "@") {
+				return fmt.Errorf("use bare name for persistent agent switch (e.g. --agent spec-auth-flow); use @name <prompt> for one-shot")
+			}
+			i++
+		case "--model":
+			if i+1 >= len(tokens) {
+				return fmt.Errorf("--model requires an id")
+			}
+			modelID = tokens[i+1]
+			i++
+		case "--handoff":
+			if i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
+				handoffPath = tokens[i+1]
+				i++
+			} else {
+				handoffAuto = true
+			}
+		default:
+			// First non-flag token starts the prompt
+			prompt = strings.Join(tokens[i:], " ")
+			break
+		}
+	}
+
+	// Resolve handoff brief if requested
+	var handoffBrief string
+	if handoffAuto || handoffPath != "" {
+		var briefPath string
+		if handoffAuto {
+			// Find newest brief-N.md in current session directory
+			sessDir := filepath.Join(cfg.Cfg.SessionDir, cfg.Run.Session().ID)
+			matches, err := filepath.Glob(filepath.Join(sessDir, "brief-*.md"))
+			if err != nil || len(matches) == 0 {
+				return fmt.Errorf("no brief files found in %s (expected brief-N.md)", sessDir)
+			}
+			// Sort to get newest (by name: brief-1.md, brief-2.md, etc.)
+			sort.Strings(matches)
+			briefPath = matches[len(matches)-1]
+		} else {
+			briefPath = handoffPath
+		}
+		content, err := os.ReadFile(briefPath)
+		if err != nil {
+			return fmt.Errorf("read brief %s: %w", briefPath, err)
+		}
+		handoffBrief = string(content)
+		// Print the prepended brief to stdout so user sees what ships
+		slashOut = cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+		fmt.Fprintln(slashOut, "--- Handoff brief ---")
+		fmt.Fprint(slashOut, handoffBrief)
+		fmt.Fprintln(slashOut, "---")
+	}
+
+	// Resolve agent if requested (validate before creating new session)
+	if agentName != "" {
+		if _, err := cfg.Run.SwitchAgent(agentName); err != nil {
+			return fmt.Errorf("agent %q: %w", agentName, err)
+		}
+	}
+
+	// Resolve model if requested
+	if modelID != "" {
+		// Validate model exists in current provider's catalog
+		currentProvider := cfg.Run.Provider()
+		if currentProvider == "" {
+			return errors.New("no provider selected")
+		}
+		providers := cfg.Cfg.Providers
+		providerConfig, ok := providers[currentProvider]
+		if !ok {
+			return fmt.Errorf("provider %q not configured", currentProvider)
+		}
+		found := false
+		for _, m := range providerConfig.Models {
+			if m == modelID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("no such model: %s (available: %s)", modelID, strings.Join(providerConfig.Models, ", "))
+		}
+	}
+
+	// All validation passed, now create new session
+	sess, err := cfg.Run.NewSession()
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+
+	// Apply agent and model to the new session
+	if agentName != "" {
+		if _, err := cfg.Run.SwitchAgent(agentName); err != nil {
+			return fmt.Errorf("apply agent: %w", err)
+		}
+	}
+	if modelID != "" {
+		cfg.Run.SetModel(modelID)
+	}
+
+	// Build the full prompt (handoff brief + user prompt)
+	fullPrompt := ""
+	if handoffBrief != "" {
+		fullPrompt = handoffBrief + "\n\n---\n\n" + prompt
+	} else {
+		fullPrompt = prompt
+	}
+
+	// Print session info
+	slashOut = cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
+	reportParts := []string{fmt.Sprintf("new session: %s", sess.ID)}
+	if agentName != "" {
+		reportParts = append(reportParts, fmt.Sprintf("agent %s", agentName))
+	}
+	if modelID != "" {
+		reportParts = append(reportParts, fmt.Sprintf("model %s", modelID))
+	}
+	if handoffAuto || handoffPath != "" {
+		briefName := "brief (newest)"
+		if handoffPath != "" {
+			briefName = filepath.Base(handoffPath)
+		}
+		reportParts = append(reportParts, fmt.Sprintf("brief %s", briefName))
+	}
+	fmt.Fprintln(slashOut, strings.Join(reportParts, ", "))
+
+	// If prompt provided, run it as first turn
+	if fullPrompt != "" {
+		err = cfg.Run.Turn(ctx, fullPrompt, cfg.Stdout, cfg.Stderr)
+	}
+
+	return nil
 }
