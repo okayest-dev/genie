@@ -48,8 +48,12 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 	payload := map[string]any{
 		"model":      req.Model,
 		"messages":   messagesToWire(messages),
-		"max_tokens": 4096,
 		"stream":     true,
+	}
+	if req.MaxOutputTokens > 0 {
+		payload["max_tokens"] = req.MaxOutputTokens
+	} else {
+		payload["max_tokens"] = 4096
 	}
 	if system != "" {
 		payload["system"] = system

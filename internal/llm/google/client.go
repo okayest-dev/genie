@@ -46,11 +46,15 @@ func NewClient(baseURL, apiKey string) *Client {
 // normalized event stream. Open failures surface as the returned error;
 // mid-stream failures surface as a terminal error event.
 func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Event], error) {
-	payload, err := json.Marshal(map[string]any{
+	payloadMap := map[string]any{
 		"contents":          contentsToWire(req.Messages),
 		"systemInstruction": systemInstructionToWire(req.Messages),
 		"tools":             toolsToWire(req.Tools),
-	})
+	}
+	if req.MaxOutputTokens > 0 {
+		payloadMap["generationConfig"] = map[string]any{"maxOutputTokens": req.MaxOutputTokens}
+	}
+	payload, err := json.Marshal(payloadMap)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}

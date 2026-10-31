@@ -1006,6 +1006,14 @@ func (h *Handle) Turn(ctx context.Context, prompt string, out, errOut io.Writer)
 		opts = append(opts, agent.WithToolFrame(h.opts.Theme.RoleWriter(errOut, h.opts.StderrProfile, "tool")))
 	}
 
+	// Add auto-continue and max_output_tokens from config.
+	if h.opts.Config.Context.AutoContinue {
+		opts = append(opts, agent.WithAutoContinue(h.opts.Config.Context.MaxContinuations))
+	}
+	if h.opts.Config.Context.MaxOutputTokens > 0 {
+		opts = append(opts, agent.WithMaxOutputTokens(h.opts.Config.Context.MaxOutputTokens))
+	}
+
 	instruction, ierr := h.resolveInstruction(cur.agent)
 	if ierr != nil {
 		slog.Error("failed to resolve instruction", "error", ierr)

@@ -317,9 +317,11 @@ func (m *ContextManager) builtInCondenseActive() bool {
 // active registrant (and the ContextManager owns that side of the seam), the
 // seam's plugin implementation otherwise. It returns the rewritten request and
 // the per-message source-line index slice kept aligned with it.
+// If req.ForceCompact is true, compaction is forced even under budget.
 func (m *ContextManager) compactStep(ctx context.Context, req llm.Request, sources []int) (llm.Request, []int) {
+	forceCompact := req.ForceCompact
 	if m.builtInCompactActive() {
-		return m.builtinCompact(ctx, req, sources)
+		return m.builtinCompact(ctx, req, sources, forceCompact)
 	}
 	return m.runChain(ctx, req, "compact", func(r llm.Request) (llm.Request, error) {
 		return m.hooks.Compact(ctx, r)
@@ -508,16 +510,18 @@ func (m *ContextManager) currentTurnStart() int {
 // turns ride with them. Instruction and (surviving) tool-output layers are
 // untouched. Compaction is synchronous, runs within Stream, and is best-effort:
 // when no older intent remains it proceeds as assembled.
-func (m *ContextManager) builtinCompact(ctx context.Context, req llm.Request, sources []int) (llm.Request, []int) {
+// forceCompact forces compaction even when under budget (used for length-end
+// continuation to free output headroom).
+func (m *ContextManager) builtinCompact(ctx context.Context, req llm.Request, sources []int, forceCompact bool) (llm.Request, []int) {
 	if m.counter == nil || m.resolver == nil {
 		return req, sources
 	}
 	budget := m.resolver.Budget(ctx, req.Model)
-	if budget <= 0 {
+	if budget <= 0 && !forceCompact {
 		return req, sources
 	}
 	total := m.countRequest(req, sources)
-	if total <= budget {
+	if total <= budget && !forceCompact {
 		return req, sources
 	}
 

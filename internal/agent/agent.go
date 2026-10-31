@@ -20,14 +20,23 @@ import (
 	"github.com/okayest-dev/genie/internal/tools"
 )
 
+// continuationPreamble is the pinned user message sent on a continuation
+// request. It must explicitly address repeat/restate/apologise failure modes
+// to keep the verbatim splice clean (decision 11).
+const continuationPreamble = `Your previous reply was cut off by the output token limit at the exact point below. Continue from that point. Do not repeat any text already written, do not restate or summarise what came before, and do not add a preamble. Begin immediately with the next characters.`
+
 // Option configures a RunTurn call.
 type Option func(*turnOptions)
 
 type turnOptions struct {
-	agentName string
-	hooks     Hooks
-	gate      *permissions.Gate
-	toolFrame io.Writer
+	agentName         string
+	hooks             Hooks
+	gate              *permissions.Gate
+	toolFrame         io.Writer
+	autoContinue      bool
+	maxContinuations  int
+	maxOutputTokens   int
+	forceCompact      bool
 }
 
 // WithAgentName attaches an agent name to the user message in the session log.
@@ -52,6 +61,22 @@ func WithPermissions(g *permissions.Gate) Option {
 // package). Nil disables it.
 func WithHooks(h Hooks) Option {
 	return func(o *turnOptions) { o.hooks = h }
+}
+
+// WithAutoContinue enables automatic continuation on FinishLength with the
+// given max continuations (additional attempts).
+func WithAutoContinue(maxContinuations int) Option {
+	return func(o *turnOptions) { o.autoContinue = true; o.maxContinuations = maxContinuations }
+}
+
+// WithMaxOutputTokens sets the per-request output token cap (0 = wire default).
+func WithMaxOutputTokens(n int) Option {
+	return func(o *turnOptions) { o.maxOutputTokens = n }
+}
+
+// WithForceCompact forces compaction on the next request.
+func WithForceCompact() Option {
+	return func(o *turnOptions) { o.forceCompact = true }
 }
 
 // Hooks is the lifecycle-hooks seam interface the agent loop invokes around a
@@ -118,6 +143,7 @@ func NewFatalHookError(plugin, event string, cause error) *FatalHookError {
 // the current turn, stream the reply, and when the model returns tool calls,
 // execute them serially and feed results back. instruction is the assembled
 // agent instruction. out receives text deltas; errOut
+// receives tool framing headers. If sess is non-nil, the conversation is
 // receives tool framing headers. If sess is non-nil, the conversation is
 // persisted. If registry is nil, no tools are sent and tool calls are not
 // processed. If ldg is non-nil, file mutations are captured in the change
@@ -186,12 +212,19 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 
 	// Track whether we've retried without tools to avoid infinite loops.
 	retriedNoTools := false
-	// Track length-finish retries to avoid infinite continuation loops.
-	retriedLength := false
 	// Track context-overflow retries to avoid infinite loops.
 	retriedOverflow := false
+	// Track continuation attempts for auto-continue on FinishLength.
+	continuationAttempts := 0
+	// partial holds the truncated reply during continuation; reset per attempt.
+	var partial string
 
 	for {
+		// Inject transient messages (e.g. continuation preamble) for this request.
+		if len(req.TransientMessages) > 0 {
+			req.Messages = append(req.Messages, req.TransientMessages...)
+			req.TransientMessages = nil
+		}
 		stream, err := c.Stream(ctx, req)
 		if err != nil {
 			// Check for invalid_request on tools array — retry without tools.
@@ -280,10 +313,12 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 		// request messages so the model sees its own prior response on the next
 		// iteration.
 		var assistantMsg llm.Message
-		if reply.Len() > 0 {
+		if reply.Len() > 0 || partial != "" {
+			// Verbatim splice: merge partial (from continuation) with current reply.
+			content := partial + reply.String()
 			assistantMsg = llm.Message{
 				Role:    llm.RoleAssistant,
-				Content: reply.String(),
+				Content: content,
 			}
 			if len(toolCalls) > 0 {
 				assistantMsg.ToolCalls = toolCalls
@@ -293,6 +328,8 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 					return llm.Usage{}, err
 				}
 			}
+			// Clear partial after successful splice.
+			partial = ""
 		} else if len(toolCalls) > 0 {
 			assistantMsg = llm.Message{
 				Role:      llm.RoleAssistant,
@@ -310,33 +347,57 @@ func RunTurn(ctx context.Context, c llm.Client, model, instruction, prompt strin
 
 		// No tool calls — turn is complete.
 		if len(toolCalls) == 0 {
-			// If the model was cut off due to max completion tokens, retry with a
-			// continuation prompt instead of ending the session silently.
-			if finishReason == llm.FinishLength && !retriedLength {
-				retriedLength = true
+			// If the model was cut off due to max completion tokens and auto-continue
+			// is enabled, retry with a continuation prompt instead of ending the
+			// session silently. Suppress fenced tool calls on a length-end.
+			if finishReason == llm.FinishLength && to.autoContinue && continuationAttempts < to.maxContinuations {
+				continuationAttempts++
 				slog.Info("turn truncated by max tokens, requesting continuation",
+					"attempt", continuationAttempts,
+					"max_continuations", to.maxContinuations,
 					"completion_tokens", usage.CompletionTokens,
 				)
 				// Surface a clear message to the user about the truncation.
 				if errOut != nil {
-					fmt.Fprintf(errOut, "⚠ Response truncated (max tokens reached). Requesting continuation...\n")
+					fmt.Fprintf(errOut, "⚠ Response truncated (max tokens reached). Continuation attempt %d/%d...\n", continuationAttempts, to.maxContinuations)
 				}
-				// Add a user message asking the model to continue.
-				req.Messages = append(req.Messages, llm.Message{
-					Role:    llm.RoleUser,
-					Content: "Your previous response was cut off due to the token limit. Please continue from where you left off.",
-				})
-				if sess != nil {
-					if err := sess.Append(llm.Message{
-						Role:    llm.RoleUser,
-						Content: "Your previous response was cut off due to the token limit. Please continue from where you left off.",
-					}); err != nil {
-						return llm.Usage{}, err
-					}
+				// Save the partial reply for verbatim splice on success.
+				partial = reply.String()
+				// Add the continuation preamble as a transient user message.
+				req.TransientMessages = []llm.Message{
+					{Role: llm.RoleUser, Content: continuationPreamble},
 				}
+				// Force compaction on the continuation request to free headroom.
+				req.ForceCompact = true
+				// Disable tools for the continuation request (decision 2).
+				req.Tools = nil
 				// Reset reply for the continuation response.
 				reply.Reset()
 				continue
+			}
+
+			// Give-up: auto-continue disabled or attempts exhausted.
+			// Persist the partial verbatim with no marker (decision 10).
+			if finishReason == llm.FinishLength && partial != "" {
+				slog.Info("auto-continue give-up, persisting partial reply",
+					"attempts", continuationAttempts,
+					"max_continuations", to.maxContinuations,
+				)
+				if errOut != nil {
+					fmt.Fprintf(errOut, "⚠ Response truncated (max tokens reached). Auto-continue exhausted after %d attempt(s).\n", continuationAttempts)
+				}
+				// Persist the partial as the final assistant message.
+				if partial != "" {
+					assistantMsg := llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: partial,
+					}
+					if sess != nil {
+						if err := sess.Append(assistantMsg); err != nil {
+							return llm.Usage{}, err
+						}
+					}
+				}
 			}
 
 			// response_ready final release: exposes the finish reason + usage the

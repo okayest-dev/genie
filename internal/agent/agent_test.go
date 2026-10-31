@@ -407,7 +407,8 @@ func TestRunTurnFinishLengthRetries(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	if _, err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, nil, nil, ""); err != nil {
+	if _, err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, nil, nil, "",
+		WithAutoContinue(2)); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 
@@ -513,7 +514,8 @@ func TestRunTurnFinishLengthMaxRetries(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	if _, err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, nil, nil, ""); err != nil {
+	if _, err := RunTurn(context.Background(), mock, "m", "sys", "hi", &out, &errOut, nil, nil, nil, "",
+		WithAutoContinue(1)); err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
 

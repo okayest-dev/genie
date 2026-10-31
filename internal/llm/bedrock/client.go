@@ -114,9 +114,13 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 
 	system, msgs := extractSystem(req.Messages)
 	input := &bedrockruntime.ConverseStreamInput{
-		ModelId:         aws.String(req.Model),
-		Messages:        messagesToWire(msgs),
-		InferenceConfig: &types.InferenceConfiguration{MaxTokens: aws.Int32(4096)},
+		ModelId:  aws.String(req.Model),
+		Messages: messagesToWire(msgs),
+	}
+	if req.MaxOutputTokens > 0 {
+		input.InferenceConfig = &types.InferenceConfiguration{MaxTokens: aws.Int32(int32(req.MaxOutputTokens))}
+	} else {
+		input.InferenceConfig = &types.InferenceConfiguration{MaxTokens: aws.Int32(4096)}
 	}
 	if system != "" {
 		input.System = []types.SystemContentBlock{

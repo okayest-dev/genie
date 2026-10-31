@@ -25,9 +25,19 @@ type Client interface {
 
 // Request is a chat/completions-style request in canonical form.
 type Request struct {
-	Model    string
-	Messages []Message
-	Tools    []ToolDef
+	Model              string
+	Messages           []Message
+	Tools              []ToolDef
+	// MaxOutputTokens is a per-request output token cap. 0 means use the
+	// wire's default behaviour. When set, it overrides the wire's default
+	// and is sent to the provider as max_tokens/max_output_tokens.
+	MaxOutputTokens int
+	// TransientMessages are extra messages injected for this request only
+	// (e.g. continuation preamble). They are not persisted to the transcript.
+	TransientMessages []Message
+	// ForceCompact forces a compaction pass before this request is sent.
+	// Used when a turn is truncated by max tokens and needs a continuation.
+	ForceCompact bool
 }
 
 // ToolDef describes one tool the model may call. Parameters is the JSON

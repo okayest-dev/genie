@@ -162,6 +162,20 @@ type Context struct {
 	// that model writes both. The value must name a model in the active
 	// provider's catalog.
 	SummaryModel string
+	// MaxOutputTokens is the global output token cap sent to every wire.
+	// 0 preserves each wire's current behaviour (anthropic/bedrock keep their
+	// 4096 fallback; openai, responses, google, copilot send no cap).
+	// Set means every wire gets this cap. Provider 400s on the cap retry once
+	// with the cap dropped before the tools fallback.
+	MaxOutputTokens int
+	// AutoContinue enables automatic continuation when a turn ends with
+	// FinishLength and no native tool calls. The continuation request uses a
+	// pinned preamble, disables tools, and runs max_continuations additional
+	// attempts. On give-up, the partial reply is persisted verbatim.
+	AutoContinue bool
+	// MaxContinuations is the number of *additional* continuation attempts
+	// after the initial truncated response. Default 2 means 3 total requests.
+	MaxContinuations int
 }
 
 // Lifecycle holds the lifecycle-hooks plugin seam knobs (og-cbu.3/og-cbu.4).
@@ -441,6 +455,9 @@ type contextFile struct {
 	CondenseSize        *int               `toml:"condense_size"`
 	NetDrop             *bool              `toml:"net_drop"`
 	SummaryModel        string             `toml:"summary_model"`
+	MaxOutputTokens     *int               `toml:"max_output_tokens"`
+	AutoContinue        *bool              `toml:"auto_continue"`
+	MaxContinuations    *int               `toml:"max_continuations"`
 }
 
 type contextPluginsFile struct {
@@ -577,6 +594,21 @@ func Parse(file []byte, userConfigDir string, env map[string]string) (*Config, e
 		if fc.Context.SummaryModel != "" {
 			cfg.Context.SummaryModel = fc.Context.SummaryModel
 		}
+		if fc.Context.MaxOutputTokens != nil {
+			if *fc.Context.MaxOutputTokens < 0 {
+				return nil, fmt.Errorf("config: context.max_output_tokens must be non-negative, got %d", *fc.Context.MaxOutputTokens)
+			}
+			cfg.Context.MaxOutputTokens = *fc.Context.MaxOutputTokens
+		}
+		if fc.Context.AutoContinue != nil {
+			cfg.Context.AutoContinue = *fc.Context.AutoContinue
+		}
+		if fc.Context.MaxContinuations != nil {
+			if *fc.Context.MaxContinuations < 0 {
+				return nil, fmt.Errorf("config: context.max_continuations must be non-negative, got %d", *fc.Context.MaxContinuations)
+			}
+			cfg.Context.MaxContinuations = *fc.Context.MaxContinuations
+		}
 		if len(fc.Providers) > 0 {
 			applyProviders(&cfg, fc.Providers)
 		}
@@ -666,7 +698,7 @@ func defaults(userConfigDir string) Config {
 		Tools:       Tools{Read: true, Write: true, Edit: true, Bash: true, Code: true, CodeTimeout: 30 * time.Second},
 		PluginDir:   filepath.Join(userConfigDir, "genie", "plugins"),
 		Skills:      Skills{Dirs: defaultSkillDirs(userConfigDir)},
-		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent},
+		Context:     Context{BudgetPercent: modelinfo.DefaultBudgetPercent, AutoContinue: true, MaxContinuations: 2},
 		Hooks:       Hooks{FailureThreshold: defaultHookFailureThreshold, Recovery: defaultHookRecovery},
 		Permissions: Permissions{Base: map[string][]string{"read": {"."}}},
 		TaskTools:   tasktools.DefaultTaskToolsConfig(),
@@ -1048,6 +1080,36 @@ func applyEnv(cfg *Config, env map[string]string) ([]string, error) {
 	if v := env["GENIE_CONTEXT_SUMMARY_MODEL"]; v != "" {
 		cfg.Context.SummaryModel = v
 		applied = append(applied, "GENIE_CONTEXT_SUMMARY_MODEL")
+	}
+	if v := env["GENIE_CONTEXT_MAX_OUTPUT_TOKENS"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_MAX_OUTPUT_TOKENS: %q is not a number", v)
+		}
+		if n < 0 {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_MAX_OUTPUT_TOKENS must be non-negative, got %d", n)
+		}
+		cfg.Context.MaxOutputTokens = n
+		applied = append(applied, "GENIE_CONTEXT_MAX_OUTPUT_TOKENS")
+	}
+	if v := env["GENIE_CONTEXT_AUTO_CONTINUE"]; v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_AUTO_CONTINUE: %q is not a boolean", v)
+		}
+		cfg.Context.AutoContinue = b
+		applied = append(applied, "GENIE_CONTEXT_AUTO_CONTINUE")
+	}
+	if v := env["GENIE_CONTEXT_MAX_CONTINUATIONS"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_MAX_CONTINUATIONS: %q is not a number", v)
+		}
+		if n < 0 {
+			return nil, fmt.Errorf("config: GENIE_CONTEXT_MAX_CONTINUATIONS must be non-negative, got %d", n)
+		}
+		cfg.Context.MaxContinuations = n
+		applied = append(applied, "GENIE_CONTEXT_MAX_CONTINUATIONS")
 	}
 	if v := env["GENIE_THEME"]; v != "" {
 		cfg.Theme = v

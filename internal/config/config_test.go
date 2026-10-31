@@ -1542,3 +1542,136 @@ func TestDefaultWindowTokensEnvOverridesFile(t *testing.T) {
 		t.Errorf("Context.DefaultWindowTokens = %d, want 100000", cfg.Context.DefaultWindowTokens)
 	}
 }
+
+// TestContextMaxOutputTokensDefault verifies the default value.
+func TestContextMaxOutputTokensDefault(t *testing.T) {
+	cfg, err := Parse([]byte(""), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.MaxOutputTokens != 0 {
+		t.Errorf("Context.MaxOutputTokens = %d, want 0 by default", cfg.Context.MaxOutputTokens)
+	}
+}
+
+// TestContextMaxOutputTokensFromFile verifies parsing from config file.
+func TestContextMaxOutputTokensFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nmax_output_tokens = 8192\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.MaxOutputTokens != 8192 {
+		t.Errorf("Context.MaxOutputTokens = %d, want 8192", cfg.Context.MaxOutputTokens)
+	}
+}
+
+// TestContextMaxOutputTokensMustBeNonNegative verifies validation rejects negative values.
+func TestContextMaxOutputTokensMustBeNonNegative(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+	}{
+		{name: "file negative", file: "[context]\nmax_output_tokens = -5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", nil)
+			if err == nil {
+				t.Fatalf("Parse accepted %q; want an error for a negative max_output_tokens", tc.file)
+			}
+		})
+	}
+}
+
+// TestContextMaxOutputTokensEnvOverridesFile verifies env var override works.
+func TestContextMaxOutputTokensEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nmax_output_tokens = 4096\n"), "/home/u", env("GENIE_CONTEXT_MAX_OUTPUT_TOKENS", "2048"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.MaxOutputTokens != 2048 {
+		t.Errorf("Context.MaxOutputTokens = %d, want 2048 (env overrides file)", cfg.Context.MaxOutputTokens)
+	}
+}
+
+// TestContextAutoContinueDefault verifies the default value.
+func TestContextAutoContinueDefault(t *testing.T) {
+	cfg, err := Parse([]byte(""), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !cfg.Context.AutoContinue {
+		t.Errorf("Context.AutoContinue = %v, want true by default", cfg.Context.AutoContinue)
+	}
+}
+
+// TestContextAutoContinueFromFile verifies parsing from config file.
+func TestContextAutoContinueFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nauto_continue = false\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.AutoContinue {
+		t.Errorf("Context.AutoContinue = %v, want false", cfg.Context.AutoContinue)
+	}
+}
+
+// TestContextAutoContinueEnvOverridesFile verifies env var override works.
+func TestContextAutoContinueEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nauto_continue = true\n"), "/home/u", env("GENIE_CONTEXT_AUTO_CONTINUE", "false"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.AutoContinue {
+		t.Errorf("Context.AutoContinue = %v, want false (env overrides file)", cfg.Context.AutoContinue)
+	}
+}
+
+// TestContextMaxContinuationsDefault verifies the default value.
+func TestContextMaxContinuationsDefault(t *testing.T) {
+	cfg, err := Parse([]byte(""), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.MaxContinuations != 2 {
+		t.Errorf("Context.MaxContinuations = %d, want 2 by default", cfg.Context.MaxContinuations)
+	}
+}
+
+// TestContextMaxContinuationsFromFile verifies parsing from config file.
+func TestContextMaxContinuationsFromFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nmax_continuations = 5\n"), "/home/u", nil)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.MaxContinuations != 5 {
+		t.Errorf("Context.MaxContinuations = %d, want 5", cfg.Context.MaxContinuations)
+	}
+}
+
+// TestContextMaxContinuationsMustBeNonNegative verifies validation rejects negative values.
+func TestContextMaxContinuationsMustBeNonNegative(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+	}{
+		{name: "file negative", file: "[context]\nmax_continuations = -1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.file), "/home/u", nil)
+			if err == nil {
+				t.Fatalf("Parse accepted %q; want an error for a negative max_continuations", tc.file)
+			}
+		})
+	}
+}
+
+// TestContextMaxContinuationsEnvOverridesFile verifies env var override works.
+func TestContextMaxContinuationsEnvOverridesFile(t *testing.T) {
+	cfg, err := Parse([]byte("[context]\nmax_continuations = 3\n"), "/home/u", env("GENIE_CONTEXT_MAX_CONTINUATIONS", "4"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Context.MaxContinuations != 4 {
+		t.Errorf("Context.MaxContinuations = %d, want 4 (env overrides file)", cfg.Context.MaxContinuations)
+	}
+}

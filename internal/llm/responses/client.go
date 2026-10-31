@@ -44,7 +44,7 @@ func NewClient(baseURL, apiKey string) *Client {
 // stream. Open failures (auth, 404, network down) surface as the returned
 // error; mid-stream failures surface as a terminal error event.
 func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Event], error) {
-	payload, err := json.Marshal(map[string]any{
+	payloadMap := map[string]any{
 		"model":               req.Model,
 		"input":               inputToWire(req.Messages),
 		"instructions":        instructionsToWire(req.Messages),
@@ -52,7 +52,11 @@ func (c *Client) Stream(ctx context.Context, req llm.Request) (iter.Seq[llm.Even
 		"stream":              true,
 		"tool_choice":         "auto",
 		"parallel_tool_calls": false,
-	})
+	}
+	if req.MaxOutputTokens > 0 {
+		payloadMap["max_output_tokens"] = req.MaxOutputTokens
+	}
+	payload, err := json.Marshal(payloadMap)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
