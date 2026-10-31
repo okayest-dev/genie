@@ -314,9 +314,13 @@ func New(opts Options) (*Handle, error) {
 		reviewTool := tasktools.NewTaskReviewTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
 		full.Register(reviewTool)
 
-		// Session reset tool
+// Session reset tool
 		resetTool := tasktools.NewSessionResetTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout, h)
 		full.Register(resetTool)
+
+		// Slash command tools (agent-invocable slash commands)
+		RegisterSlashCommands(full, h)
+
 	}
 
 	if !opts.Config.Tools.Read {
