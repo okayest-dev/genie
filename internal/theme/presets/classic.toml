@@ -1,9 +1,9 @@
 version = "1"
 "$schema" = "https://genie.dev/schema/theme-v1.json"
 
-# Classic preset - the connected p10k-style chip-and-connector layout
+# Classic preset - p10k-style connected segments with distinct backgrounds
+# Each segment has its own background; powerline connectors () transition between them
 # Segments: dir · git · provider · model · agent · time · tokens · prompt_char
-# Separators: powerline connectors at background boundaries, gaps within welded blocks
 # Glyph tiers: nerd/powerline/ascii
 
 [roles]
@@ -25,12 +25,13 @@ plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
 
 # Prompt segment layout (ordered entries)
 # Each entry: name, style (inline base style), options, states
+# KEY: each segment has a DISTINCT background so powerline connectors are visible
 [[segments]]
 name = "dir"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { "dir.max_len" = "40", always = "false" }
   [segments.states]
-  anchored = { fg = "green", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  anchored = { fg = "white", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
   shortened = { fg = "bright-black", bg = "blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
 
 [[segments]]
@@ -38,33 +39,33 @@ name = "git"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "false" }
   [segments.states]
-  clean = { fg = "white", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
-  dirty = { fg = "yellow", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  clean = { fg = "white", bg = "cyan", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  dirty = { fg = "black", bg = "yellow", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
   unknown = { fg = "bright-black", bg = "blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
 
 [[segments]]
 name = "provider"
-style = { fg = "cyan", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "white", bg = "green", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "model"
-style = { fg = "yellow", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "black", bg = "yellow", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "agent"
-style = { fg = "magenta", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "white", bg = "magenta", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "time"
-style = { fg = "blue", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "white", bg = "red", attrs = [], glyphs = {} }
 options = { "time.format" = "15:04:05", always = "false" }
 
 [[segments]]
 name = "tokens"
-style = { fg = "green", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "black", bg = "bright-blue", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
@@ -72,14 +73,15 @@ name = "prompt_char"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "true" }
   [segments.states]
-  ok = { fg = "white", bg = "magenta", attrs = [], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }
+  ok = { fg = "white", bg = "bright-white", attrs = [], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }
   error = { fg = "white", bg = "red", attrs = [], glyphs = { nerd = "✗", powerline = "✗", ascii = "!" } }
-  cancelled = { fg = "bright-black", bg = "magenta", attrs = ["dim"], glyphs = { nerd = "⊘", powerline = "⊘", ascii = "?" } }
+  cancelled = { fg = "bright-black", bg = "bright-white", attrs = ["dim"], glyphs = { nerd = "⊘", powerline = "⊘", ascii = "?" } }
 
-# Separators: powerline connectors at background boundaries, gaps within welded bright-black block
+# Separators: powerline connectors between all segments (default)
+# No overrides needed - every transition uses the connector
 [separators]
 default = { nerd = "", powerline = "", ascii = ">" }
-overrides = { provider = " ", model = " ", agent = " ", time = " " }
+overrides = {}
 
 # Prompt config
 [prompt]

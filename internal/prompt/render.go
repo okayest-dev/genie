@@ -147,12 +147,15 @@ func collapseSegments(segments []RenderedSegment) []RenderedSegment {
 	}
 
 	// Second pass: collapse adjacent separators of collapsed segments
-	// For connectors: clear both the collapsed segment's separator and the previous segment's separator
-	// For gaps: only clear the collapsed segment's separator, keep the previous segment's gap for visual separation
+	// If the collapsed segment had a gap separator, also clear the previous segment's gap
+	// (to avoid double spaces). If it had a connector, preserve the previous segment's
+	// connector so it renders to the next visible segment (colours may be slightly off
+	// but the visual connection is maintained).
 	for i := range collapsed {
 		if collapsed[i] {
 			segments[i].Separator = ""
-			if i > 0 && !isGapSeparator(segments[i-1].Separator) {
+			if i > 0 && isGapSeparator(segments[i].Separator) {
+				// Only clear previous gap if collapsed segment's separator was a gap
 				segments[i-1].Separator = ""
 			}
 		}
