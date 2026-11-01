@@ -147,17 +147,18 @@ func collapseSegments(segments []RenderedSegment) []RenderedSegment {
 	}
 
 	// Second pass: collapse adjacent separators of collapsed segments
-	// We do this by clearing the separator of the collapsed segment and the previous segment
+	// For connectors: clear both the collapsed segment's separator and the previous segment's separator
+	// For gaps: only clear the collapsed segment's separator, keep the previous segment's gap for visual separation
 	for i := range collapsed {
 		if collapsed[i] {
 			segments[i].Separator = ""
-			if i > 0 {
+			if i > 0 && !isGapSeparator(segments[i-1].Separator) {
 				segments[i-1].Separator = ""
 			}
 		}
 	}
 
-// Build result excluding collapsed segments, but keep their separator logic
+	// Build result excluding collapsed segments, but keep their separator logic
 	var result []RenderedSegment
 	for i := range segments {
 		if !collapsed[i] {
@@ -172,6 +173,16 @@ func collapseSegments(segments []RenderedSegment) []RenderedSegment {
 	}
 
 	return result
+}
+
+// isGapSeparator returns true if the separator is a whitespace gap (not a connector).
+func isGapSeparator(sep string) bool {
+	for _, r := range sep {
+		if r != ' ' && r != '\t' {
+			return false
+		}
+	}
+	return len(sep) > 0
 }
 
 // getSeparator returns the separator string for a segment.
@@ -229,14 +240,16 @@ func buildBarLines(
 				Foreground: seg.Style.Background,
 				Background: nextSeg.Style.Background,
 			}
-			// At ascii tier, always render the separator (breadcrumb style).
-			// At powerline/nerd tiers, only render if backgrounds differ (welding effect).
-			shouldRender := profile.GlyphTier == style.GlyphTierAscii || seg.Style.Background != nextSeg.Style.Background
+			// Gap separators (whitespace) always render for visual separation.
+			// Connectors (powerline arrows) only render when backgrounds differ (welding effect).
+			// At ASCII tier, always render both types.
+			gapSep := isGapSeparator(seg.Separator)
+			shouldRender := profile.GlyphTier == style.GlyphTierAscii || gapSep || seg.Style.Background != nextSeg.Style.Background
 			if shouldRender {
 				connector := renderer.Render(connectorStyle, seg.Separator)
 				sb.WriteString(connector)
 			}
-			// If backgrounds are equal at powerline/nerd tier, skip the connector (invisible weld)
+			// If backgrounds are equal at powerline/nerd tier and it's a connector, skip (invisible weld)
 		}
 	}
 
@@ -279,7 +292,8 @@ func splitBar(
 				Foreground: seg.Style.Background,
 				Background: nextSeg.Style.Background,
 			}
-			shouldRender := profile.GlyphTier == style.GlyphTierAscii || seg.Style.Background != nextSeg.Style.Background
+			gapSep := isGapSeparator(seg.Separator)
+			shouldRender := profile.GlyphTier == style.GlyphTierAscii || gapSep || seg.Style.Background != nextSeg.Style.Background
 			if shouldRender {
 				connector := renderer.Render(connectorStyle, seg.Separator)
 				line1.WriteString(connector)

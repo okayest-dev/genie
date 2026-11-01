@@ -3,7 +3,7 @@ version = "1"
 
 # Classic preset - the connected p10k-style chip-and-connector layout
 # Segments: dir · git · provider · model · agent · time · tokens · prompt_char
-# Separators: powerline connectors (welded same-band chips)
+# Separators: powerline connectors at background boundaries, gaps within welded blocks
 # Glyph tiers: nerd/powerline/ascii
 
 [roles]
@@ -44,27 +44,27 @@ options = { always = "false" }
 
 [[segments]]
 name = "provider"
-style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "cyan", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "model"
-style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "yellow", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "agent"
-style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "magenta", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "time"
-style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "blue", bg = "bright-black", attrs = [], glyphs = {} }
 options = { "time.format" = "15:04:05", always = "false" }
 
 [[segments]]
 name = "tokens"
-style = { fg = "white", bg = "bright-black", attrs = [], glyphs = {} }
+style = { fg = "green", bg = "bright-black", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
@@ -76,11 +76,10 @@ options = { always = "true" }
   error = { fg = "white", bg = "red", attrs = [], glyphs = { nerd = "✗", powerline = "✗", ascii = "!" } }
   cancelled = { fg = "bright-black", bg = "magenta", attrs = ["dim"], glyphs = { nerd = "⊘", powerline = "⊘", ascii = "?" } }
 
-# Separators: theme-level default with per-segment overrides
-# Whitespace gap is a separator type (ADR-0007)
+# Separators: powerline connectors at background boundaries, gaps within welded bright-black block
 [separators]
 default = { nerd = "", powerline = "", ascii = ">" }
-overrides = { model = "" }
+overrides = { provider = " ", model = " ", agent = " ", time = " " }
 
 # Prompt config
 [prompt]
