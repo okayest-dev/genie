@@ -5,6 +5,7 @@ version = "1"
 # Each segment has its own background; powerline connectors () transition between them
 # Segments: dir · git · provider · model · agent · time · tokens · prompt_char
 # Glyph tiers: nerd/powerline/ascii
+# REQUIRES: glyph_tier = "nerd" in config.toml AND a Nerd Font in your terminal
 
 [roles]
 # Salience ladder: content plain, harness chatter muted/tinted, problems coloured, security dialog bold
