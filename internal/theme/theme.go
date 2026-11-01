@@ -335,6 +335,11 @@ func (t *Theme) RoleWriter(w io.Writer, profile *style.RenderProfile, role strin
 	return style.NewRoleWriter(w, style.NewRenderer(profile), t.RoleStyle(role))
 }
 
+// LogRoleWriter returns an io.Writer that renders log messages through the "log" role.
+func (t *Theme) LogRoleWriter(w io.Writer, profile *style.RenderProfile) io.Writer {
+	return style.NewRoleWriter(w, style.NewRenderer(profile), t.RoleStyle("log"))
+}
+
 // roleStyleToStyle converts a theme role style into a style.Style, mapping the
 // per-glyph-tier string keys onto style.GlyphTier.
 func roleStyleToStyle(rs RoleStyle) style.Style {
