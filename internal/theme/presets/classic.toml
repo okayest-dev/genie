@@ -27,47 +27,47 @@ plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
 # Prompt segment layout (ordered entries)
 # Each entry: name, style (inline base style), options, states
 # KEY: each segment has a DISTINCT background so powerline connectors are visible
-# Using DARK backgrounds with WHITE text for high contrast
+# Using BRIGHT backgrounds with BLACK text for maximum contrast on dark terminals
 [[segments]]
 name = "dir"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { "dir.max_len" = "40", always = "false" }
   [segments.states]
-  anchored = { fg = "white", bg = "blue", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
-  shortened = { fg = "bright-black", bg = "blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  anchored = { fg = "black", bg = "bright-blue", attrs = ["bold"], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  shortened = { fg = "bright-black", bg = "bright-blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
 
 [[segments]]
 name = "git"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "false" }
   [segments.states]
-  clean = { fg = "white", bg = "green", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
-  dirty = { fg = "black", bg = "yellow", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
-  unknown = { fg = "bright-black", bg = "blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  clean = { fg = "black", bg = "bright-green", attrs = ["bold"], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  dirty = { fg = "black", bg = "bright-yellow", attrs = ["bold"], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  unknown = { fg = "bright-black", bg = "bright-blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
 
 [[segments]]
 name = "provider"
-style = { fg = "white", bg = "cyan", attrs = [], glyphs = {} }
+style = { fg = "black", bg = "bright-cyan", attrs = ["bold"], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "model"
-style = { fg = "black", bg = "yellow", attrs = [], glyphs = {} }
+style = { fg = "black", bg = "bright-yellow", attrs = ["bold"], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "agent"
-style = { fg = "white", bg = "magenta", attrs = [], glyphs = {} }
+style = { fg = "black", bg = "bright-magenta", attrs = ["bold"], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
 name = "time"
-style = { fg = "white", bg = "red", attrs = [], glyphs = {} }
+style = { fg = "black", bg = "bright-red", attrs = ["bold"], glyphs = {} }
 options = { "time.format" = "15:04:05", always = "false" }
 
 [[segments]]
 name = "tokens"
-style = { fg = "white", bg = "blue", attrs = [], glyphs = {} }
+style = { fg = "black", bg = "bright-blue", attrs = ["bold"], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
