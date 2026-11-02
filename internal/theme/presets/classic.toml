@@ -27,6 +27,7 @@ plugin = { fg = "", bg = "", attrs = [], glyphs = {} }
 # Prompt segment layout (ordered entries)
 # Each entry: name, style (inline base style), options, states
 # KEY: each segment has a DISTINCT background so powerline connectors are visible
+# Using DARK backgrounds with WHITE text for high contrast
 [[segments]]
 name = "dir"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
@@ -40,13 +41,13 @@ name = "git"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "false" }
   [segments.states]
-  clean = { fg = "white", bg = "cyan", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
+  clean = { fg = "white", bg = "green", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
   dirty = { fg = "black", bg = "yellow", attrs = [], glyphs = { nerd = "", powerline = "", ascii = "" } }
   unknown = { fg = "bright-black", bg = "blue", attrs = ["dim"], glyphs = { nerd = "", powerline = "", ascii = "" } }
 
 [[segments]]
 name = "provider"
-style = { fg = "white", bg = "green", attrs = [], glyphs = {} }
+style = { fg = "white", bg = "cyan", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
@@ -66,7 +67,7 @@ options = { "time.format" = "15:04:05", always = "false" }
 
 [[segments]]
 name = "tokens"
-style = { fg = "black", bg = "bright-blue", attrs = [], glyphs = {} }
+style = { fg = "white", bg = "blue", attrs = [], glyphs = {} }
 options = { always = "false" }
 
 [[segments]]
@@ -74,9 +75,9 @@ name = "prompt_char"
 style = { fg = "", bg = "", attrs = [], glyphs = {} }
 options = { always = "true" }
   [segments.states]
-  ok = { fg = "white", bg = "bright-white", attrs = [], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }
+  ok = { fg = "white", bg = "black", attrs = ["bold"], glyphs = { nerd = "❯", powerline = "❯", ascii = ">" } }
   error = { fg = "white", bg = "red", attrs = [], glyphs = { nerd = "✗", powerline = "✗", ascii = "!" } }
-  cancelled = { fg = "bright-black", bg = "bright-white", attrs = ["dim"], glyphs = { nerd = "⊘", powerline = "⊘", ascii = "?" } }
+  cancelled = { fg = "bright-black", bg = "black", attrs = ["dim"], glyphs = { nerd = "⊘", powerline = "⊘", ascii = "?" } }
 
 # Separators: powerline connectors between all segments (default)
 # No overrides needed - every transition uses the connector
