@@ -227,101 +227,11 @@ func New(opts Options) (*Handle, error) {
 	h.baseCwd = opts.Cwd
 	h.taskState = tasktools.NewTaskState()
 	full := tools.NewRegistry()
-	h.installCwdTools(full, opts.Cwd)
+h.installCwdTools(full, opts.Cwd)
 	reqT := requesttool.New(store, h.sink)
 	reqT.SetNegotiator(opts.Negotiator)
 	full.Register(reqT)
 	full.Register(skilltool.New(h))
-
-	// Task tools: register if enabled in config
-	if opts.Config.TaskTools.Enable {
-		// Get tracker from plugin manager
-		var tracker tasktools.Tracker
-		if h.plug != nil {
-			tracker = h.plug.GetTrackerSource()
-		}
-		if tracker == nil {
-			// No tracker available (no plugin manager or no tracker plugin)
-			if opts.Stdin != nil && opts.Stdout != nil {
-				// For non-test runs without plugin manager, use fake tracker
-				tracker = tasktools.NewFakeTracker(nil)
-			} else {
-				tracker = tasktools.NewFakeTracker(nil)
-			}
-		}
-		h.tracker = tracker
-		slog.Info("tracker resolved", "isolation", tracker.Isolation().String())
-
-		// Create evidence ledger
-		ledgerPath := filepath.Join(opts.Config.SessionDir, "gates")
-		var evidenceLedger gates.EvidenceLedger
-		fileLedger, err := gates.NewFileEvidenceLedger(ledgerPath)
-		if err != nil {
-			// Fall back to in-memory ledger
-			evidenceLedger = gates.NewInMemoryEvidenceLedger()
-		} else {
-			evidenceLedger = fileLedger
-		}
-		h.evidenceLedger = evidenceLedger
-
-		// Create follow-up engine for dedup guard and priority shaping (og-hd8)
-		followupMetrics := &tasktools.FollowupMetrics{}
-		followupEngine := tasktools.NewFollowupEngine(tracker, opts.Config.TaskTools.Followup, followupMetrics)
-
-		// Create ticket creator for gate deferral with follow-up engine
-		ticketCreator := NewTrackerTicketCreatorWithFollowup(tracker, followupEngine)
-
-		// Create deferred finding store
-		deferredFindingStore := gates.NewInMemoryDeferredFindingStore()
-
-		claimTool := tasktools.NewTaskClaimTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
-		h.claimTool = claimTool
-		full.Register(claimTool)
-
-		// Worktree isolation (og-wm7.3): when policy asks for it and the run is
-		// in a git repo, claim allocates a task worktree and rebinds the session
-		// cwd. Non-git repos are exempt (allocation is skipped). Configure this
-		// before building the gate runner so the resolve-time git gate (og-wm7.3.3)
-		// receives the manager.
-		h.configureWorktree(claimTool, opts.Config.Worktree.Policy)
-
-		// Create gate registry and runner
-		gateRegistry := gates.NewDefaultGateRegistry()
-
-		gateRunner := gates.NewGateRunner(gateRegistry, evidenceLedger, opts.Config.Gates, h.taskState.EvidenceTracker().Observed(), ticketCreator, deferredFindingStore, h.worktreeManager)
-		h.gateRunner = gateRunner
-
-		// Task resolve tool with gate runner
-		resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, gateRunner, true, opts.Config.TaskTools.CommandTimeout)
-		h.resolveTool = resolveTool
-		full.Register(resolveTool)
-		resolveTool.SetRestoreCwd(h.RestoreCwd)
-		resolveTool.SetWorktreeTeardown(h.TeardownWorktree)
-
-		// Task create tool with follow-up engine
-		createTool := tasktools.NewTaskCreateToolWithFollowup(tracker, followupEngine, true, opts.Config.TaskTools.CommandTimeout)
-		full.Register(createTool)
-
-		// Task progress tool
-		progressTool := tasktools.NewTaskProgressTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
-		full.Register(progressTool)
-
-		// Task defer finding tool
-		deferFindingTool := tasktools.NewTaskDeferFindingTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
-		full.Register(deferFindingTool)
-
-		// Task review tool (review gate findings channel)
-		reviewTool := tasktools.NewTaskReviewTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
-		full.Register(reviewTool)
-
-// Session reset tool
-		resetTool := tasktools.NewSessionResetTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout, h)
-		full.Register(resetTool)
-
-		// Slash command tools (agent-invocable slash commands)
-		RegisterSlashCommands(full, h)
-
-	}
 
 	if !opts.Config.Tools.Read {
 		full.Disable("read")
@@ -409,6 +319,11 @@ func New(opts Options) (*Handle, error) {
 		return nil, err
 	}
 	h.plug = plug
+
+	// Register task tools after plugins are loaded so tracker is available
+	if opts.Config.TaskTools.Enable {
+		h.registerTaskTools(full, scoped, opts)
+	}
 
 	if opts.OnUsageDegrade != nil {
 		h.degrade = opts.OnUsageDegrade
@@ -577,6 +492,106 @@ func (h *Handle) configureWorktree(claim *tasktools.TaskClaimTool, policy string
 	h.worktreeManager = manager
 	claim.ConfigureWorktree(policy, manager, h.RebindCwd)
 	slog.Info("worktree policy active", "policy", policy, "repo", root, "path", h.opts.Config.Worktree.Path)
+}
+
+// registerTaskTools registers task tools in both full and scoped registries.
+// Called after plugin manager is loaded so tracker is available.
+func (h *Handle) registerTaskTools(full, scoped *tools.Registry, opts Options) {
+	// Get tracker from plugin manager
+	var tracker tasktools.Tracker
+	if h.plug != nil {
+		tracker = h.plug.GetTrackerSource()
+	}
+	if tracker == nil {
+		// No tracker available (no plugin manager or no tracker plugin)
+		if opts.Stdin != nil && opts.Stdout != nil {
+			// For non-test runs without plugin manager, use fake tracker
+			tracker = tasktools.NewFakeTracker(nil)
+		} else {
+			tracker = tasktools.NewFakeTracker(nil)
+		}
+	}
+	h.tracker = tracker
+	slog.Info("tracker resolved", "isolation", tracker.Isolation().String())
+
+	// Create evidence ledger
+	ledgerPath := filepath.Join(opts.Config.SessionDir, "gates")
+	var evidenceLedger gates.EvidenceLedger
+	fileLedger, err := gates.NewFileEvidenceLedger(ledgerPath)
+	if err != nil {
+		// Fall back to in-memory ledger
+		evidenceLedger = gates.NewInMemoryEvidenceLedger()
+	} else {
+		evidenceLedger = fileLedger
+	}
+	h.evidenceLedger = evidenceLedger
+
+	// Create follow-up engine for dedup guard and priority shaping (og-hd8)
+	followupMetrics := &tasktools.FollowupMetrics{}
+	followupEngine := tasktools.NewFollowupEngine(tracker, opts.Config.TaskTools.Followup, followupMetrics)
+
+	// Create ticket creator for gate deferral with follow-up engine
+	ticketCreator := NewTrackerTicketCreatorWithFollowup(tracker, followupEngine)
+
+	// Create deferred finding store
+	deferredFindingStore := gates.NewInMemoryDeferredFindingStore()
+
+	claimTool := tasktools.NewTaskClaimTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+	h.claimTool = claimTool
+	registerInBoth(full, scoped, claimTool)
+
+	// Worktree isolation (og-wm7.3): when policy asks for it and the run is
+	// in a git repo, claim allocates a task worktree and rebinds the session
+	// cwd. Non-git repos are exempt (allocation is skipped). Configure this
+	// before building the gate runner so the resolve-time git gate (og-wm7.3.3)
+	// receives the manager.
+	h.configureWorktree(claimTool, opts.Config.Worktree.Policy)
+
+	// Create gate registry and runner
+	gateRegistry := gates.NewDefaultGateRegistry()
+
+	gateRunner := gates.NewGateRunner(gateRegistry, evidenceLedger, opts.Config.Gates, h.taskState.EvidenceTracker().Observed(), ticketCreator, deferredFindingStore, h.worktreeManager)
+	h.gateRunner = gateRunner
+
+	// Task resolve tool with gate runner
+	resolveTool := tasktools.NewTaskResolveTool(tracker, h.taskState, gateRunner, true, opts.Config.TaskTools.CommandTimeout)
+	h.resolveTool = resolveTool
+	registerInBoth(full, scoped, resolveTool)
+	resolveTool.SetRestoreCwd(h.RestoreCwd)
+	resolveTool.SetWorktreeTeardown(h.TeardownWorktree)
+
+	// Task create tool with follow-up engine
+	createTool := tasktools.NewTaskCreateToolWithFollowup(tracker, followupEngine, true, opts.Config.TaskTools.CommandTimeout)
+	registerInBoth(full, scoped, createTool)
+
+	// Task progress tool
+	progressTool := tasktools.NewTaskProgressTool(tracker, h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+	registerInBoth(full, scoped, progressTool)
+
+	// Task defer finding tool
+	deferFindingTool := tasktools.NewTaskDeferFindingTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+	registerInBoth(full, scoped, deferFindingTool)
+
+	// Task review tool (review gate findings channel)
+	reviewTool := tasktools.NewTaskReviewTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout)
+	registerInBoth(full, scoped, reviewTool)
+
+	// Session reset tool
+	resetTool := tasktools.NewSessionResetTool(h.taskState, true, opts.Config.TaskTools.CommandTimeout, h)
+	h.resetTool = resetTool
+	registerInBoth(full, scoped, resetTool)
+
+	// Slash command tools (agent-invocable slash commands)
+	RegisterSlashCommands(full, h)
+	RegisterSlashCommands(scoped, h)
+}
+
+// registerInBoth registers a tool in both full and scoped registries if they differ.
+func registerInBoth(full, scoped *tools.Registry, t tools.Tool) {
+	full.Register(t)
+	if scoped != full {
+		scoped.Register(t)
+	}
 }
 
 // RebindCwd moves the session's working root to root: the cwd-bound tools are

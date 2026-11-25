@@ -1374,8 +1374,12 @@ func applyPlugins(cfg *Config, src pluginsFile, userConfigDir string) error {
 	} else {
 		cfg.PluginDir = filepath.Join(userConfigDir, "genie", "plugins")
 	}
-	cfg.PluginEnable = src.Enable
-	cfg.PluginDisable = src.Disable
+	if len(src.Enable) > 0 {
+		cfg.PluginEnable = src.Enable
+	}
+	if len(src.Disable) > 0 {
+		cfg.PluginDisable = src.Disable
+	}
 	if src.HookFailureThreshold != nil {
 		if *src.HookFailureThreshold < 0 {
 			return fmt.Errorf("config: plugins.hook_failure_threshold must be non-negative, got %d", *src.HookFailureThreshold)
