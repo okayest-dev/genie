@@ -14,7 +14,7 @@ import (
 // constants but forgotten here fails.
 func TestWireNamesListsEveryBundledWire(t *testing.T) {
 	got := llm.WireNames()
-	want := []string{"openai", "anthropic", "responses", "google", "copilot", "bedrock"}
+	want := []string{"openai", "anthropic", "responses", "google", "copilot", "bedrock", "litellm", "litellm-oauth"}
 	for _, name := range want {
 		if !slices.Contains(got, name) {
 			t.Errorf("WireNames() = %v, missing bundled wire %q", got, name)

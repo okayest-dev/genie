@@ -341,11 +341,11 @@ func verifyChecksum(target, checksumsFile string) bool {
 
 func TestProviderList(t *testing.T) {
 	providers := getProviders()
-	if len(providers) != 7 {
-		t.Errorf("expected 7 providers, got %d", len(providers))
+	if len(providers) != 10 {
+		t.Errorf("expected 10 providers, got %d", len(providers))
 	}
 
-	expectedNames := []string{"zen", "openai", "anthropic", "responses", "google", "copilot", "bedrock"}
+	expectedNames := []string{"zen", "openai", "anthropic", "responses", "google", "copilot", "bedrock", "openrouter", "litellm", "litellm-oauth"}
 	for i, name := range expectedNames {
 		if providers[i].name != name {
 			t.Errorf("provider[%d] = %q, want %q", i, providers[i].name, name)
@@ -369,6 +369,9 @@ func getProviders() []providerInfo {
 		{"google", "Google Gemini", "GOOGLE_API_KEY", "google"},
 		{"copilot", "GitHub Copilot (OAuth, no API key)", "none", "copilot"},
 		{"bedrock", "AWS Bedrock (AWS SDK auth)", "none", "bedrock"},
+		{"openrouter", "OpenRouter gateway (OpenAI-compatible)", "OPENROUTER_API_KEY", "openai"},
+		{"litellm", "LiteLLM proxy (OpenAI-compatible)", "LITELLM_API_KEY", "openai"},
+		{"litellm-oauth", "LiteLLM proxy (OAuth2)", "none", "litellm-oauth"},
 	}
 }
 

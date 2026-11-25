@@ -18,6 +18,7 @@ import (
 	_ "github.com/okayest-dev/genie/internal/llm/bedrock"
 	_ "github.com/okayest-dev/genie/internal/llm/copilot"
 	_ "github.com/okayest-dev/genie/internal/llm/google"
+	_ "github.com/okayest-dev/genie/internal/llm/litellm"
 	_ "github.com/okayest-dev/genie/internal/llm/openai"
 	_ "github.com/okayest-dev/genie/internal/llm/responses"
 	"github.com/okayest-dev/genie/internal/permissions"
@@ -152,12 +153,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	debug = boolPtr(*debug || debugEnv)
 	verbose = boolPtr(*verbose || *debug)
 
-	cfg, err := config.Load()
+	cwd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
-	cwd, err := os.Getwd()
+
+	cfg, err := config.LoadWithProject(cwd)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1

@@ -27,6 +27,34 @@ type Provider struct {
 	Models []string
 	// Opts passes wire-specific settings.
 	Opts map[string]any
+	// AuthType specifies the authentication method. Valid values:
+	// "api_key" (default) - uses APIKeyEnv as Bearer token
+	// "oauth2" - uses OAuth2 client credentials or device flow
+	// "none" - no authentication
+	AuthType string
+	// OAuth2Config holds OAuth2-specific settings (used when AuthType="oauth2")
+	OAuth2Config *OAuth2Config
+}
+
+// OAuth2Config holds OAuth2 authentication configuration for providers
+// that use OAuth2 (e.g., LiteLLM Enterprise with OAuth2 auth).
+type OAuth2Config struct {
+	// TokenURL is the OAuth2 token endpoint (required for client_credentials)
+	TokenURL string
+	// ClientID is the OAuth2 client identifier
+	ClientID string
+	// ClientSecretEnv names the env var holding the client secret
+	ClientSecretEnv string
+	// Scopes is the list of OAuth2 scopes to request
+	Scopes []string
+	// DeviceFlowAuthURL is the device authorization endpoint (for device flow)
+	DeviceFlowAuthURL string
+	// DeviceFlowTokenURL is the token endpoint for device flow
+	DeviceFlowTokenURL string
+	// DeviceFlowClientID is the client ID for device flow (can differ from ClientID)
+	DeviceFlowClientID string
+	// Audience is the OAuth2 audience parameter (for some IdPs)
+	Audience string
 }
 
 // Registry is the module that owns provider to client. Seeded once from the

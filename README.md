@@ -389,7 +389,7 @@ code_timeout = 30
 # Declared providers, keyed by name. A provider is one wire, one endpoint,
 # one default model. Every valid provider ships as a default — one per
 # bundled wire: zen, openai, anthropic, responses, google, copilot, bedrock,
-# openrouter — so a table for a known name only needs to override the keys you want to
+# openrouter, litellm, litellm-oauth — so a table for a known name only needs to override the keys you want to
 # change.
 #
 # [providers.zen]
@@ -423,11 +423,181 @@ code_timeout = 30
 # api_key_env = "OPENROUTER_API_KEY"
 # model       = "recursive/flint-v1.0:free"
 #
+# [providers.litellm]
+# # LiteLLM is an OpenAI-compatible proxy that can route to many LLM backends.
+# # The base URL is the LiteLLM proxy endpoint (default local); the API key
+# # is the LiteLLM master key if configured.
+# base_url    = "http://localhost:4000/v1"
+# api_key_env = "LITELLM_API_KEY"
+# model       = "gpt-3.5-turbo"
+#
+# [providers.litellm-oauth]
+# # LiteLLM Enterprise with OAuth2 authentication.
+# # The proxy validates tokens against an IdP; the client uses OAuth2
+# # (client credentials or device flow) to obtain access tokens.
+# wire        = "litellm-oauth"
+# base_url    = "http://localhost:4000/v1"
+# model       = "gpt-3.5-turbo"
+# auth_type   = "oauth2"
+# # Client credentials flow (machine-to-machine):
+# oauth2_token_url          = "https://your-idp.com/oauth/token"
+# oauth2_client_id          = "your-client-id"
+# oauth2_client_secret_env  = "LITELLM_OAUTH_CLIENT_SECRET"
+# oauth2_scopes             = ["openid", "profile"]
+# oauth2_audience           = "https://litellm.example.com"
+# # Device flow (interactive user login):
+# # oauth2_device_auth_url    = "https://your-idp.com/oauth/device"
+# # oauth2_device_token_url   = "https://your-idp.com/oauth/token"
+# # oauth2_device_client_id   = "your-device-client-id"
+#
+# # ──────────────────────────────────────────────────────────────────────
+# # Complete LiteLLM auth examples
+# # ──────────────────────────────────────────────────────────────────────
+#
+# # Example 1: Local LiteLLM with master key (simplest)
+# # ──────────────────────────────────────────────────────────────────────
+# # Start LiteLLM proxy:
+# #   litellm --model gpt-3.5-turbo --master_key sk-1234
+# # Then configure:
+# [providers.litellm-local]
+# wire        = "litellm"
+# base_url    = "http://localhost:4000/v1"
+# api_key_env = "LITELLM_API_KEY"
+# model       = "gpt-3.5-turbo"
+# # Export: export LITELLM_API_KEY=sk-1234
+#
+# # Example 2: Remote LiteLLM with virtual key (team/shared)
+# # ──────────────────────────────────────────────────────────────────────
+# # Admin creates virtual key in LiteLLM Admin UI at /ui
+# # Team members use the virtual key:
+# [providers.litellm-team]
+# wire        = "litellm"
+# base_url    = "https://litellm.company.com/v1"
+# api_key_env = "LITELLM_API_KEY"
+# model       = "gpt-4o"
+# # Export: export LITELLM_API_KEY=sk-virtual-key-from-admin
+#
+# # Example 3: LiteLLM Enterprise with client credentials (CI/CD, services)
+# # ──────────────────────────────────────────────────────────────────────
+# # IdP (Keycloak, Auth0, Azure AD, Okta) configured with client credentials
+# # LiteLLM proxy configured with: enable_oauth2_auth = true
+# [providers.litellm-oauth-ci]
+# wire                      = "litellm-oauth"
+# base_url                  = "https://litellm.company.com/v1"
+# model                     = "gpt-4o"
+# auth_type                 = "oauth2"
+# oauth2_token_url          = "https://auth.company.com/oauth/token"
+# oauth2_client_id          = "genie-ci"
+# oauth2_client_secret_env  = "LITELLM_OAUTH_CLIENT_SECRET"
+# oauth2_scopes             = ["litellm:read", "litellm:write"]
+# oauth2_audience           = "https://litellm.company.com"
+# # Export: export LITELLM_OAUTH_CLIENT_SECRET=client-secret-from-idp
+#
+# # Example 4: LiteLLM Enterprise with device flow (interactive users)
+# # ──────────────────────────────────────────────────────────────────────
+# # IdP configured for device authorization grant
+# # User runs genie, sees URL + code, authorizes in browser
+# [providers.litellm-oauth-interactive]
+# wire                      = "litellm-oauth"
+# base_url                  = "https://litellm.company.com/v1"
+# model                     = "gpt-4o"
+# auth_type                 = "oauth2"
+# oauth2_device_auth_url    = "https://auth.company.com/oauth/device"
+# oauth2_device_token_url   = "https://auth.company.com/oauth/token"
+# oauth2_device_client_id   = "genie-cli"
+# oauth2_scopes             = ["openid", "profile", "email", "litellm:access"]
+#
+# # Example 5: Azure AD with LiteLLM Enterprise
+# # ──────────────────────────────────────────────────────────────────────
+# # Azure AD app registration with client secret
+# [providers.litellm-azure-ad]
+# wire                      = "litellm-oauth"
+# base_url                  = "https://litellm.company.com/v1"
+# model                     = "gpt-4o"
+# auth_type                 = "oauth2"
+# oauth2_token_url          = "https://login.microsoftonline.com/<tenant-id>/oauth2/v2.0/token"
+# oauth2_client_id          = "<azure-app-client-id>"
+# oauth2_client_secret_env  = "LITELLM_AZURE_CLIENT_SECRET"
+# oauth2_scopes             = ["https://litellm.company.com/.default"]
+#
+# # Example 6: Keycloak with LiteLLM Enterprise
+# # ──────────────────────────────────────────────────────────────────────
+# # Keycloak realm with confidential client
+# [providers.litellm-keycloak]
+# wire                      = "litellm-oauth"
+# base_url                  = "https://litellm.company.com/v1"
+# model                     = "gpt-4o"
+# auth_type                 = "oauth2"
+# oauth2_token_url          = "https://keycloak.company.com/realms/myrealm/protocol/openid-connect/token"
+# oauth2_client_id          = "genie-client"
+# oauth2_client_secret_env  = "LITELLM_KEYCLOAK_CLIENT_SECRET"
+# oauth2_scopes             = ["openid", "profile", "litellm"]
+#
 # A provider missing a default model, or naming an unknown wire, fails at
 # startup; duplicate provider tables are rejected. Selecting a provider that
 # has no table also fails at startup. With
 # no provider selected and no declared providers, startup fails naming the
 # requirement.
+```
+
+### Provider Authentication Mechanisms
+
+Genie supports multiple authentication mechanisms depending on the provider/wire:
+
+| Mechanism | Wires | Config | Description |
+|-----------|-------|--------|-------------|
+| **API Key (Bearer)** | `openai`, `anthropic`, `responses`, `google`, `litellm`, `openrouter` | `api_key_env` | Standard `Authorization: Bearer <key>` header. Key sourced from env var. |
+| **AWS SDK Credential Chain** | `bedrock` | `opts.profile`, `opts.region` | Uses AWS SDK default chain: env vars (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), `~/.aws/credentials`, `~/.aws/config`, SSO, EC2/ECS instance profiles, `credential_process`. No API key in Genie config. |
+| **GitHub Device Flow + Credential Store** | `copilot` | `opts.domain` | Uses GitHub device authorization flow. Tokens cached in `$XDG_DATA_HOME/genie/copilot/credentials.json`. No API key in Genie config. Supports GitHub Enterprise via `opts.domain`. |
+| **OAuth2 Client Credentials** | `litellm-oauth` | `auth_type=oauth2`, `oauth2_token_url`, `oauth2_client_id`, `oauth2_client_secret_env`, `oauth2_scopes`, `oauth2_audience` | Machine-to-machine flow. Client secret from env var. Automatic token refresh. |
+| **OAuth2 Device Authorization Flow** | `litellm-oauth` | `auth_type=oauth2`, `oauth2_device_auth_url`, `oauth2_device_token_url`, `oauth2_device_client_id`, `oauth2_scopes` | Interactive user login. Genie prints URL + user code; user authorizes in browser. Tokens cached in memory. |
+
+#### Quick Reference by Provider
+
+| Provider | Wire | Auth Method | Required Config |
+|----------|------|-------------|-----------------|
+| OpenAI / OpenAI-compatible | `openai` | API Key | `api_key_env` |
+| Anthropic / Anthropic-compatible | `anthropic` | API Key | `api_key_env` |
+| OpenAI Responses API | `responses` | API Key | `api_key_env` |
+| Google / Gemini | `google` | API Key | `api_key_env` |
+| OpenRouter | `openai` | API Key | `api_key_env` |
+| LiteLLM (master/virtual key) | `litellm` | API Key | `api_key_env` |
+| LiteLLM Enterprise | `litellm-oauth` | OAuth2 | `auth_type=oauth2` + OAuth2 fields |
+| GitHub Copilot | `copilot` | Device Flow | `opts.domain` (optional) |
+| AWS Bedrock | `bedrock` | AWS SDK Chain | `opts.profile`, `opts.region` (optional) |
+
+#### Config Examples
+
+```toml
+# API Key (most providers)
+[providers.openai]
+wire        = "openai"
+base_url    = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model       = "gpt-4o"
+
+# AWS Bedrock (no api_key_env)
+[providers.bedrock]
+wire  = "bedrock"
+model = "anthropic.claude-sonnet-4-6"
+opts  = { profile = "my-profile", region = "us-east-1" }
+
+# GitHub Copilot (no api_key_env, uses credential store)
+[providers.copilot]
+wire  = "copilot"
+model = "gpt-4o"
+opts  = { domain = "github.com" }  # or "tenant.ghe.com" for GHE
+
+# LiteLLM Enterprise OAuth2 (client credentials)
+[providers.litellm-oauth]
+wire                      = "litellm-oauth"
+base_url                  = "https://litellm.company.com/v1"
+model                     = "gpt-4o"
+auth_type                 = "oauth2"
+oauth2_token_url          = "https://auth.company.com/oauth/token"
+oauth2_client_id          = "genie-client"
+oauth2_client_secret_env  = "LITELLM_OAUTH_CLIENT_SECRET"
+oauth2_scopes             = ["litellm:read", "litellm:write"]
 ```
 
 ### Per-agent permissions
@@ -585,6 +755,8 @@ Verbose shows config resolution, instruction assembly, turn lifecycle, and token
 ## Wire protocols
 
 The active provider names its wire explicitly (`[providers.<name>] wire`, defaulting to the shipped provider's wire — `zen` is OpenAI-compatible `openai`). Wire selection no longer happens by model-prefix auto-detection or a `GENIE_WIRE` override: a turn starts on the active provider's own wire and model, and there is no global-model fallback.
+
+Bundled wires: `openai`, `anthropic`, `responses`, `google`, `copilot`, `bedrock`, `litellm` (LiteLLM proxy with API key), `litellm-oauth` (LiteLLM Enterprise with OAuth2).
 
 If a model doesn't support tool calling, the harness retries without tools — letting free/non-tool models still work. In that fallback — and for any other text-only reply — genie also recognises tool invocations the model expresses as fenced code blocks: a block whose info string names a registered tool (e.g. ` ```bash\nmake test\n``` `) is executed like a native tool call, its result fed back, and the turn continues until the model finishes. Fence content that is a JSON object is used verbatim as the tool's arguments; otherwise it is wrapped into the tool's single required string property (e.g. `{"command": "<content>"}` for `bash`).
 

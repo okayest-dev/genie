@@ -1040,18 +1040,18 @@ func TestProvidersParseFromFileAndDump(t *testing.T) {
 }
 
 // TestShippedProviderDefaults verifies AC4: defaults exist for zen, a generic
-// openai-compatible provider, anthropic, responses, google, copilot, bedrock
-// and openrouter, each with usable default values. Copilot and bedrock are the
+// openai-compatible provider, anthropic, responses, google, copilot, bedrock,
+// openrouter, and litellm, each with usable default values. Copilot and bedrock are the
 // wires-with-their-own-auth exceptions: they carry no base_url and no
 // api_key_env (copilot uses its credential store, ADR-0002; bedrock the AWS
-// SDK credential chain). OpenRouter is an OpenAI-compatible gateway.
+// SDK credential chain). OpenRouter and LiteLLM are OpenAI-compatible gateways.
 func TestShippedProviderDefaults(t *testing.T) {
 	cfg, err := Parse(nil, "/home/u", nil)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(cfg.Providers) != 8 {
-		t.Fatalf("len(Providers) = %d, want 8 shipped defaults", len(cfg.Providers))
+	if len(cfg.Providers) != 10 {
+		t.Fatalf("len(Providers) = %d, want 10 shipped defaults", len(cfg.Providers))
 	}
 	wires := llm.WireNames()
 	for name, p := range cfg.Providers {
@@ -1062,7 +1062,7 @@ func TestShippedProviderDefaults(t *testing.T) {
 			t.Errorf("%s: wire %q is not a bundled wire", name, p.Wire)
 		}
 		switch name {
-		case "copilot", "bedrock":
+		case "copilot", "bedrock", "litellm-oauth":
 			if p.APIKeyEnv != "" {
 				t.Errorf("%s: api_key_env = %q, want empty (own-auth wire)", name, p.APIKeyEnv)
 			}

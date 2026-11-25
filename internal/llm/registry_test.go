@@ -13,6 +13,7 @@ import (
 	_ "github.com/okayest-dev/genie/internal/llm/bedrock"
 	_ "github.com/okayest-dev/genie/internal/llm/copilot"
 	_ "github.com/okayest-dev/genie/internal/llm/google"
+	_ "github.com/okayest-dev/genie/internal/llm/litellm"
 	_ "github.com/okayest-dev/genie/internal/llm/openai"
 	_ "github.com/okayest-dev/genie/internal/llm/responses"
 )

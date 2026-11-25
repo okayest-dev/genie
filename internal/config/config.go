@@ -102,6 +102,31 @@ var defaultProviders = map[string]Provider{
 		Wire: llm.WireOpenAI, BaseURL: "https://openrouter.ai/api/v1",
 		APIKeyEnv: "OPENROUTER_API_KEY", Model: "recursive/flint-v1.0:free",
 	},
+	"litellm": {
+		// LiteLLM is an OpenAI-compatible proxy that can route to many LLM backends.
+		// The base URL is the LiteLLM proxy endpoint (default local); the API key
+		// is the LiteLLM master key if configured. The default model is a common
+		// model alias.
+		Wire: llm.WireLiteLLM, BaseURL: "http://localhost:4000/v1",
+		APIKeyEnv: "LITELLM_API_KEY", Model: "gpt-3.5-turbo",
+	},
+	"litellm-oauth": {
+		// LiteLLM Enterprise with OAuth2 authentication.
+		// The proxy validates tokens against an IdP; the client uses OAuth2
+		// (client credentials or device flow) to obtain access tokens.
+		// Configure oauth2_token_url, oauth2_client_id, oauth2_client_secret_env,
+		// and optionally oauth2_scopes, oauth2_audience, or device flow endpoints.
+		Wire:  llm.WireLiteLLMOAuth,
+		BaseURL: "http://localhost:4000/v1",
+		Model: "gpt-3.5-turbo",
+		AuthType: "oauth2",
+		Opts: map[string]any{
+			"oauth2_token_url":          "https://example.com/oauth/token",
+			"oauth2_client_id":          "test-client",
+			"oauth2_client_secret_env":  "LITELLM_OAUTH_CLIENT_SECRET",
+			"oauth2_scopes":             []string{"openid", "profile"},
+		},
+	},
 }
 
 // Tools holds the four per-tool toggles. All default to enabled; a disabled
@@ -367,12 +392,21 @@ type loopFile struct {
 type providerFiles map[string]providerFile
 
 type providerFile struct {
-	Wire      string         `toml:"wire"`
-	BaseURL   string         `toml:"base_url"`
-	APIKeyEnv string         `toml:"api_key_env"`
-	Model     string         `toml:"model"`
-	Models    []string       `toml:"models"`
-	Opts      map[string]any `toml:"opts"`
+	Wire              string         `toml:"wire"`
+	BaseURL           string         `toml:"base_url"`
+	APIKeyEnv         string         `toml:"api_key_env"`
+	Model             string         `toml:"model"`
+	Models            []string       `toml:"models"`
+	Opts              map[string]any `toml:"opts"`
+	AuthType          string         `toml:"auth_type"`
+	OAuth2TokenURL    string         `toml:"oauth2_token_url"`
+	OAuth2ClientID    string         `toml:"oauth2_client_id"`
+	OAuth2ClientSecretEnv string     `toml:"oauth2_client_secret_env"`
+	OAuth2Scopes      []string       `toml:"oauth2_scopes"`
+	OAuth2DeviceAuthURL   string     `toml:"oauth2_device_auth_url"`
+	OAuth2DeviceTokenURL  string     `toml:"oauth2_device_token_url"`
+	OAuth2DeviceClientID  string     `toml:"oauth2_device_client_id"`
+	OAuth2Audience        string     `toml:"oauth2_audience"`
 }
 
 type toolsFile struct {
@@ -690,6 +724,176 @@ func Load() (*Config, error) {
 	return Parse(file, dir, environMap())
 }
 
+// LoadWithProject loads the global config and merges it with a project config
+// if one exists at cwd/.genie/config.toml. Project config overlays global config.
+func LoadWithProject(cwd string) (*Config, error) {
+	cfg, err := Load()
+	if err != nil {
+		return nil, err
+	}
+
+	projectPath := filepath.Join(cwd, ".genie", configFileName)
+	projectFile, err := os.ReadFile(projectPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("config: read project %s: %w", projectPath, err)
+	}
+
+	slog.Info("project config file loaded", "path", projectPath)
+
+	// Parse project config and merge
+	var fc fileConfig
+	md, err := toml.Decode(string(projectFile), &fc)
+	if err != nil {
+		return nil, fmt.Errorf("config: parse project: %w", err)
+	}
+	if unknown := md.Undecoded(); len(unknown) > 0 {
+		keys := make([]string, len(unknown))
+		for i, k := range unknown {
+			keys[i] = k.String()
+		}
+		return nil, fmt.Errorf("config: project unknown key(s): %s", strings.Join(keys, ", "))
+	}
+
+	// Apply project config overlays (same logic as Parse but without env)
+	if fc.Provider != "" {
+		cfg.Provider = fc.Provider
+	}
+	if fc.Theme != "" {
+		cfg.Theme = fc.Theme
+	}
+	if fc.GlyphTier != "" {
+		cfg.GlyphTier = fc.GlyphTier
+	}
+	cfg.InstructionFile = fc.InstructionFile
+	if fc.SessionDir != "" {
+		cfg.SessionDir = fc.SessionDir
+	}
+	if fc.BashTimeout != nil {
+		if *fc.BashTimeout <= 0 {
+			return nil, fmt.Errorf("config: bash_timeout must be a positive number of seconds, got %d", *fc.BashTimeout)
+		}
+		cfg.BashTimeout = time.Duration(*fc.BashTimeout) * time.Second
+	}
+	applyTools(&cfg.Tools, fc.Tools)
+	if fc.Tools.CodeTimeout != nil {
+		if *fc.Tools.CodeTimeout <= 0 {
+			return nil, fmt.Errorf("config: tools.code_timeout must be a positive number of seconds, got %d", *fc.Tools.CodeTimeout)
+		}
+		cfg.Tools.CodeTimeout = time.Duration(*fc.Tools.CodeTimeout) * time.Second
+	}
+	applyTaskTools(&cfg.TaskTools, fc.TaskTools)
+	if err := cfg.TaskTools.Validate(); err != nil {
+		return nil, err
+	}
+	applyGates(&cfg.Gates, fc.Gates)
+	applyWorktree(&cfg.Worktree, fc.Worktree)
+	if err := cfg.Worktree.Validate(); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	applyLoop(&cfg.Loop, fc.Loop)
+	applyPluginsErr := applyPlugins(cfg, fc.Plugins, cfg.GetUserConfigDir())
+	if applyPluginsErr != nil {
+		return nil, applyPluginsErr
+	}
+	applySkills(cfg, fc.Skills)
+	if err := applyPermissions(&cfg.Permissions, fc.Permissions); err != nil {
+		return nil, err
+	}
+	if fc.Context.Turns != nil {
+		if *fc.Context.Turns < 0 {
+			return nil, fmt.Errorf("config: context.turns must be non-negative, got %d", *fc.Context.Turns)
+		}
+		cfg.Context.Turns = *fc.Context.Turns
+	}
+	if fc.Context.BudgetTokens != nil {
+		if *fc.Context.BudgetTokens <= 0 {
+			return nil, fmt.Errorf("config: context.budget_tokens must be a positive number of tokens, got %d", *fc.Context.BudgetTokens)
+		}
+		cfg.Context.BudgetTokens = *fc.Context.BudgetTokens
+	}
+	if fc.Context.BudgetPercent != nil {
+		if err := validateBudgetPercent(*fc.Context.BudgetPercent); err != nil {
+			return nil, err
+		}
+		cfg.Context.BudgetPercent = *fc.Context.BudgetPercent
+	}
+	if fc.Context.DefaultWindowTokens != nil {
+		if *fc.Context.DefaultWindowTokens <= 0 {
+			return nil, fmt.Errorf("config: context.default_window_tokens must be a positive number of tokens, got %d", *fc.Context.DefaultWindowTokens)
+		}
+		cfg.Context.DefaultWindowTokens = *fc.Context.DefaultWindowTokens
+	}
+	if len(fc.Context.Windows) > 0 {
+		cfg.Context.Windows = make(map[string]int, len(fc.Context.Windows))
+		for model, window := range fc.Context.Windows {
+			if window <= 0 {
+				return nil, fmt.Errorf("config: context.windows[%q] must be a positive number of tokens, got %d", model, window)
+			}
+			cfg.Context.Windows[model] = window
+		}
+	}
+	if len(fc.Context.Plugins.Order) > 0 {
+		cfg.Context.PluginsOrder = fc.Context.Plugins.Order
+	}
+	if fc.Context.Plugins.ActiveCompact != "" {
+		cfg.Context.ActiveCompact = fc.Context.Plugins.ActiveCompact
+	}
+	if fc.Context.Plugins.ActiveCondense != "" {
+		cfg.Context.ActiveCondense = fc.Context.Plugins.ActiveCondense
+	}
+	if fc.Context.CondenseSize != nil {
+		if *fc.Context.CondenseSize < 0 {
+			return nil, fmt.Errorf("config: context.condense_size must be non-negative, got %d", *fc.Context.CondenseSize)
+		}
+		cfg.Context.CondenseSize = *fc.Context.CondenseSize
+	}
+	if fc.Context.NetDrop != nil {
+		cfg.Context.NetDrop = *fc.Context.NetDrop
+	}
+	if fc.Context.SummaryModel != "" {
+		cfg.Context.SummaryModel = fc.Context.SummaryModel
+	}
+	if fc.Context.MaxOutputTokens != nil {
+		if *fc.Context.MaxOutputTokens < 0 {
+			return nil, fmt.Errorf("config: context.max_output_tokens must be non-negative, got %d", *fc.Context.MaxOutputTokens)
+		}
+		cfg.Context.MaxOutputTokens = *fc.Context.MaxOutputTokens
+	}
+	if fc.Context.AutoContinue != nil {
+		cfg.Context.AutoContinue = *fc.Context.AutoContinue
+	}
+	if fc.Context.MaxContinuations != nil {
+		if *fc.Context.MaxContinuations < 0 {
+			return nil, fmt.Errorf("config: context.max_continuations must be non-negative, got %d", *fc.Context.MaxContinuations)
+		}
+		cfg.Context.MaxContinuations = *fc.Context.MaxContinuations
+	}
+	if len(fc.Providers) > 0 {
+		applyProviders(cfg, fc.Providers)
+	}
+	if len(fc.Lifecycle.Plugins.Order) > 0 {
+		cfg.Lifecycle.PluginsOrder = fc.Lifecycle.Plugins.Order
+	}
+	if fc.DefaultAgent != "" {
+		cfg.DefaultAgent = fc.DefaultAgent
+	}
+
+	// Re-validate providers after merge
+	if err := validateProviders(cfg.Providers); err != nil {
+		return nil, err
+	}
+
+	// Re-resolve theme
+	if err := resolveTheme(cfg, cfg.GetUserConfigDir()); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
 func defaults(userConfigDir string) Config {
 	return Config{
 		Providers:   cloneProviders(defaultProviders),
@@ -914,6 +1118,38 @@ func applyProviders(cfg *Config, src providerFiles) {
 		}
 		if len(fp.Opts) > 0 {
 			p.Opts = fp.Opts
+		}
+		if fp.AuthType != "" {
+			p.AuthType = fp.AuthType
+		}
+		if fp.OAuth2TokenURL != "" || fp.OAuth2ClientID != "" || fp.OAuth2ClientSecretEnv != "" || len(fp.OAuth2Scopes) > 0 || fp.OAuth2DeviceAuthURL != "" || fp.OAuth2DeviceTokenURL != "" || fp.OAuth2DeviceClientID != "" || fp.OAuth2Audience != "" {
+			if p.OAuth2Config == nil {
+				p.OAuth2Config = &llm.OAuth2Config{}
+			}
+			if fp.OAuth2TokenURL != "" {
+				p.OAuth2Config.TokenURL = fp.OAuth2TokenURL
+			}
+			if fp.OAuth2ClientID != "" {
+				p.OAuth2Config.ClientID = fp.OAuth2ClientID
+			}
+			if fp.OAuth2ClientSecretEnv != "" {
+				p.OAuth2Config.ClientSecretEnv = fp.OAuth2ClientSecretEnv
+			}
+			if len(fp.OAuth2Scopes) > 0 {
+				p.OAuth2Config.Scopes = fp.OAuth2Scopes
+			}
+			if fp.OAuth2DeviceAuthURL != "" {
+				p.OAuth2Config.DeviceFlowAuthURL = fp.OAuth2DeviceAuthURL
+			}
+			if fp.OAuth2DeviceTokenURL != "" {
+				p.OAuth2Config.DeviceFlowTokenURL = fp.OAuth2DeviceTokenURL
+			}
+			if fp.OAuth2DeviceClientID != "" {
+				p.OAuth2Config.DeviceFlowClientID = fp.OAuth2DeviceClientID
+			}
+			if fp.OAuth2Audience != "" {
+				p.OAuth2Config.Audience = fp.OAuth2Audience
+			}
 		}
 		cfg.Providers[name] = p
 	}
@@ -1292,15 +1528,15 @@ func resolveTheme(cfg *Config, userConfigDir string) error {
 // LoadTheme loads and parses the theme specified in the config.
 // This should be called after Load() to get the fully resolved theme data.
 func (c *Config) LoadTheme() (*theme.Theme, error) {
-	th, err := theme.Load(c.Theme, c.getUserConfigDir())
+	th, err := theme.Load(c.Theme, c.GetUserConfigDir())
 	if err != nil {
 		return nil, fmt.Errorf("config: load theme: %w", err)
 	}
 	return th, nil
 }
 
-// getUserConfigDir returns the user config directory used for deriving paths.
-func (c *Config) getUserConfigDir() string {
+// GetUserConfigDir returns the user config directory used for deriving paths.
+func (c *Config) GetUserConfigDir() string {
 	dir := os.Getenv("GENIE_CONFIG_DIR")
 	if dir == "" {
 		var err error
