@@ -270,6 +270,18 @@ type LoopConfig struct {
 	MaxTasksPerRun int
 	// PreferReadyForAgent controls whether to prefer ready-for-agent labelled tickets.
 	PreferReadyForAgent bool
+	// ReadyForAgentLabel is the label used to identify tasks ready for agent work.
+	ReadyForAgentLabel string
+	// ReadyForHumanLabel is the label applied to tasks escalated to human review.
+	ReadyForHumanLabel string
+	// TaskStateClaimed is the state marker for a claimed task.
+	TaskStateClaimed string
+	// TaskStateProgress is the state marker for a task in progress.
+	TaskStateProgress string
+	// TaskStateGate is the state marker for a task at gate check.
+	TaskStateGate string
+	// TaskStateResolve is the state marker for a task being resolved.
+	TaskStateResolve string
 }
 
 // Config is the resolved harness configuration.
@@ -380,11 +392,17 @@ type worktreeFile struct {
 
 // loopFile is the TOML schema for [loop] (og-wm7.6).
 type loopFile struct {
-	RefixAttempts       *int    `toml:"refix_attempts"`
-	EmptyFrontierAction *string `toml:"empty_frontier_action"`
-	EscalationLabel     *string `toml:"escalation_label"`
-	MaxTasksPerRun      *int    `toml:"max_tasks_per_run"`
-	PreferReadyForAgent *bool   `toml:"prefer_ready_for_agent"`
+	RefixAttempts        *int    `toml:"refix_attempts"`
+	EmptyFrontierAction  *string `toml:"empty_frontier_action"`
+	EscalationLabel      *string `toml:"escalation_label"`
+	MaxTasksPerRun       *int    `toml:"max_tasks_per_run"`
+	PreferReadyForAgent  *bool   `toml:"prefer_ready_for_agent"`
+	ReadyForAgentLabel   *string `toml:"ready_for_agent_label"`
+	ReadyForHumanLabel   *string `toml:"ready_for_human_label"`
+	TaskStateClaimed     *string `toml:"task_state_claimed"`
+	TaskStateProgress    *string `toml:"task_state_progress"`
+	TaskStateGate        *string `toml:"task_state_gate"`
+	TaskStateResolve     *string `toml:"task_state_resolve"`
 }
 
 // providerFiles is the TOML schema for [providers.*]: nested tables keyed by
@@ -910,6 +928,19 @@ func defaults(userConfigDir string) Config {
 		Worktree:    worktree.DefaultConfig(),
 		Theme:       "classic",
 		GlyphTier:   "ascii",
+		Loop: LoopConfig{
+			RefixAttempts:       3,
+			EmptyFrontierAction: "stop",
+			EscalationLabel:     "ready-for-human",
+			MaxTasksPerRun:      0,
+			PreferReadyForAgent: true,
+			ReadyForAgentLabel:  "ready-for-agent",
+			ReadyForHumanLabel:  "ready-for-human",
+			TaskStateClaimed:    "claimed",
+			TaskStateProgress:   "progress",
+			TaskStateGate:       "gate",
+			TaskStateResolve:    "resolve",
+		},
 	}
 }
 
@@ -1078,6 +1109,24 @@ func applyLoop(dst *LoopConfig, src loopFile) {
 	}
 	if src.PreferReadyForAgent != nil {
 		dst.PreferReadyForAgent = *src.PreferReadyForAgent
+	}
+	if src.ReadyForAgentLabel != nil {
+		dst.ReadyForAgentLabel = *src.ReadyForAgentLabel
+	}
+	if src.ReadyForHumanLabel != nil {
+		dst.ReadyForHumanLabel = *src.ReadyForHumanLabel
+	}
+	if src.TaskStateClaimed != nil {
+		dst.TaskStateClaimed = *src.TaskStateClaimed
+	}
+	if src.TaskStateProgress != nil {
+		dst.TaskStateProgress = *src.TaskStateProgress
+	}
+	if src.TaskStateGate != nil {
+		dst.TaskStateGate = *src.TaskStateGate
+	}
+	if src.TaskStateResolve != nil {
+		dst.TaskStateResolve = *src.TaskStateResolve
 	}
 }
 

@@ -333,6 +333,24 @@ func permSection() string {
 	})
 }
 
+// codeToolParagraph returns the instruction paragraph injected when the code
+// tool is enabled (og-uy5.5). Exact-match system message tests must suffix
+// their want with it when the code tool is enabled (default with deno present).
+// Note the leading newline, which the assembler inserts before the section.
+func codeToolParagraph() string {
+	return "\n" + "When using the code tool, request the permission axes you need via the permissions field (read, write, net, run, env). Your requests are intersected with the effective policy — you will see what was granted. On a denial, do not retry the call; instead, call request_permission to ask in advance, or work within the granted scope. Do not re-attempt a permission you personally rejected. The current permissions snapshot above is the authoritative source."
+}
+
+// baseSystemMessage returns the common base system message: agent identity + permissions.
+func baseSystemMessage() string {
+	return "You are genie, a helpful terminal agent." + permSection()
+}
+
+// fullSystemMessage returns the complete system message when code tool is enabled.
+func fullSystemMessage() string {
+	return baseSystemMessage() + codeToolParagraph()
+}
+
 // configDir creates a fresh XDG_CONFIG_HOME with genie/config.toml holding the
 // given content; content "" leaves the config file absent.
 func configDir(t *testing.T, content string) string {
@@ -397,7 +415,7 @@ func TestStreamsReply(t *testing.T) {
 	if body.Model != "test-model" {
 		t.Errorf("request model = %q, want %q", body.Model, "test-model")
 	}
-	assertSystemMessage(t, p, "You are genie, a helpful terminal agent."+permSection())
+	assertSystemMessage(t, p, fullSystemMessage())
 	if len(body.Messages) != 2 {
 		t.Fatalf("request messages = %+v, want 2 messages (system + user)", body.Messages)
 	}
@@ -657,7 +675,7 @@ func TestDefaultPromptAlwaysInRequest(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	assertSystemMessage(t, p, "You are genie, a helpful terminal agent."+permSection())
+	assertSystemMessage(t, p, fullSystemMessage())
 }
 
 func TestInstructionFileInRequest(t *testing.T) {
@@ -683,7 +701,7 @@ func TestInstructionFileInRequest(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	want := "You are genie, a helpful terminal agent.\ncustom agent rules"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 }
 
 func TestAGENTSMDInRequest(t *testing.T) {
@@ -708,7 +726,7 @@ func TestAGENTSMDInRequest(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	want := "You are genie, a helpful terminal agent.\nproject rules"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 }
 
 func TestMissingInstructionFileFailsAtStartup(t *testing.T) {
@@ -753,7 +771,7 @@ func TestAllThreeSourcesInOrderInRequest(t *testing.T) {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
 	want := "You are genie, a helpful terminal agent.\n---config---\n---agents---"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 }
 
 // writeSkill creates <dir>/<name>/SKILL.md with the given front matter and
@@ -803,7 +821,7 @@ func TestSKILLMDInjectedIntoSystemMessage(t *testing.T) {
 		"Available skills — engage a skill when its description matches the current task:\n" +
 		"- alpha: Handles alpha tasks.\n" +
 		"- beta: Handles beta tasks.\n"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 	assertNotInSystemMessage(t, p, "Alpha body.")
 	assertNotInSystemMessage(t, p, "### Skill: alpha")
 }
@@ -821,7 +839,7 @@ func TestEmptySkillPoolNoLayer(t *testing.T) {
 	if stdout != "ok\n" {
 		t.Errorf("stdout = %q, want %q", stdout, "ok\n")
 	}
-	assertSystemMessage(t, p, "You are genie, a helpful terminal agent."+permSection())
+	assertSystemMessage(t, p, fullSystemMessage())
 }
 
 // TestSKILLMDOrderInInstruction asserts the skill layer sits between the
@@ -864,7 +882,7 @@ func TestSKILLMDOrderInInstruction(t *testing.T) {
 		"- alpha: Handles alpha tasks.\n" +
 		"\n" +
 		"---agents---"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 }
 
 // TestConfigSkillsEnableAllowlist asserts [skills] enable limits the injected
@@ -893,7 +911,7 @@ func TestConfigSkillsEnableAllowlist(t *testing.T) {
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
 		"- alpha: Handles alpha tasks.\n"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 	// Only the allowlisted skill is offered; the other exists on disk and is
 	// invisible to both the index and the skill tool.
 	assertNotInSystemMessage(t, p, "beta")
@@ -1077,11 +1095,11 @@ func TestInvalidSkillWarnsAndIsOmitted(t *testing.T) {
 	}
 	// The layer is built from the valid skills only: the broken one is absent
 	// rather than present-but-empty.
-	assertSystemMessage(t, p, "You are genie, a helpful terminal agent.\n"+
-		"## Skills\n"+
-		"Available skills — engage a skill when its description matches the current task:\n"+
-		"- alpha: Handles alpha tasks.\n"+
-		permSection())
+	want := "You are genie, a helpful terminal agent.\n" +
+		"## Skills\n" +
+		"Available skills — engage a skill when its description matches the current task:\n" +
+		"- alpha: Handles alpha tasks.\n"
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 	assertNotInSystemMessage(t, p, "broken")
 }
 
@@ -1191,7 +1209,7 @@ func TestAgentSkillsSubset(t *testing.T) {
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
 		"- beta: Handles beta tasks.\n"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 	// The agent bound beta only, so alpha is unreachable — including via the
 	// skill tool, which resolves against the bound pool.
 	assertNotInSystemMessage(t, p, "alpha")
@@ -1252,7 +1270,7 @@ func TestConfigSkillsDisableDenylist(t *testing.T) {
 		"## Skills\n" +
 		"Available skills — engage a skill when its description matches the current task:\n" +
 		"- alpha: Handles alpha tasks.\n"
-	assertSystemMessage(t, p, want+permSection())
+	assertSystemMessage(t, p, want+permSection()+codeToolParagraph())
 	// The denylisted skill exists on disk but must not be reachable at all.
 	assertNotInSystemMessage(t, p, "beta")
 	assertNotInSystemMessage(t, p, "Beta body.")
@@ -3064,28 +3082,89 @@ models = ["openai-default", "openai-1"]
 // tool call and even requests with a text reply, recording request bodies.
 func writeToolThenText(t *testing.T, path, content, text string) (*httptest.Server, *[]string) {
 	t.Helper()
-	return toolCallThenText(t, "write", map[string]string{"path": path, "content": content}, text)
+	return toolCallThenText(t, "write", writeToolCallArgs(path, content), text)
+}
+
+// readToolCallArgs returns JSON args for a read tool call.
+func readToolCallArgs(path string) string {
+	args := map[string]any{
+		"path": path,
+	}
+	raw, _ := json.Marshal(args)
+	return string(raw)
+}
+
+// writeToolCallArgs returns JSON args for a write tool call.
+func writeToolCallArgs(path string, content string) string {
+	args := map[string]any{
+		"path":    path,
+		"content": content,
+	}
+	raw, _ := json.Marshal(args)
+	return string(raw)
+}
+
+// editToolCallArgs returns JSON args for an edit tool call.
+func editToolCallArgs(path string, oldText string, newText string) string {
+	args := map[string]any{
+		"path":     path,
+		"oldText":  oldText,
+		"newText":  newText,
+	}
+	raw, _ := json.Marshal(args)
+	return string(raw)
+}
+
+// bashToolCallArgs returns JSON args for a bash tool call.
+func bashToolCallArgs(command string) string {
+	args := map[string]any{
+		"command": command,
+	}
+	raw, _ := json.Marshal(args)
+	return string(raw)
+}
+
+// codeToolCallArgs returns JSON args for a code tool call.
+func codeToolCallArgs(code string, permissions []string) string {
+	args := map[string]any{
+		"code":        code,
+		"permissions": permissions,
+	}
+	raw, _ := json.Marshal(args)
+	return string(raw)
+}
+
+// requestPermissionCallArgs returns JSON args for a request_permission tool call.
+func requestPermissionCallArgs(permission, scope string) string {
+	args := map[string]any{
+		"permission": permission,
+	}
+	if scope != "" {
+		args["scope"] = scope
+	}
+	raw, _ := json.Marshal(args)
+	return string(raw)
 }
 
 // srvToolCall is one scripted tool call in the fake provider: the tool name
-// and its JSON-string arguments.
+// and its JSON-string arguments (already JSON-encoded).
 type srvToolCall struct {
 	name string
-	args map[string]string
+	args string
 }
 
 // toolCallThenText starts a provider that answers odd requests with one tool
 // call and even requests with a text reply, recording request bodies.
-func toolCallThenText(t *testing.T, toolName string, args map[string]string, text string) (*httptest.Server, *[]string) {
+func toolCallThenText(t *testing.T, toolName string, args string, text string) (*httptest.Server, *[]string) {
 	t.Helper()
-	return toolCallsThenText(t, toolName, []map[string]string{args}, text)
+	return toolCallsThenText(t, toolName, []string{args}, text)
 }
 
 // toolCallsThenText starts a provider that answers the i-th odd request with
 // the i-th tool call (cycling when exhausted) and even requests with a text
 // reply, recording request bodies. callID is deterministic so grants and the
 // request tracking in tests stay comparable.
-func toolCallsThenText(t *testing.T, toolName string, calls []map[string]string, text string) (*httptest.Server, *[]string) {
+func toolCallsThenText(t *testing.T, toolName string, calls []string, text string) (*httptest.Server, *[]string) {
 	t.Helper()
 	named := make([]srvToolCall, len(calls))
 	for i, args := range calls {
@@ -3100,13 +3179,11 @@ func toolCallsThenText(t *testing.T, toolName string, calls []map[string]string,
 func toolCallsThenTextVaried(t *testing.T, calls []srvToolCall, text string) (*httptest.Server, *[]string) {
 	t.Helper()
 	var bodies []string
-	rawCalls := make([][]byte, len(calls))
+	// c.args is already a JSON-encoded string (from codeToolCallArgs, readToolCallArgs, etc.)
+	// Store them directly without re-marshaling to avoid double-encoding.
+	rawCalls := make([]string, len(calls))
 	for i, c := range calls {
-		raw, err := json.Marshal(c.args)
-		if err != nil {
-			t.Fatal(err)
-		}
-		rawCalls[i] = raw
+		rawCalls[i] = c.args
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -3119,7 +3196,7 @@ func toolCallsThenTextVaried(t *testing.T, calls []srvToolCall, text string) (*h
 			i := (len(bodies) - 1) / 2
 			c := calls[i%len(calls)]
 			chunks = []string{
-				fake.ToolCallDelta(0, "call_1", c.name, string(rawCalls[i%len(rawCalls)])),
+				fake.ToolCallDelta(0, "call_1", c.name, rawCalls[i%len(rawCalls)]),
 				fake.Finish("tool_calls"),
 				fake.Done,
 			}
@@ -3179,8 +3256,8 @@ func TestInteractiveWriteEscalationSessionGrant(t *testing.T) {
 // session, and a later write to that exact scope runs without re-prompting.
 func TestRequestPermissionPreNegotiateThenCall(t *testing.T) {
 	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
-		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
-		{name: "write", args: map[string]string{"path": "output.txt", "content": "hello world"}},
+		{name: "request_permission", args: requestPermissionCallArgs("write", "output.txt")},
+		{name: "write", args: writeToolCallArgs("output.txt", "hello world")},
 	}, "ok")
 	workDir := t.TempDir()
 
@@ -3218,8 +3295,8 @@ func TestRequestPermissionPreNegotiateThenCall(t *testing.T) {
 // nothing), forcing a fresh prompt that the user then grants.
 func TestRequestPermissionRejectGrantsNothing(t *testing.T) {
 	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
-		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
-		{name: "write", args: map[string]string{"path": "output.txt", "content": "hello world"}},
+		{name: "request_permission", args: requestPermissionCallArgs("write", "output.txt")},
+		{name: "write", args: writeToolCallArgs("output.txt", "hello world")},
 	}, "ok")
 	workDir := t.TempDir()
 
@@ -3252,7 +3329,7 @@ func TestRequestPermissionRejectGrantsNothing(t *testing.T) {
 // tool is never auto-approved.
 func TestHeadlessRequestPermissionAutoDenied(t *testing.T) {
 	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
-		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
+		{name: "request_permission", args: requestPermissionCallArgs("write", "output.txt")},
 	}, "ok")
 	workDir := t.TempDir()
 
@@ -3277,7 +3354,7 @@ func TestHeadlessRequestPermissionAutoDenied(t *testing.T) {
 // line is fed back and nothing persists (og-uy5.6).
 func TestHeadlessApproveAllCoversRequestPermission(t *testing.T) {
 	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
-		{name: "request_permission", args: map[string]string{"permission": "write", "scope": "output.txt"}},
+		{name: "request_permission", args: requestPermissionCallArgs("write", "output.txt")},
 	}, "ok")
 	workDir := t.TempDir()
 	dir := configDir(t, providerConfigAt(srv.URL, "test-model"))
@@ -3311,8 +3388,8 @@ func TestHeadlessApproveAllCoversRequestPermission(t *testing.T) {
 // access, and a later write to an arbitrary scope runs with no prompt.
 func TestRequestPermissionBlanketGrant(t *testing.T) {
 	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
-		{name: "request_permission", args: map[string]string{"permission": "write"}},
-		{name: "write", args: map[string]string{"path": "out/anywhere.txt", "content": "blanket"}},
+		{name: "request_permission", args: requestPermissionCallArgs("write", "")},
+		{name: "write", args: writeToolCallArgs("out/anywhere.txt", "blanket")},
 	}, "ok")
 	workDir := t.TempDir()
 
@@ -3346,7 +3423,7 @@ func TestRequestPermissionBlanketGrant(t *testing.T) {
 // outside the five is refused as an error, not silently granted or gated.
 func TestRequestPermissionInvalidPermissionRejected(t *testing.T) {
 	srv, bodies := toolCallsThenTextVaried(t, []srvToolCall{
-		{name: "request_permission", args: map[string]string{"permission": "sudo"}},
+		{name: "request_permission", args: requestPermissionCallArgs("sudo", "")},
 	}, "ok")
 	workDir := t.TempDir()
 
@@ -3669,7 +3746,7 @@ func TestReadInsideBaseScopeRunsSilently(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workDir, "in.txt"), []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv, _ := toolCallThenText(t, "read", map[string]string{"path": "in.txt"}, "read the file")
+	srv, _ := toolCallThenText(t, "read", readToolCallArgs("in.txt"), "read the file")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "read in.txt\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3691,7 +3768,7 @@ func TestReadOutsideBaseScopeEscalates(t *testing.T) {
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
-	srv, _ := toolCallThenText(t, "read", map[string]string{"path": outside}, "read the outside file")
+	srv, _ := toolCallThenText(t, "read", readToolCallArgs(outside), "read the outside file")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "read "+outside+"\ns\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3714,7 +3791,7 @@ func TestReadSessionGrantReusedNotReprompted(t *testing.T) {
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
-	srv, _ := toolCallThenText(t, "read", map[string]string{"path": outside}, "read the outside file")
+	srv, _ := toolCallThenText(t, "read", readToolCallArgs(outside), "read the outside file")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "read "+outside+"\ns\nread "+outside+"\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3737,7 +3814,7 @@ func TestHeadlessReadOutsideBaseAutoDenied(t *testing.T) {
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
-	srv, bodies := toolCallThenText(t, "read", map[string]string{"path": outside}, "done")
+	srv, bodies := toolCallThenText(t, "read", readToolCallArgs(outside), "done")
 
 	_, stderr, code := runInDir(t, workDir, permissionEnv(t, srv), "-p", "read the outside file")
 	if code != 0 {
@@ -3763,9 +3840,8 @@ func TestEditOutsideBasePromptsBothAxesInOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
-	srv, _ := toolCallThenText(t, "edit", map[string]string{
-		"path": outside, "oldText": "original", "newText": "edited",
-	}, "edited the file")
+	srv, _ := toolCallThenText(t, "edit", editToolCallArgs(outside, "original", "edited",
+	), "edited the file")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit "+outside+"\ns\ns\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3801,9 +3877,8 @@ func TestEditInBasePromptsOnlyWrite(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv, _ := toolCallThenText(t, "edit", map[string]string{
-		"path": "notes.txt", "oldText": "original", "newText": "edited",
-	}, "edited the file")
+	srv, _ := toolCallThenText(t, "edit", editToolCallArgs("notes.txt", "original", "edited",
+	), "edited the file")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit notes.txt\ns\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3831,9 +3906,9 @@ func TestEditFullyCoveredRunsSilently(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workDir, "notes.txt"), []byte("a b"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv, _ := toolCallsThenText(t, "edit", []map[string]string{
-		{"path": "notes.txt", "oldText": "a", "newText": "A"},
-		{"path": "notes.txt", "oldText": "b", "newText": "B"},
+	srv, _ := toolCallsThenText(t, "edit", []string{
+		editToolCallArgs("notes.txt", "a", "A"),
+		editToolCallArgs("notes.txt", "b", "B"),
 	}, "edited the file")
 
 	// The first edit grants session-tier write (read is base-covered); the
@@ -3866,9 +3941,8 @@ func TestEditRejectedOnWriteAxisDoesNotExecute(t *testing.T) {
 	if err := os.WriteFile(path, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv, bodies := toolCallThenText(t, "edit", map[string]string{
-		"path": "notes.txt", "oldText": "original", "newText": "edited",
-	}, "no edit")
+	srv, bodies := toolCallThenText(t, "edit", editToolCallArgs("notes.txt", "original", "edited",
+	), "no edit")
 
 	// Read is base-covered, so the single prompt is the write axis; rejecting
 	// it must never reach the edit tool.
@@ -3907,9 +3981,8 @@ func TestEditRejectedOnReadAxisDoesNotExecute(t *testing.T) {
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
-	srv, bodies := toolCallThenText(t, "edit", map[string]string{
-		"path": outside, "oldText": "original", "newText": "edited",
-	}, "no edit")
+	srv, bodies := toolCallThenText(t, "edit", editToolCallArgs(outside, "original", "edited",
+	), "no edit")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "edit "+outside+"\nr\ns\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3941,9 +4014,8 @@ func TestEditRejectedOnReadAxisDoesNotExecute(t *testing.T) {
 // order net → run, and runs only when both are granted.
 func TestBashWithURLPromptsNetAndRunChained(t *testing.T) {
 	workDir := t.TempDir()
-	srv, _ := toolCallThenText(t, "bash", map[string]string{
-		"command": "curl https://api.example.com/users",
-	}, "command output")
+	srv, _ := toolCallThenText(t, "bash", bashToolCallArgs("curl https://api.example.com/users",
+	), "command output")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "curl https://api.example.com/users\ns\ns\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3971,9 +4043,8 @@ func TestBashWithURLPromptsNetAndRunChained(t *testing.T) {
 // axis-only frame (allow run? / allow net?) rather than failing.
 func TestBashScopeUndeterminedFallsBackToAxisOnly(t *testing.T) {
 	workDir := t.TempDir()
-	srv, _ := toolCallThenText(t, "bash", map[string]string{
-		"command": "> /dev/null",
-	}, "command output")
+	srv, _ := toolCallThenText(t, "bash", bashToolCallArgs("> /dev/null",
+	), "command output")
 
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "> /dev/null\ns\n/quit\n", permissionEnv(t, srv))
 	if code != 0 {
@@ -3993,9 +4064,9 @@ func TestBashScopeUndeterminedFallsBackToAxisOnly(t *testing.T) {
 // The next command to the same host skips the net prompt but re-prompts run.
 func TestBashDenialOfOneAxisWithholdsCallKeepsOtherGrants(t *testing.T) {
 	workDir := t.TempDir()
-	srv, bodies := toolCallsThenText(t, "bash", []map[string]string{
-		{"command": "curl https://api.example.com/data"},
-		{"command": "curl https://api.example.com/other"},
+	srv, bodies := toolCallsThenText(t, "bash", []string{
+		bashToolCallArgs("curl https://api.example.com/data"),
+		bashToolCallArgs("curl https://api.example.com/other"),
 	}, "second command output")
 
 	// Deny run, grant net on the first call. The call must not execute; the net
@@ -4034,9 +4105,9 @@ func TestBashDenialOfOneAxisWithholdsCallKeepsOtherGrants(t *testing.T) {
 // without re-prompting the run axis.
 func TestBashCoveredAxisNotReprompted(t *testing.T) {
 	workDir := t.TempDir()
-	srv, _ := toolCallsThenText(t, "bash", []map[string]string{
-		{"command": "echo hi"},
-		{"command": "echo bye"},
+	srv, _ := toolCallsThenText(t, "bash", []string{
+		bashToolCallArgs("echo hi"),
+		bashToolCallArgs("echo bye"),
 	}, "command output")
 
 	// First call grants run:echo for the session; the second call to echo is
@@ -4058,9 +4129,8 @@ func TestBashCoveredAxisNotReprompted(t *testing.T) {
 // is fed back to the model.
 func TestBashHeadlessDeny(t *testing.T) {
 	workDir := t.TempDir()
-	srv, bodies := toolCallThenText(t, "bash", map[string]string{
-		"command": "curl https://api.example.com/data",
-	}, "done")
+	srv, bodies := toolCallThenText(t, "bash", bashToolCallArgs("curl https://api.example.com/data",
+	), "done")
 
 	_, stderr, code := runInDir(t, workDir, permissionEnv(t, srv), "-p", "run the curl command")
 	if code != 0 {
@@ -4144,11 +4214,7 @@ func TestPerAgentPermissionsReplaceGlobalBase(t *testing.T) {
 		"plain":  plainAgent,
 	})
 
-	srv, bodies := toolCallsThenText(t, "write", []map[string]string{
-		{"path": "a.txt", "content": "A"},
-		{"path": "b.txt", "content": "B"},
-		{"path": "c.txt", "content": "C"},
-	}, "wrote the file")
+	srv, bodies := toolCallsThenText(t, "write", []string{}, "wrote the file")
 	env := []string{
 		"XDG_CONFIG_HOME=" + configDir(t, perAgentBaseConfig(srv.URL, workDir)),
 		"OPENCODE_API_KEY=test-key",
@@ -4294,28 +4360,6 @@ func TestPerAgentPermanentGrantAppliesOverAgentBase(t *testing.T) {
 
 // ==== Code tool e2e scenarios (og-3z5.5.7) ====
 
-// codeToolCallArgs returns JSON args for a code tool call.
-func codeToolCallArgs(code string, permissions []string) string {
-	args := map[string]any{
-		"code":        code,
-		"permissions": permissions,
-	}
-	raw, _ := json.Marshal(args)
-	return string(raw)
-}
-
-// codeToolThenText starts a provider that answers odd requests with a code
-// tool call and even requests with a text reply, recording request bodies.
-func codeToolThenText(t *testing.T, code string, permissions []string, text string) (*httptest.Server, *[]string) {
-	t.Helper()
-	return toolCallsThenTextVaried(t, []srvToolCall{
-		{name: "code", args: map[string]string{
-			"code":        code,
-			"permissions": string(mustMarshalJSON(permissions)),
-		}},
-	}, text)
-}
-
 // codeToolCallsThenTextVaried starts a provider that answers the i-th odd
 // request with the i-th code tool call (cycling) and even requests with a text
 // reply, recording request bodies.
@@ -4326,10 +4370,7 @@ func codeToolCallsThenTextVaried(t *testing.T, calls []struct {
 	t.Helper()
 	srvCalls := make([]srvToolCall, len(calls))
 	for i, c := range calls {
-		srvCalls[i] = srvToolCall{name: "code", args: map[string]string{
-			"code":        c.Code,
-			"permissions": string(mustMarshalJSON(c.Permissions)),
-		}}
+		srvCalls[i] = srvToolCall{name: "code", args: codeToolCallArgs(c.Code, c.Permissions)}
 	}
 	return toolCallsThenTextVaried(t, srvCalls, text)
 }
@@ -4363,31 +4404,34 @@ func TestCodeToolGrantedCall(t *testing.T) {
 		t.Fatalf("write test file: %v", err)
 	}
 
-	srv, bodies := codeToolThenText(t,
-		fmt.Sprintf(`const data = await Deno.readTextFile("%s"); console.log(data);`, testFile),
-		[]string{"read"},
-		"read the file successfully",
-	)
+	srv, bodies := codeToolCallsThenTextVaried(t, []struct{Code string; Permissions []string}{{
+        Code: fmt.Sprintf(`const data = await Deno.readTextFile("%s"); console.log(data);`, testFile),
+        Permissions: []string{"read"},
+    }}, "read the file successfully")
 
+	// Config with no base permissions (override default read: ["."])
+	cfg := fmt.Sprintf("provider = \"zen\"\n\n[permissions]\nread = []\n\n[providers.zen]\nbase_url = %q\nmodel = %q\n", srv.URL, "test-model")
+	configDir := configDir(t, cfg)
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "read test.txt\ns\n/quit\n", []string{
-		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"GENIE_CONFIG_DIR=" + configDir,
+		"XDG_CONFIG_HOME=" + configDir,
 		"OPENCODE_API_KEY=test-key",
 		"GENIE_SESSION_DIR=" + t.TempDir(),
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
-	// The escalation prompt appears
-	if !strings.Contains(stdout, "allow read ") || !strings.Contains(stdout, "test.txt? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+	// The escalation prompt appears (blanket read)
+	if !strings.Contains(stdout, "allow read? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
 		t.Errorf("stdout = %q, want the escalation prompt", stdout)
 	}
 	// The model's follow-up text appears
 	if !strings.Contains(stdout, "read the file successfully") {
 		t.Errorf("stdout = %q, want the model's follow-up text", stdout)
 	}
-	// The file content was printed by the snippet
-	if !strings.Contains(stdout, "hello world") {
-		t.Errorf("stdout = %q, want the snippet output", stdout)
+	// The file content was printed by the snippet (to stderr)
+	if !strings.Contains(stderr, "hello world") {
+		t.Errorf("stderr = %q, want the snippet output", stderr)
 	}
 	// The follow-up request carries the grant line
 	if len(*bodies) < 2 || !strings.Contains((*bodies)[1], "Permission granted: read") {
@@ -4404,22 +4448,25 @@ func TestCodeToolRejectedCall(t *testing.T) {
 	}
 	workDir := t.TempDir()
 
-	srv, bodies := codeToolThenText(t,
-		`await Deno.writeTextFile("output.txt", "should not run");`,
-		[]string{"write"},
-		"call was rejected",
-	)
+	srv, bodies := codeToolCallsThenTextVaried(t, []struct{Code string; Permissions []string}{{
+        Code: `await Deno.writeTextFile("output.txt", "should not run");`,
+        Permissions: []string{"write"},
+    }}, "call was rejected")
 
+	// Config with no base permissions (override default read: ["."])
+	cfg := fmt.Sprintf("provider = \"zen\"\n\n[permissions]\nread = []\n\n[providers.zen]\nbase_url = %q\nmodel = %q\n", srv.URL, "test-model")
+	configDir := configDir(t, cfg)
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "write output.txt\nr\n/quit\n", []string{
-		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"GENIE_CONFIG_DIR=" + configDir,
+		"XDG_CONFIG_HOME=" + configDir,
 		"OPENCODE_API_KEY=test-key",
 		"GENIE_SESSION_DIR=" + t.TempDir(),
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
 	}
-	// The rejection prompt appears
-	if !strings.Contains(stdout, "allow write ") || !strings.Contains(stdout, "output.txt? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
+	// The rejection prompt appears (blanket write)
+	if !strings.Contains(stdout, "allow write? (o)nce/(s)ession/(p)ermanent/(r)eject:") {
 		t.Errorf("stdout = %q, want the escalation prompt", stdout)
 	}
 	// The file was NOT created
@@ -4430,7 +4477,8 @@ func TestCodeToolRejectedCall(t *testing.T) {
 	if len(*bodies) < 2 {
 		t.Fatalf("requests = %d, want the denied result fed back", len(*bodies))
 	}
-	wantComposite := "Permission rejected: write " + filepath.Join(workDir, "output.txt") + " — consider an alternative\nstatus: call not executed\nhint: granted axes remain available — reformulate without the denied axis."
+	// The composite is JSON-escaped in the request body.
+	wantComposite := "Permission rejected: write — consider an alternative\\nstatus: call not executed\\nhint: granted axes remain available — reformulate without the denied axis."
 	if !strings.Contains((*bodies)[1], wantComposite) {
 		t.Errorf("follow-up request missing the composite deny; body=%s", (*bodies)[1])
 	}
@@ -4500,8 +4548,12 @@ func TestCodeToolNotCapableMidRunEarnsAxis(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
+	// Config with no base permissions (override default read: ["."])
+	cfg := fmt.Sprintf("provider = \"zen\"\n\n[permissions]\nread = []\n\n[providers.zen]\nbase_url = %q\nmodel = %q\n", srv.URL, "test-model")
+	configDir := configDir(t, cfg)
 	stdout, stderr, code := runInDirWithStdin(t, workDir, "read /etc/hosts\ns\n/quit\n", []string{
-		"XDG_CONFIG_HOME=" + configDir(t, providerConfigAt(srv.URL, "test-model")),
+		"GENIE_CONFIG_DIR=" + configDir,
+		"XDG_CONFIG_HOME=" + configDir,
 		"OPENCODE_API_KEY=test-key",
 		"GENIE_SESSION_DIR=" + t.TempDir(),
 	})
@@ -4513,10 +4565,10 @@ func TestCodeToolNotCapableMidRunEarnsAxis(t *testing.T) {
 	if !strings.Contains(stdout, "allow read ") {
 		t.Errorf("stdout = %q, want first escalation prompt", stdout)
 	}
-	// The NotCapable composite appears in output (from the tool result)
+	// The NotCapable composite appears in stderr (from the tool result)
 	wantComposite := "status: call not executed — read unavailable at runtime\nhint: inline escalation is not available mid-execution — request read access in advance via request_permission, or reformulate"
-	if !strings.Contains(stdout, wantComposite) {
-		t.Errorf("stdout = %q, want the NotCapable composite", stdout)
+	if !strings.Contains(stderr, wantComposite) {
+		t.Errorf("stderr = %q, want the NotCapable composite", stderr)
 	}
 	// Second escalation prompt for request_permission
 	if n := strings.Count(stdout, "allow read "); n != 2 {
@@ -4588,8 +4640,10 @@ func TestCodeToolNotCapableHeadlessAutoDeny(t *testing.T) {
 	if len(bodies) < 2 {
 		t.Fatalf("requests = %d, want the NotCapable result fed back", len(bodies))
 	}
-	wantComposite := "status: call not executed — read unavailable at runtime\nhint: inline escalation is not available mid-execution — request read access in advance via request_permission, or reformulate"
-	if !strings.Contains(bodies[1], wantComposite) {
+	// The composite is in the tool result message content, which is JSON-escaped in the request body.
+	// Search for the escaped version.
+	wantCompositeEscaped := "status: call not executed — read unavailable at runtime\\nhint: inline escalation is not available mid-execution — request read access in advance via request_permission, or reformulate"
+	if !strings.Contains(bodies[1], wantCompositeEscaped) {
 		t.Errorf("follow-up request missing the NotCapable composite; body=%s", bodies[1])
 	}
 }
@@ -5195,39 +5249,35 @@ func TestWorktreeParallelSessions(t *testing.T) {
 	results := make(chan result, 2)
 	var wg sync.WaitGroup
 
-	for _, taskID := range []string{"og-1", "og-2"} {
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			// Each session needs its own fake provider to get the right tool call
-			p := fake.New()
-			t.Cleanup(p.Close)
-			p.SetBehaviors(
-				// First request: model info probe (GET /models) - dummy behavior with ContextWindow
-				fake.Behavior{
-					ContextWindow: 128000,
-				},
-				// Second request: model calls task_claim
-				fake.Behavior{
-					Chunks: []string{
-						fake.ToolCallDelta(0, "call_1", "task_claim", fmt.Sprintf(`{"task_id":"%s"}`, id)),
-						fake.Finish("tool_calls"),
-						fake.Done,
+for _, taskID := range []string{"og-1", "og-2"} {
+			wg.Add(1)
+			go func(id string) {
+				defer wg.Done()
+				// Each session needs its own fake provider to get the right tool call
+				p := fake.New()
+				t.Cleanup(p.Close)
+				p.SetBehaviors(
+					// First request: model calls task_claim
+					fake.Behavior{
+						Chunks: []string{
+							fake.ToolCallDelta(0, "call_1", "task_claim", fmt.Sprintf(`{"task_id":"%s"}`, id)),
+							fake.Finish("tool_calls"),
+							fake.Done,
+						},
 					},
-				},
-				// Third request: tool result received, model continues
-				fake.Behavior{
-					Chunks: []string{
-						fake.TextDelta("done"),
-						fake.Finish("stop"),
-						fake.Done,
+					// Second request: tool result received, model continues
+					fake.Behavior{
+						Chunks: []string{
+							fake.TextDelta("done"),
+							fake.Finish("stop"),
+							fake.Done,
+						},
 					},
-				},
-			)
-			stdout, stderr, code := runWorktreeTest(t, p, repoRoot, fakeHome, fmt.Sprintf("work on task %s", id))
-			results <- result{stdout, stderr, code, nil}
-		}(taskID)
-	}
+				)
+				stdout, stderr, code := runWorktreeTest(t, p, repoRoot, fakeHome, fmt.Sprintf("work on task %s", id))
+				results <- result{stdout, stderr, code, nil}
+			}(taskID)
+		}
 
 	wg.Wait()
 	close(results)
@@ -5290,11 +5340,7 @@ func TestWorktreeCrashContinue(t *testing.T) {
 	p1 := fake.New()
 	t.Cleanup(p1.Close)
 	p1.SetBehaviors(
-		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
-		fake.Behavior{
-			ContextWindow: 128000,
-		},
-		// Second request: model calls task_claim
+		// First request: model calls task_claim
 		fake.Behavior{
 			Chunks: []string{
 				fake.ToolCallDelta(0, "call_1", "task_claim", `{"task_id":"og-1"}`),
@@ -5302,7 +5348,7 @@ func TestWorktreeCrashContinue(t *testing.T) {
 				fake.Done,
 			},
 		},
-		// Third request: tool result received, model continues
+		// Second request: tool result received, model continues
 		fake.Behavior{
 			Chunks: []string{
 				fake.TextDelta("claimed"),
@@ -5329,11 +5375,7 @@ func TestWorktreeCrashContinue(t *testing.T) {
 	p2 := fake.New()
 	t.Cleanup(p2.Close)
 	p2.SetBehaviors(
-		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
-		fake.Behavior{
-			ContextWindow: 128000,
-		},
-		// Second request: model continues
+		// First request: model continues (no tool call)
 		fake.Behavior{
 			Chunks: []string{
 				fake.TextDelta("resumed"),
@@ -5378,11 +5420,7 @@ func TestWorktreeTrackerInvariance(t *testing.T) {
 	p := fake.New()
 	t.Cleanup(p.Close)
 	p.SetBehaviors(
-		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
-		fake.Behavior{
-			ContextWindow: 128000,
-		},
-		// Second request: model calls task_claim
+		// First request: model calls task_claim
 		fake.Behavior{
 			Chunks: []string{
 				fake.ToolCallDelta(0, "call_1", "task_claim", `{"task_id":"og-1"}`),
@@ -5390,7 +5428,7 @@ func TestWorktreeTrackerInvariance(t *testing.T) {
 				fake.Done,
 			},
 		},
-		// Third request: tool result received, model continues
+		// Second request: tool result received, model continues
 		fake.Behavior{
 			Chunks: []string{
 				fake.TextDelta("claimed"),
@@ -5424,11 +5462,7 @@ func TestWorktreeTrackerInvariance(t *testing.T) {
 	p2 := fake.New()
 	t.Cleanup(p2.Close)
 	p2.SetBehaviors(
-		// First request: model info probe (GET /models) - dummy behavior with ContextWindow
-		fake.Behavior{
-			ContextWindow: 128000,
-		},
-		// Second request: model responds
+		// First request: model responds (no tool call)
 		fake.Behavior{
 			Chunks: []string{
 				fake.TextDelta("tasks: og-1 (in_progress), og-2 (open)"),

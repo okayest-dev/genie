@@ -355,8 +355,8 @@ func handleSlashCommand(ctx context.Context, line string, cfg *Config) bool {
 		}
 		return false
 
-	case "/work-frontier":
-		handleWorkFrontier(ctx, cfg)
+	case "/auto":
+		handleAuto(ctx, cfg)
 		return false
 
 	default:
@@ -395,7 +395,7 @@ func printHelp(cfg *Config) {
 	fmt.Fprintln(slashOut, "  /copilot                 manage Copilot credentials")
 	fmt.Fprintln(slashOut, "  /copilot:auth:login      start device-flow login")
 	fmt.Fprintln(slashOut, "  /copilot:auth:status     show credential status")
-	fmt.Fprintln(slashOut, "  /work-frontier           start autonomous frontier loop")
+	fmt.Fprintln(slashOut, "  /auto                    start autonomous frontier loop")
 	fmt.Fprintln(slashOut, "")
 	fmt.Fprintln(slashOut, "  @<name> <prompt>         one-shot agent switch")
 	if cmds := cfg.Run.Commands(); cmds != nil {
@@ -934,8 +934,8 @@ func handleCopilotStatus(host string, cfg *Config, slashOut io.Writer) {
 	}
 }
 
-// handleWorkFrontier starts the autonomous frontier loop.
-func handleWorkFrontier(ctx context.Context, cfg *Config) {
+// handleAuto starts the autonomous frontier loop.
+func handleAuto(ctx context.Context, cfg *Config) {
 	slashOut := cfg.roleWriter(cfg.Stdout, cfg.Profile, "slash")
 
 	// Check if task tools are enabled
@@ -959,6 +959,12 @@ func handleWorkFrontier(ctx context.Context, cfg *Config) {
 		loopCfg.MaxTasksPerRun = cfg.Cfg.Loop.MaxTasksPerRun
 	}
 	loopCfg.PreferReadyForAgent = cfg.Cfg.Loop.PreferReadyForAgent
+	loopCfg.ReadyForAgentLabel = cfg.Cfg.Loop.ReadyForAgentLabel
+	loopCfg.ReadyForHumanLabel = cfg.Cfg.Loop.ReadyForHumanLabel
+	loopCfg.TaskStateClaimed = cfg.Cfg.Loop.TaskStateClaimed
+	loopCfg.TaskStateProgress = cfg.Cfg.Loop.TaskStateProgress
+	loopCfg.TaskStateGate = cfg.Cfg.Loop.TaskStateGate
+	loopCfg.TaskStateResolve = cfg.Cfg.Loop.TaskStateResolve
 
 	// Create a simple reporter that prints to the slash output
 	reporter := &loopReporter{out: slashOut}

@@ -124,16 +124,34 @@ type LoopConfig struct {
 	MaxTasksPerRun int
 	// PreferReadyForAgent controls whether to prefer ready-for-agent labelled tickets.
 	PreferReadyForAgent bool
+	// ReadyForAgentLabel is the label used to identify tasks ready for agent work.
+	ReadyForAgentLabel string
+	// ReadyForHumanLabel is the label applied to tasks escalated to human review.
+	ReadyForHumanLabel string
+	// TaskStateClaimed is the state marker for a claimed task.
+	TaskStateClaimed string
+	// TaskStateProgress is the state marker for a task in progress.
+	TaskStateProgress string
+	// TaskStateGate is the state marker for a task at gate check.
+	TaskStateGate string
+	// TaskStateResolve is the state marker for a task being resolved.
+	TaskStateResolve string
 }
 
 // DefaultLoopConfig returns the default loop configuration.
 func DefaultLoopConfig() LoopConfig {
 	return LoopConfig{
-		RefixAttempts:       3,
-		EmptyFrontierAction: "stop",
-		EscalationLabel:     "ready-for-human",
-		MaxTasksPerRun:      0,
-		PreferReadyForAgent: true,
+		RefixAttempts:        3,
+		EmptyFrontierAction:  "stop",
+		EscalationLabel:      "ready-for-human",
+		MaxTasksPerRun:       0,
+		PreferReadyForAgent:  true,
+		ReadyForAgentLabel:   "ready-for-agent",
+		ReadyForHumanLabel:   "ready-for-human",
+		TaskStateClaimed:     "claimed",
+		TaskStateProgress:    "progress",
+		TaskStateGate:        "gate",
+		TaskStateResolve:     "resolve",
 	}
 }
 

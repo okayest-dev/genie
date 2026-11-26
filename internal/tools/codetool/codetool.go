@@ -228,6 +228,11 @@ func (t *Tool) Execute(raw json.RawMessage) (string, error) {
 		}
 	}
 
+	// Check for Deno runtime permission errors (e.g., "NotCapable: Requires read access to ...")
+	if nc, ok := parseDenoNotCapable(stderr); ok {
+		return permissions.RenderNotCapableMarker(nc.Permission, nc.Resource), nil
+	}
+
 	// Combine output with exit code
 	output := t.formatOutput(stdout, stderr, exitCode)
 
@@ -324,4 +329,41 @@ func (t *Tool) writeSpill(output string) (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
+}
+
+// parseDenoNotCapable detects Deno runtime permission errors in stderr and
+// returns a NotCapable struct if found. Deno emits errors like:
+//   error: Uncaught (in promise) NotCapable: Requires read access to "/path", run again with the --allow-read flag
+func parseDenoNotCapable(stderr string) (permissions.NotCapable, bool) {
+	const prefix = "NotCapable: Requires "
+	idx := strings.Index(stderr, prefix)
+	if idx == -1 {
+		return permissions.NotCapable{}, false
+	}
+	rest := stderr[idx+len(prefix):]
+	// Format: "read access to \"/path\", run again..."
+	// or "write access to \"/path\", run again..."
+	parts := strings.SplitN(rest, " access to ", 2)
+	if len(parts) != 2 {
+		return permissions.NotCapable{}, false
+	}
+	permission := strings.TrimSpace(parts[0])
+	if !permissions.IsAxis(permission) {
+		return permissions.NotCapable{}, false
+	}
+	// Extract resource from quoted string
+	resourceStart := strings.Index(parts[1], "\"")
+	if resourceStart == -1 {
+		return permissions.NotCapable{}, false
+	}
+	resourceEnd := strings.Index(parts[1][resourceStart+1:], "\"")
+	if resourceEnd == -1 {
+		return permissions.NotCapable{}, false
+	}
+	resource := parts[1][resourceStart+1 : resourceStart+1+resourceEnd]
+	return permissions.NotCapable{
+		Code:       permissions.NotCapableCode,
+		Permission: permission,
+		Resource:   resource,
+	}, true
 }

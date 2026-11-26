@@ -256,11 +256,28 @@ func (d *StandardLoopDriver) determineResumeStage(task *tasktools.Task) LoopStat
 		return LoopStateNext
 	}
 
-	// Parse last task state to determine stage
-	if strings.Contains(lastTaskState, "claimed") || strings.Contains(lastTaskState, "progress") {
+	// Parse last task state to determine stage using configurable expressions
+	claimedExpr := d.ctx.Config.TaskStateClaimed
+	if claimedExpr == "" {
+		claimedExpr = "claimed"
+	}
+	progressExpr := d.ctx.Config.TaskStateProgress
+	if progressExpr == "" {
+		progressExpr = "progress"
+	}
+	gateExpr := d.ctx.Config.TaskStateGate
+	if gateExpr == "" {
+		gateExpr = "gate"
+	}
+	resolveExpr := d.ctx.Config.TaskStateResolve
+	if resolveExpr == "" {
+		resolveExpr = "resolve"
+	}
+
+	if strings.Contains(lastTaskState, claimedExpr) || strings.Contains(lastTaskState, progressExpr) {
 		return LoopStateWork
 	}
-	if strings.Contains(lastTaskState, "gate") || strings.Contains(lastTaskState, "resolve") {
+	if strings.Contains(lastTaskState, gateExpr) || strings.Contains(lastTaskState, resolveExpr) {
 		return LoopStateGateCheck
 	}
 
@@ -613,9 +630,15 @@ func (d *StandardLoopDriver) escalateTask(ctx context.Context, task *tasktools.T
 	slog.Warn("loop: escalating task", "task_id", task.ID, "reason", reason)
 
 	// Apply the escalation label via the tracker
+	// Use configurable label with fallback to "ready-for-human"
+	escalationLabel := d.ctx.Config.ReadyForHumanLabel
+	if escalationLabel == "" {
+		escalationLabel = "ready-for-human"
+	}
+
 	// The tracker's Close with a reason, or we could add a label
-	// For now, we just record it
-	d.ctx.Reporter.OnTaskEscalated(task.ID, reason)
+	// For now, we just record it with the configured label
+	d.ctx.Reporter.OnTaskEscalated(task.ID, reason+" (label: "+escalationLabel+")")
 }
 
 // isHumanInTheLoop returns true if the task type requires human confirmation.
